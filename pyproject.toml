@@ -9,6 +9,7 @@ license-files = ["LICENSE", "src/cross_stitch/threads/DMC_SOURCE.md"]
 requires-python = ">=3.14"
 dependencies = [
     "numpy>=2.5.4",
+    "pillow>=13.0.0",
 ]
 
 [build-system]
