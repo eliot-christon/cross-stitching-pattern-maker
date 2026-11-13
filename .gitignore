@@ -1,0 +1,28 @@
+# Claude Code workspace - deliberately unversioned
+.claude/
+CLAUDE.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Frontend (once frontend/ exists)
+node_modules/
+frontend/dist/
+
+# Local data and outputs - user images and generated patterns never go in git
+.data/
+out/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
