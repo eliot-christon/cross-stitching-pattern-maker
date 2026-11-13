@@ -6,7 +6,9 @@ readme = "README.md"
 authors = [{ name = "Eliot Christon", email = "eliot.christon@gmail.com" }]
 license = "Apache-2.0"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "numpy>=2.5.4",
+]
 
 [build-system]
 requires = ["uv_build>=0.9.26,<0.10.0"]
