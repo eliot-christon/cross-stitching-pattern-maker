@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Turn an image into a printable cross-stitch pattern with real thread colours"
 readme = "README.md"
 authors = [{ name = "Eliot Christon", email = "eliot.christon@gmail.com" }]
-license = "Apache-2.0"
+license = "Apache-2.0 AND CC-BY-4.0"
+license-files = ["LICENSE", "src/cross_stitch/threads/DMC_SOURCE.md"]
 requires-python = ">=3.14"
 dependencies = [
     "numpy>=2.5.4",

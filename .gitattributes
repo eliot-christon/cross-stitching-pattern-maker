@@ -1,0 +1,2 @@
+# Thread tables ship byte for byte as their source published them (see DMC_SOURCE.md).
+src/cross_stitch/threads/*.csv -text
