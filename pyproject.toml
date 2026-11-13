@@ -8,8 +8,11 @@ license = "Apache-2.0 AND CC-BY-4.0"
 license-files = ["LICENSE", "src/cross_stitch/threads/DMC_SOURCE.md"]
 requires-python = ">=3.14"
 dependencies = [
+    "fastapi>=0.162.6",
     "numpy>=2.5.4",
     "pillow>=13.0.0",
+    "python-multipart>=0.0.33",
+    "uvicorn>=0.54.0",
 ]
 
 [build-system]
@@ -21,6 +24,7 @@ module-name = "cross_stitch"
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.16.0",
     "mypy>=2.4.1",
     "pre-commit>=4.7.0",
     "pylint>=4.1.3",

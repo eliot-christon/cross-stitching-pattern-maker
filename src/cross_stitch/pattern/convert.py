@@ -30,7 +30,7 @@ from cross_stitch.colour import srgb_to_lab
 from cross_stitch.pattern.model import EMPTY, Pattern, build_pattern, check_fabric_count
 from cross_stitch.threads import nearest_dmc_lab
 
-__all__ = ["OPAQUE_THRESHOLD", "convert_image"]
+__all__ = ["OPAQUE_THRESHOLD", "convert_image", "stitch_height"]
 
 OPAQUE_THRESHOLD = 128
 """Lowest averaged alpha (0-255) of a stitched cell; below it the cell is empty."""
@@ -43,6 +43,12 @@ _BIN_SHIFT = 3  # 8-bit channels -> 5-bit bins
 
 FloatArray = npt.NDArray[np.float64]
 IndexArray = npt.NDArray[np.intp]
+
+
+def stitch_height(image_width: int, image_height: int, width: int) -> int:
+    """Grid height for an image `width` stitches wide: the aspect ratio kept, rounded half
+    up, at least 1."""
+    return max(1, (2 * width * image_height + image_width) // (2 * image_width))
 
 
 def convert_image(
@@ -64,7 +70,7 @@ def convert_image(
         raise ValueError(f"the image is empty ({image.width}x{image.height} pixels)")
 
     rgba = image.convert("RGBA")
-    height = max(1, (2 * width * rgba.height + rgba.width) // (2 * rgba.width))
+    height = stitch_height(rgba.width, rgba.height, width)
     cells = np.asarray(rgba.resize((width, height), Image.Resampling.BOX), dtype=np.uint8)
 
     stitched = cells[..., 3] >= OPAQUE_THRESHOLD
