@@ -1,6 +1,6 @@
 """Image -> cross-stitch pattern: the stitch grid, its DMC key, counts and sizes."""
 
-from cross_stitch.pattern.convert import OPAQUE_THRESHOLD, convert_image
+from cross_stitch.pattern.convert import OPAQUE_THRESHOLD, convert_image, stitch_height
 from cross_stitch.pattern.model import (
     EMPTY,
     KeyEntry,
@@ -18,5 +18,6 @@ __all__ = [
     "build_pattern",
     "convert_image",
     "skeins_needed",
+    "stitch_height",
     "stitches_per_skein",
 ]
