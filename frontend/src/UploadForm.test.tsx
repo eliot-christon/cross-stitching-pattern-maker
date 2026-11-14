@@ -24,6 +24,7 @@ const PATTERN: Pattern = {
   total_stitches: 2,
   finished_size: { width_in: 0.14, height_in: 0.07, width_cm: 0.36, height_cm: 0.18 },
   isolated_stitches: { before: 2, after: 0 },
+  converted: null,
 };
 
 /** A second conversion, told apart from PATTERN on screen by its thread codes. */
@@ -46,6 +47,7 @@ const PATTERN_B: Pattern = {
   total_stitches: 3,
   finished_size: { width_in: 0.21, height_in: 0.07, width_cm: 0.54, height_cm: 0.18 },
   isolated_stitches: { before: 1, after: 0 },
+  converted: null,
 };
 
 /** A thread only PATTERN's key holds, and one only PATTERN_B's holds. */

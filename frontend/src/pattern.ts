@@ -25,6 +25,17 @@ export interface IsolatedStitches {
   after: number;
 }
 
+/**
+ * The pattern before cleanup. Width, height, fabric count and finished size are the
+ * cleaned pattern's, which cleanup never changes.
+ */
+export interface ConvertedPattern {
+  /** Rows of indices into this object's `key`; `null` is bare fabric. */
+  grid: (number | null)[][];
+  key: KeyEntry[];
+  total_stitches: number;
+}
+
 export interface Pattern {
   width: number;
   height: number;
@@ -35,4 +46,6 @@ export interface Pattern {
   total_stitches: number;
   finished_size: FinishedSize;
   isolated_stitches: IsolatedStitches;
+  /** The pattern before cleanup, or `null` when every cleanup setting is 0. */
+  converted: ConvertedPattern | null;
 }
