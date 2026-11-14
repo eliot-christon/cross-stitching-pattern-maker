@@ -29,12 +29,14 @@ EMPTY = -1
 
 CM_PER_INCH = 2.54
 
-# Skein estimate constants (see `stitches_per_skein`).
-SKEIN_LENGTH_CM = 800.0
+# Skein estimate constants (see `stitches_per_skein`), after Kathleen M. Dyer's
+# Needlework FAQ, section 32, https://www.mismatch.co.uk/cross.htm#floss_amt
+SEGMENTS_PER_SKEIN = 17  # a skein is about 8 1/2 yards: 17 lengths of 18 inches
+USABLE_INCHES_PER_SEGMENT = 15  # 3 of every 18 inches go on securing ends and waste
 SKEIN_STRANDS = 6
 STITCH_STRANDS = 2
-WASTE_ALLOWANCE = 0.20
-CROSS_LENGTH_IN_CELL_SIDES = 2 * math.sqrt(2) + 2
+CROSS_INCHES_TIMES_COUNT = 6  # one full cross takes 6 / count inches of thread
+COMPLEX_PROJECT_ALLOWANCE = 0.20  # more thread per cross for many colour changes
 
 
 def check_fabric_count(fabric_count: float) -> None:
@@ -46,22 +48,30 @@ def check_fabric_count(fabric_count: float) -> None:
 def stitches_per_skein(fabric_count: float) -> int:
     """How many full crosses one skein covers on this fabric count (stitches per inch).
 
-    A DMC stranded cotton skein is 8 m of 6 strands; stitched with 2 strands that is 24 m
-    of working thread. One full cross on a cell of side s = 2.54 cm / fabric count uses
-    its two diagonals on the front (2 * sqrt(2) * s) plus about one cell side per half
-    stitch travelling on the back (2 * s), plus a 20% allowance for starting, ending and
-    moving between areas:
+    Kathleen M. Dyer's Needlework FAQ, section 32 "The Amount of Floss for Cross Stitch"
+    (https://www.mismatch.co.uk/cross.htm#floss_amt), derives
 
-        floor(2400 cm / ((2 * sqrt(2) + 2) * s * 1.2))
+        17 * (15 / (6 / count)) * (6 / strands)
 
-    On Aida 14 that is 2283 crosses, above commonly published two-strand figures (about
-    1100-1800), so the estimate errs towards too few skeins.
+    from a skein of about 8 1/2 yards cut into 17 lengths of 18 inches, 3 inches of each
+    lost to securing ends and general waste, and 6 / count inches of thread per cross
+    (both half stitches, the vertical travel on the back and a little slop). On Aida 14
+    with 2 strands that is 1785. Dyer warns that complex projects get fewer stitches per
+    skein; a converted image is one (many colours, frequent stops and starts), so the
+    estimate allows 20% more thread per cross:
+
+        floor(1785 / 1.2) = 1487 crosses on Aida 14
+
+    which sits between Dyer's figure and the conservative planning figure of 1050-1200 on
+    Aida 14 published at
+    https://crossstitchstylearte.com/how-to-calculate-the-exact-amount-of-thread-needed-for-any-cross-stitch-project/
+    erring towards more skeins.
+    Thread per cross scales with 1 / fabric count, so the result is proportional to it.
     """
     check_fabric_count(fabric_count)
-    usable_cm = SKEIN_LENGTH_CM * SKEIN_STRANDS / STITCH_STRANDS
-    cell_side_cm = CM_PER_INCH / fabric_count
-    per_cross_cm = CROSS_LENGTH_IN_CELL_SIDES * cell_side_cm * (1 + WASTE_ALLOWANCE)
-    return math.floor(usable_cm / per_cross_cm)
+    usable_inches = SEGMENTS_PER_SKEIN * USABLE_INCHES_PER_SEGMENT * SKEIN_STRANDS
+    inches_per_cross = CROSS_INCHES_TIMES_COUNT / fabric_count * STITCH_STRANDS
+    return math.floor(usable_inches / inches_per_cross / (1 + COMPLEX_PROJECT_ALLOWANCE))
 
 
 def skeins_needed(stitches: int, fabric_count: float) -> int:
