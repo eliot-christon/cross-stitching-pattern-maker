@@ -15,7 +15,12 @@ const PATTERN: Pattern = {
   ],
   total_stitches: 2,
   finished_size: { width_in: 0.14, height_in: 0.07, width_cm: 0.36, height_cm: 0.18 },
+  isolated_stitches: { before: 2, after: 0 },
 };
+
+const MERGE = "Merge similar threads (colour distance)";
+const MIN_STITCHES = "Minimum stitches per thread";
+const CONFETTI = "Largest confetti cluster (stitches)";
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -45,6 +50,9 @@ describe("UploadForm", () => {
     expect(screen.getByLabelText("Width (stitches)")).toHaveValue(100);
     expect(screen.getByLabelText("Max colours")).toHaveValue(20);
     expect(screen.getByLabelText("Fabric count")).toHaveValue(14);
+    expect(screen.getByLabelText(MERGE)).toHaveValue(0);
+    expect(screen.getByLabelText(MIN_STITCHES)).toHaveValue(0);
+    expect(screen.getByLabelText(CONFETTI)).toHaveValue(0);
     expect(submitButton()).toBeDisabled();
 
     chooseFile();
@@ -61,6 +69,9 @@ describe("UploadForm", () => {
     fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: "40" } });
     fireEvent.change(screen.getByLabelText("Max colours"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("Fabric count"), { target: { value: "16" } });
+    fireEvent.change(screen.getByLabelText(MERGE), { target: { value: "2.5" } });
+    fireEvent.change(screen.getByLabelText(MIN_STITCHES), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "3" } });
     fireEvent.click(submitButton());
 
     expect(await screen.findByRole("table", { name: "Thread key" })).toBeInTheDocument();
@@ -72,6 +83,45 @@ describe("UploadForm", () => {
     expect(body.get("width")).toBe("40");
     expect(body.get("max_colours")).toBe("4");
     expect(body.get("fabric_count")).toBe("16");
+    expect(body.get("merge_distance")).toBe("2.5");
+    expect(body.get("min_stitches")).toBe("10");
+    expect(body.get("confetti_size")).toBe("3");
+  });
+
+  it("posts the cleanup settings as 0 when left alone", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(json(200, PATTERN)));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<UploadForm />);
+
+    chooseFile();
+    fireEvent.click(submitButton());
+
+    await screen.findByRole("table", { name: "Thread key" });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const body = init.body as FormData;
+    expect(body.get("merge_distance")).toBe("0");
+    expect(body.get("min_stitches")).toBe("0");
+    expect(body.get("confetti_size")).toBe("0");
+  });
+
+  it("shows the field of a refused cleanup setting from the API's 422", async () => {
+    const detail = [
+      {
+        loc: ["body", "confetti_size"],
+        msg: "Input should be less than or equal to 10",
+        type: "less_than_equal",
+      },
+    ];
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(json(422, { detail }))));
+    render(<UploadForm />);
+
+    chooseFile();
+    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "11" } });
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "confetti_size: Input should be less than or equal to 10",
+    );
   });
 
   it("shows a busy state while the request is in flight, then the preview", async () => {
@@ -263,8 +313,10 @@ describe("UploadForm PDF download", () => {
     const { createObjectURL, click } = stubSave();
     render(<UploadForm />);
 
+    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "3" } });
     await convert("40");
     fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: "80" } });
+    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "5" } });
     fireEvent.change(screen.getByLabelText("Chart"), { target: { value: "bw" } });
     fireEvent.change(screen.getByLabelText("Paper"), { target: { value: "A3" } });
     fireEvent.change(screen.getByLabelText("Orientation"), { target: { value: "landscape" } });
@@ -278,6 +330,8 @@ describe("UploadForm PDF download", () => {
     expect(body.get("width")).toBe("40");
     expect(body.get("max_colours")).toBe("20");
     expect(body.get("fabric_count")).toBe("14");
+    expect(body.get("confetti_size")).toBe("3");
+    expect(body.get("merge_distance")).toBe("0");
     expect(body.get("variant")).toBe("bw");
     expect(body.get("paper")).toBe("A3");
     expect(body.get("orientation")).toBe("landscape");

@@ -17,6 +17,7 @@ function makePattern(overrides: Partial<Pattern> = {}): Pattern {
     key,
     total_stitches: 123,
     finished_size: { width_in: 9.99, height_in: 5.04, width_cm: 25.4, height_cm: 12.7 },
+    isolated_stitches: { before: 0, after: 0 },
     ...overrides,
   };
 }
@@ -159,6 +160,14 @@ describe("PatternPreview", () => {
     render(<PatternPreview pattern={makePattern({ total_stitches: 123 })} />);
 
     expect(screen.getByText("123 stitches in total")).toBeInTheDocument();
+  });
+
+  it("shows the isolated stitches before and after cleanup as returned", () => {
+    const isolated_stitches = { before: 42, after: 7 };
+    render(<PatternPreview pattern={makePattern({ isolated_stitches })} />);
+
+    expect(screen.getByText("42 before cleanup")).toBeInTheDocument();
+    expect(screen.getByText("7 after cleanup")).toBeInTheDocument();
   });
 
   it("shows width x height and the fabric count as given", () => {

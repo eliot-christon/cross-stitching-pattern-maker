@@ -19,6 +19,12 @@ export interface FinishedSize {
   height_cm: number;
 }
 
+/** Stitched cells with no neighbour of the same thread, before and after cleanup. */
+export interface IsolatedStitches {
+  before: number;
+  after: number;
+}
+
 export interface Pattern {
   width: number;
   height: number;
@@ -28,4 +34,5 @@ export interface Pattern {
   key: KeyEntry[];
   total_stitches: number;
   finished_size: FinishedSize;
+  isolated_stitches: IsolatedStitches;
 }
