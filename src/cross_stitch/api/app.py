@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from starlette.formparsers import MultiPartParser
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from cross_stitch.export import key_symbols
 from cross_stitch.pattern import EMPTY, Pattern, convert_image, stitch_height
 
 __all__ = ["MAX_UPLOAD_BYTES", "app"]
@@ -41,6 +42,8 @@ class KeyEntryOut(BaseModel):
     rgb: tuple[int, int, int]
     stitches: int
     skeins: int
+    symbol: str
+    """The chart symbol, from `cross_stitch.export.key_symbols`."""
 
 
 class FinishedSizeOut(BaseModel):
@@ -141,8 +144,9 @@ def _to_json(pattern: Pattern) -> PatternOut:
                 rgb=entry.thread.rgb,
                 stitches=entry.stitches,
                 skeins=entry.skeins,
+                symbol=symbol,
             )
-            for entry in pattern.key
+            for entry, symbol in zip(pattern.key, key_symbols(pattern.key), strict=True)
         ],
         total_stitches=pattern.total_stitches,
         finished_size=FinishedSizeOut(
