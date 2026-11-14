@@ -9,11 +9,9 @@ decoding, and the JSON shape. Run locally with
 `uv run uvicorn cross_stitch.api.app:app --reload`.
 """
 
-import functools
 import io
 import json
 import warnings
-from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Annotated
 
@@ -92,6 +90,16 @@ class IsolatedStitchesOut(BaseModel):
     after: int
 
 
+class ConvertedOut(BaseModel):
+    """The pattern before cleanup. Width, height, fabric count and finished size are the
+    cleaned pattern's: cleanup never changes them."""
+
+    grid: list[list[int | None]]
+    """Rows of indices into this object's `key`; `null` is an empty cell (bare fabric)."""
+    key: list[KeyEntryOut]
+    total_stitches: int
+
+
 class PatternOut(BaseModel):
     width: int
     height: int
@@ -102,6 +110,8 @@ class PatternOut(BaseModel):
     total_stitches: int
     finished_size: FinishedSizeOut
     isolated_stitches: IsolatedStitchesOut
+    converted: ConvertedOut | None
+    """The pattern before cleanup, or `null` when every cleanup setting is 0."""
 
 
 class SettingOut(BaseModel):
@@ -199,24 +209,33 @@ def _decode(upload: bytes) -> Image.Image:
         raise HTTPException(400, "the image has too many pixels") from error
 
 
-def _to_json(cleaned: CleanedPattern) -> PatternOut:
+def _grid_json(pattern: Pattern) -> list[list[int | None]]:
+    return [[None if cell == EMPTY else cell for cell in row] for row in pattern.grid.tolist()]
+
+
+def _key_json(pattern: Pattern) -> list[KeyEntryOut]:
+    return [
+        KeyEntryOut(
+            code=entry.thread.code,
+            name=entry.thread.name,
+            rgb=entry.thread.rgb,
+            stitches=entry.stitches,
+            skeins=entry.skeins,
+            symbol=symbol,
+        )
+        for entry, symbol in zip(pattern.key, key_symbols(pattern.key), strict=True)
+    ]
+
+
+def _to_json(cleaned: CleanedPattern, *, with_converted: bool) -> PatternOut:
     pattern = cleaned.pattern
+    converted = cleaned.converted
     return PatternOut(
         width=pattern.width,
         height=pattern.height,
         fabric_count=pattern.fabric_count,
-        grid=[[None if cell == EMPTY else cell for cell in row] for row in pattern.grid.tolist()],
-        key=[
-            KeyEntryOut(
-                code=entry.thread.code,
-                name=entry.thread.name,
-                rgb=entry.thread.rgb,
-                stitches=entry.stitches,
-                skeins=entry.skeins,
-                symbol=symbol,
-            )
-            for entry, symbol in zip(pattern.key, key_symbols(pattern.key), strict=True)
-        ],
+        grid=_grid_json(pattern),
+        key=_key_json(pattern),
         total_stitches=pattern.total_stitches,
         finished_size=FinishedSizeOut(
             width_in=pattern.width_in,
@@ -227,10 +246,41 @@ def _to_json(cleaned: CleanedPattern) -> PatternOut:
         isolated_stitches=IsolatedStitchesOut(
             before=cleaned.isolated_before, after=cleaned.isolated_after
         ),
+        converted=ConvertedOut(
+            grid=_grid_json(converted),
+            key=_key_json(converted),
+            total_stitches=converted.total_stitches,
+        )
+        if with_converted
+        else None,
     )
 
 
-_Cleanup = Callable[[Pattern], CleanedPattern]
+@dataclass(frozen=True)
+class _Cleanup:
+    """The cleanup settings of a request, applied by `_converted` with the core's
+    `clean_pattern`."""
+
+    merge_distance: float
+    min_stitches: int
+    confetti_size: int
+
+    @property
+    def on(self) -> bool:
+        """Whether any setting is non-zero; all at 0 leave the pattern as converted."""
+        return bool(self.merge_distance or self.min_stitches or self.confetti_size)
+
+    def __call__(self, pattern: Pattern) -> CleanedPattern:
+        return clean_pattern(pattern, **asdict(self))
+
+
+@dataclass(frozen=True)
+class _Converted:
+    """What `_converted` hands the routes: the cleaned pattern and whether any cleanup
+    setting was on."""
+
+    cleaned: CleanedPattern
+    cleanup_on: bool
 
 
 def _cleanup(
@@ -260,13 +310,9 @@ def _cleanup(
         ),
     ] = _CONFETTI_SIZE.default,
 ) -> _Cleanup:
-    """The cleanup settings, taken by `_converted` so both routes share them: the core's
-    `clean_pattern` with those settings."""
-    return functools.partial(
-        clean_pattern,
-        merge_distance=merge_distance,
-        min_stitches=min_stitches,
-        confetti_size=confetti_size,
+    """The cleanup settings, taken by `_converted` so both routes share them."""
+    return _Cleanup(
+        merge_distance=merge_distance, min_stitches=min_stitches, confetti_size=confetti_size
     )
 
 
@@ -281,9 +327,12 @@ def _converted(
     fabric_count: Annotated[
         float, Form(gt=0, allow_inf_nan=False, description="Stitches per inch")
     ] = 14.0,
-) -> CleanedPattern:
+) -> _Converted:
     """The conversion inputs both routes share: validated, decoded and converted here, so
-    `POST /patterns` and `POST /patterns/pdf` accept and refuse exactly the same requests."""
+    `POST /patterns` and `POST /patterns/pdf` accept and refuse exactly the same requests.
+
+    The settings come back with the pattern rather than through a second `Depends(_cleanup)`
+    in a route: a dependency met twice reports each of its validation errors twice."""
     upload = image.file.read(MAX_UPLOAD_BYTES + 1)
     if len(upload) > MAX_UPLOAD_BYTES:
         raise _BodyTooLarge
@@ -294,9 +343,10 @@ def _converted(
             422,
             f"height would be {height} stitches at width {width}; at most {MAX_HEIGHT}",
         )
-    return cleanup(
-        convert_image(decoded, width=width, max_colours=max_colours, fabric_count=fabric_count)
+    pattern = convert_image(
+        decoded, width=width, max_colours=max_colours, fabric_count=fabric_count
     )
+    return _Converted(cleaned=cleanup(pattern), cleanup_on=cleanup.on)
 
 
 @app.get("/limits")
@@ -307,14 +357,17 @@ def limits() -> LimitsOut:
 
 
 @app.post("/patterns")
-def create_pattern(cleaned: Annotated[CleanedPattern, Depends(_converted)]) -> PatternOut:
-    """Convert an image into a DMC cross-stitch pattern."""
-    return _to_json(cleaned)
+def create_pattern(
+    converted: Annotated[_Converted, Depends(_converted)],
+) -> PatternOut:
+    """Convert an image into a DMC cross-stitch pattern, with the pattern before cleanup
+    when any cleanup setting is on."""
+    return _to_json(converted.cleaned, with_converted=converted.cleanup_on)
 
 
 @app.post("/patterns/pdf", response_class=Response)
 def create_pattern_pdf(
-    cleaned: Annotated[CleanedPattern, Depends(_converted)],
+    converted: Annotated[_Converted, Depends(_converted)],
     variant: Annotated[Variant, Form(description="Colour or black and white")] = "colour",
     paper: Annotated[Paper, Form(description="Paper size")] = "A4",
     orientation: Annotated[Orientation, Form(description="Page orientation")] = "portrait",
@@ -325,7 +378,9 @@ def create_pattern_pdf(
     of the pattern it shows; nothing is stored between requests.
     """
     return Response(
-        render_pdf(cleaned.pattern, variant=variant, paper=paper, orientation=orientation),
+        render_pdf(
+            converted.cleaned.pattern, variant=variant, paper=paper, orientation=orientation
+        ),
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="pattern.pdf"'},
     )

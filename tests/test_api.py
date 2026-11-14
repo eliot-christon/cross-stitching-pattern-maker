@@ -632,3 +632,60 @@ def test_the_reported_upload_limit_is_the_one_enforced() -> None:
 
 def test_the_limits_are_the_same_every_time() -> None:
     assert client.get("/limits").json() == client.get("/limits").json()
+
+
+# --- converted: the pattern before cleanup -------------------------------------------------
+
+
+def _code_at(grid: list[list[int | None]], key: list[dict[str, Any]], cell: Pixel) -> str | None:
+    index = grid[cell[0]][cell[1]]
+    return None if index is None else str(key[index]["code"])
+
+
+def test_converted_is_the_core_pattern_before_cleanup() -> None:
+    converted = _core_converted(_cleanable(), 5)
+    cleaned = _cleaned_cleanable()
+    # Cleanup changes the pattern, so `converted` cannot pass by repeating the top level.
+    assert _grid_json(cleaned.pattern) != _grid_json(converted)
+
+    body = _body(_cleanable(), 5, **CLEANUP_FORM)
+
+    assert body["converted"] == {
+        "grid": _grid_json(converted),
+        "key": _key_json(converted),
+        "total_stitches": converted.total_stitches,
+    }
+    assert body["grid"] == _grid_json(cleaned.pattern)
+    assert body["key"] == _key_json(cleaned.pattern)
+
+
+def test_converted_holds_the_confetti_the_cleaned_grid_no_longer_has() -> None:
+    body = _body(_cleanable(), 5, confetti_size="1")
+    before = body["converted"]
+    assert _code_at(before["grid"], before["key"], (1, 2)) == "Blanc"
+    assert _code_at(body["grid"], body["key"], (1, 2)) == "797"
+
+
+def test_converted_has_as_many_stitches_as_the_cleaned_pattern() -> None:
+    body = _body(_cleanable(), 5, **CLEANUP_FORM)
+    before = body["converted"]
+    assert before["total_stitches"] == body["total_stitches"]
+    assert sum(entry["stitches"] for entry in before["key"]) == body["total_stitches"]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"merge_distance": "0", "min_stitches": "0", "confetti_size": "0"}],
+    ids=["omitted", "zeros"],
+)
+def test_converted_is_null_when_every_cleanup_setting_is_zero(extra: dict[str, str]) -> None:
+    assert _stripes_response(**extra)["converted"] is None
+
+
+def test_converted_is_sent_when_cleanup_is_on_with_nothing_to_clean() -> None:
+    body = _stripes_response(confetti_size="1")
+    assert body["converted"] == {
+        "grid": body["grid"],
+        "key": body["key"],
+        "total_stitches": body["total_stitches"],
+    }
