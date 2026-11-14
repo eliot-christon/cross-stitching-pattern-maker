@@ -472,10 +472,22 @@ def test_stitches_per_skein_is_proportional_to_the_fabric_count() -> None:
     assert abs(stitches_per_skein(22) - 2 * stitches_per_skein(11)) <= 1
 
 
-def test_stitches_per_skein_on_aida_14_is_plausible() -> None:
-    # A sanity bracket around the epic's 20%-waste formula (2283 on Aida 14), not the
-    # published two-strand figures (about 1100-1800), which the formula exceeds.
-    assert 1500 <= stitches_per_skein(14) <= 3000
+def test_stitches_per_skein_on_aida_14_is_within_the_published_two_strand_range() -> None:
+    # Published two-strand figures on Aida 14: 1785 from Dyer's Needlework FAQ (waste and
+    # slop included), 1050-1200 as a conservative planning estimate (Style Arte).
+    assert 1400 <= stitches_per_skein(14) <= 1800
+
+
+def test_2000_stitches_on_aida_14_need_two_skeins() -> None:
+    assert skeins_needed(2000, 14) == 2
+
+
+def test_key_entry_of_2000_stitches_on_aida_14_carries_two_skeins() -> None:
+    pattern = convert_image(_plain(_rgb("321"), 50, 40), width=50, max_colours=1, fabric_count=14)
+    assert _codes(pattern) == ["321"]
+    assert pattern.key[0].stitches == 2000
+    assert pattern.key[0].skeins == 2
+    _assert_counts_add_up(pattern)
 
 
 def test_key_skeins_follow_the_entry_stitch_count_and_fabric() -> None:
