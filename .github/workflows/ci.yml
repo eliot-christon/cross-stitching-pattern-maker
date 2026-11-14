@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # uv installs the Python named in .python-version; the cache is keyed on uv.lock.
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.9.26"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: uv sync --locked
+        run: uv sync --locked
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      - name: mypy
+        run: uv run mypy src tests
+
+      - name: pylint
+        run: uv run pylint src tests
+
+      - name: pytest
+        run: uv run pytest
