@@ -17,9 +17,29 @@ export interface Settings {
   fabricCount: string;
 }
 
+/** The PDF chart endpoint: the same inputs as `PATTERNS_URL` plus the chart options. */
+export const PATTERN_PDF_URL = "/api/patterns/pdf";
+
+/** The chart options `POST /patterns/pdf` accepts, as its form fields spell them. */
+export interface ChartOptions {
+  variant: "colour" | "bw";
+  paper: "A2" | "A3" | "A4" | "A5";
+  orientation: "portrait" | "landscape";
+}
+
 export type ConvertResult = { ok: true; pattern: Pattern } | { ok: false; message: string };
 
-export async function convertImage(image: File, settings: Settings): Promise<ConvertResult> {
+export type PdfResult = { ok: true; pdf: Blob } | { ok: false; message: string };
+
+type Sent = { ok: true; response: Response } | { ok: false; message: string };
+
+/** Post the image and settings (and any extra fields), after the client-side size check. */
+async function post(
+  url: string,
+  image: File,
+  settings: Settings,
+  extra: Record<string, string> = {},
+): Promise<Sent> {
   if (image.size > MAX_UPLOAD_BYTES) {
     const limit = `${MAX_UPLOAD_BYTES / (1024 * 1024)} MB`;
     return { ok: false, message: `The image is larger than ${limit}, the most the server accepts.` };
@@ -30,13 +50,46 @@ export async function convertImage(image: File, settings: Settings): Promise<Con
   body.append("width", settings.width);
   body.append("max_colours", settings.maxColours);
   body.append("fabric_count", settings.fabricCount);
+  for (const [name, value] of Object.entries(extra)) {
+    body.append(name, value);
+  }
 
-  let response: Response;
   try {
-    response = await fetch(PATTERNS_URL, { method: "POST", body });
+    return { ok: true, response: await fetch(url, { method: "POST", body }) };
   } catch {
     return { ok: false, message: "Cannot reach the server. Is the API running?" };
   }
+}
+
+/** The PDF chart of the image converted with `settings`, as the API renders it. */
+export async function downloadPdf(
+  image: File,
+  settings: Settings,
+  options: ChartOptions,
+): Promise<PdfResult> {
+  const sent = await post(PATTERN_PDF_URL, image, settings, { ...options });
+  if (!sent.ok) {
+    return sent;
+  }
+  const { response } = sent;
+  if (response.ok) {
+    return { ok: true, pdf: await response.blob() };
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = undefined;
+  }
+  return { ok: false, message: errorMessage(response.status, payload) };
+}
+
+export async function convertImage(image: File, settings: Settings): Promise<ConvertResult> {
+  const sent = await post(PATTERNS_URL, image, settings);
+  if (!sent.ok) {
+    return sent;
+  }
+  const { response } = sent;
 
   let payload: unknown;
   try {
