@@ -17,17 +17,16 @@ const LIMITS = {
 
 /** fetch answering the page's `/api/limits` request; nothing else is asked for here. */
 function stubLimits() {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(() =>
-      Promise.resolve(
-        new Response(JSON.stringify(LIMITS), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      ),
+  const fetchMock = vi.fn((_url: string) =>
+    Promise.resolve(
+      new Response(JSON.stringify(LIMITS), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
     ),
   );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
 afterEach(() => {
@@ -47,12 +46,13 @@ describe("App", () => {
     expect(title).toBeInTheDocument();
   });
 
-  it("puts the upload form on the page once the limits are in, with no pattern", async () => {
-    stubLimits();
+  it("puts the upload form on the page once the limits are in, with no Convert button and no pattern", async () => {
+    const fetchMock = stubLimits();
     render(<App />);
 
     expect(await screen.findByLabelText("Image")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /convert/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /convert/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("table", { name: "Thread key" })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/limits"]);
   });
 });
