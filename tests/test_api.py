@@ -10,7 +10,7 @@ from PIL import Image
 from starlette.formparsers import MultiPartParser
 
 from cross_stitch.api.app import MAX_COLOURS, MAX_UPLOAD_BYTES, app
-from cross_stitch.export import SYMBOLS, key_symbols
+from cross_stitch.export import SYMBOLS, key_symbols, render_pdf
 from cross_stitch.pattern import EMPTY, convert_image
 from cross_stitch.threads import dmc_thread
 
@@ -210,3 +210,103 @@ def test_both_size_refusals_give_the_same_message() -> None:
     )
     by_size = _post(b"\x00" * (MAX_UPLOAD_BYTES + 1), {"width": "40", "max_colours": "4"})
     assert by_length.json() == by_size.json()
+
+
+# --- POST /patterns/pdf --------------------------------------------------------------------
+
+
+def _post_pdf(upload: bytes | None, fields: dict[str, str], filename: str = "image.png") -> Any:
+    files = {"image": (filename, upload, "image/png")} if upload is not None else None
+    return client.post("/patterns/pdf", data=fields, files=files)
+
+
+def _stripes_pdf(**extra: str) -> bytes:
+    response = _post_pdf(_png(_stripes()), {"width": "40", "max_colours": "4", **extra})
+    assert response.status_code == 200, response.text
+    body: bytes = response.content
+    return body
+
+
+def _core_pdf(**options: Any) -> bytes:
+    pattern = convert_image(_stripes(), width=40, max_colours=4, fabric_count=14)
+    return render_pdf(pattern, **options)
+
+
+def test_the_pdf_is_an_attachment_of_type_pdf() -> None:
+    response = _post_pdf(_png(_stripes()), {"width": "40", "max_colours": "4"})
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/pdf"
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith("attachment")
+    assert disposition.rstrip('"').endswith(".pdf")
+    assert response.content.startswith(b"%PDF")
+
+
+def test_the_pdf_is_exactly_what_the_core_renders_by_default() -> None:
+    assert _stripes_pdf() == _core_pdf()
+    assert _stripes_pdf() == _core_pdf(variant="colour", paper="A4", orientation="portrait")
+
+
+def test_the_pdf_follows_the_variant_paper_and_orientation_asked_for() -> None:
+    assert _stripes_pdf(variant="bw") == _core_pdf(variant="bw")
+    assert _stripes_pdf(paper="A3", orientation="landscape") == _core_pdf(
+        paper="A3", orientation="landscape"
+    )
+    assert _stripes_pdf(variant="bw") != _stripes_pdf()
+
+
+def test_the_pdf_uses_the_fabric_count_given() -> None:
+    pattern = convert_image(_stripes(), width=40, max_colours=4, fabric_count=18)
+    assert _stripes_pdf(fabric_count="18") == render_pdf(pattern)
+
+
+def test_the_same_pdf_request_twice_gives_identical_bytes() -> None:
+    assert _stripes_pdf(paper="A5") == _stripes_pdf(paper="A5")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("variant", "sepia"), ("paper", "A6"), ("orientation", "diagonal")],
+)
+def test_an_unknown_pdf_choice_gives_422_naming_the_field(field: str, value: str) -> None:
+    response = _post_pdf(_png(_stripes()), {"width": "40", "max_colours": "4", field: value})
+    assert response.status_code == 422
+    assert field in response.text
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"max_colours": "4"},
+        {"width": "0", "max_colours": "4"},
+        {"width": "40", "max_colours": "101"},
+        {"width": "40", "max_colours": "4", "fabric_count": "0"},
+    ],
+)
+def test_the_pdf_refuses_the_settings_patterns_refuses_alike(fields: dict[str, str]) -> None:
+    by_json = _post(_png(_stripes()), fields)
+    by_pdf = _post_pdf(_png(_stripes()), fields)
+    assert by_json.status_code == by_pdf.status_code == 422
+    assert by_json.json() == by_pdf.json()
+
+
+@pytest.mark.parametrize(
+    ("upload", "status"),
+    [
+        (None, 422),
+        (b"this is a text file, not an image\n", 400),
+        (b"\x00" * (MAX_UPLOAD_BYTES + 1), 413),
+        (_png(Image.new("RGB", (1, 1001), (0, 0, 0))), 422),
+    ],
+    ids=["no image", "not an image", "over 20 MB", "too tall"],
+)
+def test_the_pdf_refuses_uploads_patterns_refuses_alike(upload: bytes | None, status: int) -> None:
+    fields = {"width": "1" if status == 422 and upload else "40", "max_colours": "4"}
+    by_json = _post(upload, fields)
+    by_pdf = _post_pdf(upload, fields)
+    assert by_json.status_code == by_pdf.status_code == status
+    assert by_json.json() == by_pdf.json()
+
+
+def test_the_json_route_is_unchanged_by_the_pdf_fields() -> None:
+    assert _stripes_response(variant="bw", paper="A3") == _stripes_response()

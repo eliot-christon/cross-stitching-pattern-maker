@@ -1,8 +1,10 @@
-"""The HTTP API: `POST /patterns` turns an uploaded image into a DMC pattern as JSON.
+"""The HTTP API: `POST /patterns` turns an uploaded image into a DMC pattern as JSON, and
+`POST /patterns/pdf` turns the same inputs into a printable PDF chart.
 
 Stateless: the upload is decoded in memory, converted by `cross_stitch.pattern`, and
-returned; nothing is kept between requests. This module only translates HTTP to and from
-the core: validation of the HTTP inputs, decoding, and the JSON shape. Run locally with
+returned as JSON or rendered by `cross_stitch.export`; nothing is kept between requests.
+This module only translates HTTP to and from the core: validation of the HTTP inputs,
+decoding, and the JSON shape. Run locally with
 `uv run uvicorn cross_stitch.api.app:app --reload`.
 """
 
@@ -11,13 +13,13 @@ import json
 import warnings
 from typing import Annotated
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel
 from starlette.formparsers import MultiPartParser
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from cross_stitch.export import key_symbols
+from cross_stitch.export import Orientation, Paper, Variant, key_symbols, render_pdf
 from cross_stitch.pattern import EMPTY, Pattern, convert_image, stitch_height
 
 __all__ = ["MAX_UPLOAD_BYTES", "app"]
@@ -158,16 +160,16 @@ def _to_json(pattern: Pattern) -> PatternOut:
     )
 
 
-@app.post("/patterns")
-def create_pattern(
+def _converted(
     image: Annotated[UploadFile, File(description="The image to convert")],
     width: Annotated[int, Form(ge=1, le=MAX_WIDTH, description="Width in stitches")],
     max_colours: Annotated[int, Form(ge=1, le=MAX_COLOURS, description="Most threads used")],
     fabric_count: Annotated[
         float, Form(gt=0, allow_inf_nan=False, description="Stitches per inch")
     ] = 14.0,
-) -> PatternOut:
-    """Convert an image into a DMC cross-stitch pattern."""
+) -> Pattern:
+    """The conversion inputs both routes share: validated, decoded and converted here, so
+    `POST /patterns` and `POST /patterns/pdf` accept and refuse exactly the same requests."""
     upload = image.file.read(MAX_UPLOAD_BYTES + 1)
     if len(upload) > MAX_UPLOAD_BYTES:
         raise _BodyTooLarge
@@ -178,6 +180,29 @@ def create_pattern(
             422,
             f"height would be {height} stitches at width {width}; at most {MAX_HEIGHT}",
         )
-    return _to_json(
-        convert_image(decoded, width=width, max_colours=max_colours, fabric_count=fabric_count)
+    return convert_image(decoded, width=width, max_colours=max_colours, fabric_count=fabric_count)
+
+
+@app.post("/patterns")
+def create_pattern(pattern: Annotated[Pattern, Depends(_converted)]) -> PatternOut:
+    """Convert an image into a DMC cross-stitch pattern."""
+    return _to_json(pattern)
+
+
+@app.post("/patterns/pdf", response_class=Response)
+def create_pattern_pdf(
+    pattern: Annotated[Pattern, Depends(_converted)],
+    variant: Annotated[Variant, Form(description="Colour or black and white")] = "colour",
+    paper: Annotated[Paper, Form(description="Paper size")] = "A4",
+    orientation: Annotated[Orientation, Form(description="Page orientation")] = "portrait",
+) -> Response:
+    """Convert an image as `POST /patterns` does and return it as a printable PDF chart.
+
+    The same request always gives the same bytes, so a client can ask again for the chart
+    of the pattern it shows; nothing is stored between requests.
+    """
+    return Response(
+        render_pdf(pattern, variant=variant, paper=paper, orientation=orientation),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="pattern.pdf"'},
     )
