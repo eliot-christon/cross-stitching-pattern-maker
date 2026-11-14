@@ -3,7 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_UPLOAD_BYTES, PATTERN_PDF_URL, PATTERNS_URL, convertImage, downloadPdf } from "./api";
 import type { Pattern } from "./pattern";
 
-const SETTINGS = { width: "40", maxColours: "4", fabricCount: "16" };
+const SETTINGS = {
+  width: "40",
+  maxColours: "4",
+  fabricCount: "16",
+  mergeDistance: "2.5",
+  minStitches: "10",
+  confettiSize: "1",
+};
 
 const PATTERN: Pattern = {
   width: 2,
@@ -13,6 +20,7 @@ const PATTERN: Pattern = {
   key: [{ code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol: "A" }],
   total_stitches: 1,
   finished_size: { width_in: 0.125, height_in: 0.0625, width_cm: 0.3175, height_cm: 0.15875 },
+  isolated_stitches: { before: 1, after: 1 },
 };
 
 function image(size?: number): File {
@@ -61,6 +69,9 @@ describe("convertImage", () => {
     expect(body.get("width")).toBe("40");
     expect(body.get("max_colours")).toBe("4");
     expect(body.get("fabric_count")).toBe("16");
+    expect(body.get("merge_distance")).toBe("2.5");
+    expect(body.get("min_stitches")).toBe("10");
+    expect(body.get("confetti_size")).toBe("1");
   });
 
   it("returns the pattern from a 200", async () => {
@@ -190,7 +201,7 @@ describe("downloadPdf", () => {
     const fetchMock = stubFetch(pdf());
     const file = image();
 
-    await downloadPdf(file, { width: "40", maxColours: "4", fabricCount: "14" }, OPTIONS);
+    await downloadPdf(file, { ...SETTINGS, fabricCount: "14" }, OPTIONS);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -202,6 +213,9 @@ describe("downloadPdf", () => {
     expect(body.get("width")).toBe("40");
     expect(body.get("max_colours")).toBe("4");
     expect(body.get("fabric_count")).toBe("14");
+    expect(body.get("merge_distance")).toBe("2.5");
+    expect(body.get("min_stitches")).toBe("10");
+    expect(body.get("confetti_size")).toBe("1");
     expect(body.get("variant")).toBe("bw");
     expect(body.get("paper")).toBe("A3");
     expect(body.get("orientation")).toBe("landscape");

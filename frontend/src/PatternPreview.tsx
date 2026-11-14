@@ -56,6 +56,9 @@ export function PatternPreview({ pattern }: { pattern: Pattern }) {
         <dd>{`${pattern.fabric_count} count`}</dd>
         <dt>Stitches</dt>
         <dd>{`${pattern.total_stitches} stitches in total`}</dd>
+        <dt>Isolated stitches</dt>
+        <dd>{`${pattern.isolated_stitches.before} before cleanup`}</dd>
+        <dd>{`${pattern.isolated_stitches.after} after cleanup`}</dd>
         <dt>Finished size</dt>
         <dd>{`${size.width_in.toFixed(1)} x ${size.height_in.toFixed(1)} in`}</dd>
         <dd>{`${size.width_cm.toFixed(1)} x ${size.height_cm.toFixed(1)} cm`}</dd>
