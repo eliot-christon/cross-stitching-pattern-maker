@@ -8,6 +8,8 @@ export interface KeyEntry {
   rgb: [number, number, number];
   stitches: number;
   skeins: number;
+  /** The chart symbol the backend gave this entry; shown as is, never reassigned. */
+  symbol: string;
 }
 
 export interface FinishedSize {

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import type { KeyEntry, Pattern } from "./pattern";
@@ -6,8 +6,8 @@ import { PatternPreview } from "./PatternPreview";
 
 function makePattern(overrides: Partial<Pattern> = {}): Pattern {
   const key: KeyEntry[] = [
-    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 5, skeins: 1 },
-    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 9, skeins: 2 },
+    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 5, skeins: 1, symbol: "Z" },
+    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 9, skeins: 2, symbol: "A" },
   ];
   return {
     width: 40,
@@ -91,11 +91,59 @@ describe("PatternPreview", () => {
     ]);
   });
 
-  it("has the column headers Code, Name, Stitches and Skeins", () => {
+  it("opens in the colour view and offers the symbol view", () => {
+    render(<PatternPreview pattern={makePattern()} />);
+
+    expect(screen.getByRole("radio", { name: "Colours" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Symbols" })).not.toBeChecked();
+    expect(screen.getByRole("img", { name: /^Pattern preview/ })).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: /^Pattern symbols/ })).not.toBeInTheDocument();
+  });
+
+  it("switches to the symbol view and back", () => {
+    render(<PatternPreview pattern={makePattern()} />);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Symbols" }));
+
+    expect(screen.getByRole("radio", { name: "Symbols" })).toBeChecked();
+    expect(screen.getByRole("img", { name: "Pattern symbols, 40 x 20 stitches" })).toBeVisible();
+    expect(screen.queryByRole("img", { name: /^Pattern preview/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Colours" }));
+
+    expect(screen.getByRole("img", { name: /^Pattern preview/ })).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: /^Pattern symbols/ })).not.toBeInTheDocument();
+  });
+
+  it("shows every key row with its symbol, as given and in order, in both views", () => {
+    render(<PatternPreview pattern={makePattern()} />);
+
+    const rowsByColumn = () => {
+      const [header, ...body] = keyRows().map((row) =>
+        Array.from(row.children).map((cell) => cell.textContent ?? ""),
+      );
+      if (header === undefined) {
+        throw new Error("header row missing");
+      }
+      return body.map((cells) => Object.fromEntries(header.map((name, i) => [name, cells[i]])));
+    };
+    const expected = [
+      { "": "", Symbol: "Z", Code: "321", Name: "Red", Stitches: "5", Skeins: "1" },
+      { "": "", Symbol: "A", Code: "310", Name: "Black", Stitches: "9", Skeins: "2" },
+    ];
+
+    expect(rowsByColumn()).toEqual(expected);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Symbols" }));
+
+    expect(rowsByColumn()).toEqual(expected);
+  });
+
+  it("has the column headers Symbol, Code, Name, Stitches and Skeins", () => {
     render(<PatternPreview pattern={makePattern()} />);
 
     const table = screen.getByRole("table", { name: "Thread key" });
-    for (const name of ["Code", "Name", "Stitches", "Skeins"]) {
+    for (const name of ["Symbol", "Code", "Name", "Stitches", "Skeins"]) {
       expect(within(table).getByRole("columnheader", { name })).toBeInTheDocument();
     }
   });

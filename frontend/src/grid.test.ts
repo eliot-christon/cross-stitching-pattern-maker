@@ -4,7 +4,7 @@ import { gridPixels } from "./grid";
 import type { KeyEntry } from "./pattern";
 
 function entry(code: string, rgb: [number, number, number]): KeyEntry {
-  return { code, name: `Thread ${code}`, rgb, stitches: 1, skeins: 1 };
+  return { code, name: `Thread ${code}`, rgb, stitches: 1, skeins: 1, symbol: code };
 }
 
 function cell(pixels: Uint8ClampedArray, index: number): number[] {

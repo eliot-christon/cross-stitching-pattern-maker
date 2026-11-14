@@ -10,8 +10,8 @@ const PATTERN: Pattern = {
   fabric_count: 14,
   grid: [[0, 1]],
   key: [
-    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1 },
-    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1 },
+    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "A" },
+    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol: "B" },
   ],
   total_stitches: 2,
   finished_size: { width_in: 0.14, height_in: 0.07, width_cm: 0.36, height_cm: 0.18 },
@@ -185,5 +185,135 @@ describe("UploadForm", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/cannot reach the server/i);
     expect(submitButton()).toBeEnabled();
+  });
+});
+
+describe("UploadForm PDF download", () => {
+  function pdfResponse(): Response {
+    return new Response("%PDF-1.4 chart", {
+      status: 200,
+      headers: { "Content-Type": "application/pdf" },
+    });
+  }
+
+  /** fetch answering the conversion with PATTERN and the PDF request with `pdf`. */
+  function stubBoth(pdf: () => Promise<Response>) {
+    const fetchMock = vi.fn((url: string) =>
+      url === "/api/patterns" ? Promise.resolve(json(200, PATTERN)) : pdf(),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  function stubSave() {
+    // jsdom has no object URLs: a subclass stands in, leaving the real URL untouched.
+    const createObjectURL = vi.fn(() => "blob:chart");
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static override createObjectURL = createObjectURL;
+        static override revokeObjectURL = vi.fn();
+      },
+    );
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    return { createObjectURL, click };
+  }
+
+  async function convert(width = "40") {
+    chooseFile();
+    fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: width } });
+    fireEvent.click(submitButton());
+    await screen.findByRole("table", { name: "Thread key" });
+  }
+
+  function downloadButton(): HTMLElement {
+    return screen.getByRole("button", { name: /pdf/i });
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("offers no download before a conversion", () => {
+    render(<UploadForm />);
+
+    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+  });
+
+  it("offers the download with colour, A4 and portrait chosen after a conversion", async () => {
+    stubBoth(() => Promise.resolve(pdfResponse()));
+    render(<UploadForm />);
+
+    await convert();
+
+    expect(downloadButton()).toHaveTextContent("Download PDF");
+    expect(downloadButton()).toBeEnabled();
+    expect(screen.getByLabelText("Chart")).toHaveValue("colour");
+    expect(screen.getByLabelText("Paper")).toHaveValue("A4");
+    expect(screen.getByLabelText("Orientation")).toHaveValue("portrait");
+    const papers = Array.from(
+      (screen.getByLabelText("Paper") as HTMLSelectElement).options,
+      (option) => option.value,
+    );
+    expect(papers).toEqual(["A2", "A3", "A4", "A5"]);
+  });
+
+  it("asks for the PDF of the preview shown, with the choices made, and saves it", async () => {
+    const fetchMock = stubBoth(() => Promise.resolve(pdfResponse()));
+    const { createObjectURL, click } = stubSave();
+    render(<UploadForm />);
+
+    await convert("40");
+    fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: "80" } });
+    fireEvent.change(screen.getByLabelText("Chart"), { target: { value: "bw" } });
+    fireEvent.change(screen.getByLabelText("Paper"), { target: { value: "A3" } });
+    fireEvent.change(screen.getByLabelText("Orientation"), { target: { value: "landscape" } });
+    fireEvent.click(downloadButton());
+
+    await vi.waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/patterns/pdf");
+    const body = init.body as FormData;
+    expect(body.get("width")).toBe("40");
+    expect(body.get("max_colours")).toBe("20");
+    expect(body.get("fabric_count")).toBe("14");
+    expect(body.get("variant")).toBe("bw");
+    expect(body.get("paper")).toBe("A3");
+    expect(body.get("orientation")).toBe("landscape");
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    const link = click.mock.contexts[0] as HTMLAnchorElement;
+    expect(link.download).toBe("pattern.pdf");
+    expect(link.href).toBe("blob:chart");
+  });
+
+  it("disables the button and says so while the PDF is being made", async () => {
+    let resolve: (response: Response) => void = () => undefined;
+    stubBoth(() => new Promise<Response>((done) => (resolve = done)));
+    stubSave();
+    render(<UploadForm />);
+    await convert();
+
+    fireEvent.click(downloadButton());
+
+    expect(await screen.findByRole("button", { name: "Preparing PDF..." })).toBeDisabled();
+
+    await act(async () => resolve(pdfResponse()));
+
+    expect(downloadButton()).toHaveTextContent("Download PDF");
+    expect(downloadButton()).toBeEnabled();
+  });
+
+  it("shows the API's message on a failed download and keeps the preview", async () => {
+    stubBoth(() =>
+      Promise.resolve(json(422, { detail: [{ loc: ["body", "paper"], msg: "bad paper" }] })),
+    );
+    render(<UploadForm />);
+    await convert();
+
+    fireEvent.click(downloadButton());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("paper: bad paper");
+    expect(screen.getByRole("table", { name: "Thread key" })).toBeInTheDocument();
   });
 });
