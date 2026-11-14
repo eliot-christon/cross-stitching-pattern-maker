@@ -32,6 +32,7 @@ const PATTERN: Pattern = {
   total_stitches: 1,
   finished_size: { width_in: 0.125, height_in: 0.0625, width_cm: 0.3175, height_cm: 0.15875 },
   isolated_stitches: { before: 1, after: 1 },
+  converted: null,
 };
 
 function image(size?: number): File {
