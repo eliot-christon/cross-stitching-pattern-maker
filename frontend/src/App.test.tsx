@@ -14,4 +14,12 @@ describe("App", () => {
 
     expect(title).toBeInTheDocument();
   });
+
+  it("puts the upload form on the page, with no pattern before a conversion", () => {
+    render(<App />);
+
+    expect(screen.getByLabelText("Image")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /convert/i })).toBeDisabled();
+    expect(screen.queryByRole("table", { name: "Thread key" })).not.toBeInTheDocument();
+  });
 });
