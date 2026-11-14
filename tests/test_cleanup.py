@@ -1,4 +1,4 @@
-"""Pattern cleanup: merging near-identical threads.
+"""Pattern cleanup steps: merging near-identical threads and pruning rare ones.
 
 Every case asserts the distances and counts it relies on, so a choice of threads that
 stops meeting a case's conditions fails loudly instead of passing for the wrong reason.
@@ -7,6 +7,7 @@ Drawing helpers and sample patterns: `cleanup_helpers.py`.
 
 import itertools
 import math
+from collections.abc import Mapping
 
 import numpy as np
 import pytest
@@ -14,6 +15,7 @@ from cleanup_helpers import (
     EVEN_PAIR,
     FABRIC_COUNT,
     NEAR,
+    RAMP,
     Legend,
     PatternFactory,
     all_bare,
@@ -31,12 +33,15 @@ from cleanup_helpers import (
     ramp_with_bare_fabric,
     shades,
     single_thread,
+    stitches_of,
 )
 
 from cross_stitch.pattern import (
     EMPTY,
+    Pattern,
     build_pattern,
     merge_similar_threads,
+    prune_rare_threads,
     stitches_per_skein,
 )
 from cross_stitch.threads import Thread, dmc_thread
@@ -308,4 +313,342 @@ def test_equal_patterns_built_separately_merge_the_same_way() -> None:
     assert_equal_patterns(
         merge_similar_threads(shades(), merge_distance=10.0),
         merge_similar_threads(shades(), merge_distance=10.0),
+    )
+
+
+# ===================================================================== rare threads
+
+# A, B and C of the contract: a rare grey B between white and black. B is 3799, a very dark
+# grey: nearer to 310 (black) than to Blanc in every layout below.
+B_NEAR_C = {"A": "Blanc", "B": "3799", "C": "310"}
+B_NEAR_A = {"A": "310", "B": "3799", "C": "Blanc"}
+
+# 16 x 10: A 100 stitches, B 3, C 50, 7 cells of bare fabric. One B sits inside A.
+RARE_TRIO = (
+    *(["A" * 10] * 9),
+    "AAAAAAAABA",
+    "ACCCCCCCCC",
+    *(["C" * 10] * 4),
+    "BCB.......",
+)
+
+# 16 x 10: A 100 stitches, C 50, B 5, 5 cells of bare fabric.
+FIVE_B_TRIO = (*(["A" * 10] * 10), *(["C" * 10] * 5), "BBBBB.....")
+
+# Two rare mid greys either side of L* 50, much nearer to each other than to black or
+# white: 317 (L* about 46) is nearer to 310, 169 (L* about 55) nearer to Blanc.
+RARE_PAIR = {"A": "310", "B": "317", "C": "Blanc", "D": "169"}
+
+# 10 x 16: A 100 stitches, C 50, B 3 and D 2 side by side, 5 cells of bare fabric.
+RARE_PAIR_ROWS = (
+    *(["A" * 16] * 6),
+    "AAAA" + "C" * 12,
+    *(["C" * 16] * 2),
+    "CCCCCCBBBDD.....",
+)
+
+
+def _assert_pruned_from(result: Pattern, original: Pattern, min_stitches: int) -> None:
+    """The entries of the result are those of the input with at least `min_stitches`
+    stitches, or the input's first entry alone when none has; each kept entry keeps all
+    its cells and only gains, and each pruned entry's cells all move to one kept entry."""
+    assert_cleaned_from(result, original)
+    kept = [code for code, count in counted(original) if count >= min_stitches]
+    assert set(codes_of(result)) == set(kept or codes_of(original)[:1])
+    after = codes_of(result)
+    for position, entry in enumerate(original.key):
+        targets = np.unique(result.grid[original.grid == position])
+        assert targets.size == 1, entry.thread.code
+        if entry.thread.code in after:
+            assert after[int(targets[0])] == entry.thread.code
+            assert result.key[int(targets[0])].stitches >= entry.stitches
+
+
+# -------------------------------------------------------------------- min stitches 0, 1
+
+
+@pytest.mark.parametrize("min_stitches", [0, 1])
+@pytest.mark.parametrize(
+    "make",
+    [near_uneven, ramp_with_bare_fabric, all_bare, single_thread, one_cell, shades],
+    ids=["near-pair", "ramp-with-bare-fabric", "all-bare", "single-thread", "1x1", "shades"],
+)
+def test_min_stitches_zero_or_one_returns_the_input_unchanged(
+    make: PatternFactory, min_stitches: int
+) -> None:
+    original = make()
+    assert_equal_patterns(prune_rare_threads(original, min_stitches=min_stitches), make())
+
+
+# ---------------------------------------------------------------------- the nearest kept
+
+
+def test_a_rare_entry_moves_to_the_nearest_kept_entry_not_the_largest() -> None:
+    assert distance("3799", "310") < distance("3799", "Blanc")
+    original = drawn(RARE_TRIO, B_NEAR_C)
+    assert counted(original) == [("Blanc", 100), ("310", 50), ("3799", 3)]
+
+    result = prune_rare_threads(original, min_stitches=5)
+
+    assert counted(result) == [("Blanc", 100), ("310", 53)]
+    former_b = original.grid == 2
+    assert np.count_nonzero(former_b) == 3
+    assert np.all(result.grid[former_b] == 1)
+    assert drawing(result, B_NEAR_C) == [row.replace("B", "C") for row in RARE_TRIO]
+    _assert_pruned_from(result, original, 5)
+
+
+def test_a_rare_entry_nearest_to_the_largest_entry_moves_to_it() -> None:
+    assert distance("3799", "310") < distance("3799", "Blanc")
+    original = drawn(RARE_TRIO, B_NEAR_A)
+    assert counted(original) == [("310", 100), ("Blanc", 50), ("3799", 3)]
+
+    result = prune_rare_threads(original, min_stitches=5)
+
+    assert counted(result) == [("310", 103), ("Blanc", 50)]
+    former_b = original.grid == 2
+    assert np.all(result.grid[former_b] == 0)
+    assert drawing(result, B_NEAR_A) == [row.replace("B", "A") for row in RARE_TRIO]
+    _assert_pruned_from(result, original, 5)
+
+
+@pytest.mark.parametrize("min_stitches", [4, 5], ids=["one-under", "exactly"])
+def test_an_entry_with_exactly_min_stitches_is_kept(min_stitches: int) -> None:
+    original = drawn(FIVE_B_TRIO, B_NEAR_C)
+    assert counted(original) == [("Blanc", 100), ("310", 50), ("3799", 5)]
+    result = prune_rare_threads(original, min_stitches=min_stitches)
+    assert_equal_patterns(result, drawn(FIVE_B_TRIO, B_NEAR_C))
+
+
+@pytest.mark.parametrize(
+    ("min_stitches", "expected"),
+    [
+        (6, [("Blanc", 100), ("310", 55)]),
+        (50, [("Blanc", 100), ("310", 55)]),
+        (51, [("Blanc", 155)]),
+        (100, [("Blanc", 155)]),
+        (101, [("Blanc", 155)]),
+        (1000, [("Blanc", 155)]),
+    ],
+    ids=["one-past-b", "exactly-c", "one-past-c", "exactly-a", "one-past-a", "far-past-a"],
+)
+def test_each_threshold_keeps_exactly_the_entries_at_or_above_it(
+    min_stitches: int, expected: list[tuple[str, int]]
+) -> None:
+    assert distance("3799", "310") < distance("3799", "Blanc")
+    original = drawn(FIVE_B_TRIO, B_NEAR_C)
+    assert counted(original) == [("Blanc", 100), ("310", 50), ("3799", 5)]
+    result = prune_rare_threads(original, min_stitches=min_stitches)
+    assert counted(result) == expected
+    _assert_pruned_from(result, original, min_stitches)
+
+
+def test_two_rare_entries_never_go_to_each_other() -> None:
+    # B and D are each other's nearest thread, but both are under the threshold, so each
+    # goes to its own nearest kept entry: B to A, D to C. Counting as entries are moved
+    # would let D join B and lift B to 5, keeping it.
+    rare, kept = ("317", "169"), ("310", "Blanc")
+    assert distance("317", "169") < min(distance(r, k) for r in rare for k in kept)
+    assert distance("317", "310") < distance("317", "Blanc")
+    assert distance("169", "Blanc") < distance("169", "310")
+    original = drawn(RARE_PAIR_ROWS, RARE_PAIR)
+    assert counted(original) == [("310", 100), ("Blanc", 50), ("317", 3), ("169", 2)]
+
+    result = prune_rare_threads(original, min_stitches=5)
+
+    assert counted(result) == [("310", 103), ("Blanc", 52)]
+    assert drawing(result, RARE_PAIR)[-1] == "CCCCCCAAACC....."
+    assert drawing(result, RARE_PAIR)[:-1] == list(RARE_PAIR_ROWS[:-1])
+    _assert_pruned_from(result, original, 5)
+
+
+@pytest.mark.parametrize("listed", [("1", "2"), ("2", "1")], ids=["1-first", "2-first"])
+@pytest.mark.parametrize(
+    ("counts", "before", "after"),
+    [
+        ({"1": 6, "2": 6}, ["1", "2", "3"], [("1", 8), ("2", 6)]),
+        ({"1": 6, "2": 9}, ["2", "1", "3"], [("2", 11), ("1", 6)]),
+    ],
+    ids=["equal-counts", "higher-code-first-in-key"],
+)
+def test_a_rare_entry_equally_near_two_kept_entries_goes_to_the_earlier_one(
+    listed: tuple[str, str],
+    counts: Mapping[str, int],
+    before: list[str],
+    after: list[tuple[str, int]],
+) -> None:
+    # Two test threads of one grey, so the rare red one is at exactly the same distance
+    # from both and only their key positions can decide.
+    grey = (120, 120, 120)
+    threads = [Thread(code, f"test {code}", grey) for code in listed]
+    threads.append(Thread("3", "test 3", (200, 60, 60)))
+    row = [index for index, code in enumerate(listed) for _ in range(counts[code])] + [2, 2]
+    pattern = build_pattern(np.array([row], dtype=np.intp), threads, FABRIC_COUNT)
+    assert codes_of(pattern) == before
+    assert pattern.key[2].stitches == 2
+
+    result = prune_rare_threads(pattern, min_stitches=5)
+
+    assert counted(result) == after
+    assert_cleaned_from(result, pattern)
+
+
+# ---------------------------------------------------------------- the first entry stays
+
+
+def test_a_threshold_above_every_count_leaves_the_first_entry_alone() -> None:
+    legend = {"A": "321", "B": "797", "C": "Blanc"}
+    original = drawn(["AAAB", "BBCC", "A..."], legend)
+    assert counted(original) == [("321", 4), ("797", 3), ("Blanc", 2)]
+
+    result = prune_rare_threads(original, min_stitches=10)
+
+    assert counted(result) == [("321", 9)]
+    assert drawing(result, legend) == ["AAAA", "AAAA", "A..."]
+    assert_cleaned_from(result, original)
+
+
+@pytest.mark.parametrize(
+    "legend",
+    [{"A": "3799", "B": "844"}, {"A": "844", "B": "3799"}],
+    ids=["3799-listed-first", "844-listed-first"],
+)
+def test_with_equal_counts_under_the_threshold_the_first_key_entry_stays(legend: Legend) -> None:
+    original = drawn(EVEN_PAIR, legend)
+    # Numeric code order puts 844 first; string order would put "3799" first.
+    assert counted(original) == [("844", 20), ("3799", 20)]
+    result = prune_rare_threads(original, min_stitches=100)
+    assert counted(result) == [("844", 40)]
+    assert np.array_equal(result.grid, np.zeros((4, 10), dtype=np.intp))
+    assert_cleaned_from(result, original)
+
+
+@pytest.mark.parametrize("make", [single_thread, one_cell], ids=["single-thread", "1x1"])
+def test_a_single_thread_is_kept_whatever_the_threshold(make: PatternFactory) -> None:
+    assert_equal_patterns(prune_rare_threads(make(), min_stitches=1000), make())
+
+
+def test_a_pruned_entry_takes_its_skeins_from_the_merged_count() -> None:
+    # A fills exactly one skein; one more stitch from B needs a second.
+    per_skein = stitches_per_skein(FABRIC_COUNT)
+    original = drawn(["A" * per_skein + "B"], NEAR)
+    assert [(e.stitches, e.skeins) for e in original.key] == [(per_skein, 1), (1, 1)]
+    result = prune_rare_threads(original, min_stitches=2)
+    assert [(e.thread.code, e.stitches, e.skeins) for e in result.key] == [
+        ("3799", per_skein + 1, 2)
+    ]
+
+
+# ------------------------------------------------------------------------- bare fabric
+
+
+def test_bare_fabric_cells_stay_bare_after_pruning() -> None:
+    # A (3799, 3 stitches) is under 4 and goes to 413, the nearer of the two kept greys.
+    original = ramp_with_bare_fabric()
+    assert counted(original) == [("317", 4), ("413", 4), ("3799", 3)]
+    assert distance("3799", "413") < distance("3799", "317")
+
+    result = prune_rare_threads(original, min_stitches=4)
+
+    assert counted(result) == [("413", 7), ("317", 4)]
+    assert drawing(result, dict(zip("ABC", RAMP, strict=True))) == [
+        "B.BBC",
+        "..BCC",
+        "BBB.C",
+    ]
+    assert np.array_equal(result.grid == EMPTY, original.grid == EMPTY)
+    _assert_pruned_from(result, original, 4)
+
+
+def test_a_rare_stitch_alone_on_bare_fabric_is_moved_not_removed() -> None:
+    original = drawn(["AAA.", "AA..", "...B"], NEAR, fabric_count=18.0)
+    assert counted(original) == [("3799", 5), ("844", 1)]
+
+    result = prune_rare_threads(original, min_stitches=2)
+
+    assert drawing(result, NEAR) == ["AAA.", "AA..", "...A"]
+    assert result.total_stitches == 6
+    assert result.fabric_count == 18.0
+    _assert_pruned_from(result, original, 2)
+
+
+@pytest.mark.parametrize("min_stitches", [0, 1, 5, 1000])
+def test_a_pattern_without_stitches_is_returned_empty_by_pruning(min_stitches: int) -> None:
+    result = prune_rare_threads(all_bare(), min_stitches=min_stitches)
+    assert not result.key
+    assert result.total_stitches == 0
+    assert result.grid.shape == (2, 4)
+    assert np.all(result.grid == EMPTY)
+
+
+# ---------------------------------------------------------------------- post-conditions
+
+PRUNING_THRESHOLDS = [10, 25, 50, 75, 2000]
+
+
+@pytest.mark.parametrize("min_stitches", PRUNING_THRESHOLDS)
+def test_pruning_keeps_exactly_the_entries_at_or_above_the_threshold(min_stitches: int) -> None:
+    original = shades()
+    assert min(stitches_of(original)) < min_stitches
+    result = prune_rare_threads(original, min_stitches=min_stitches)
+    assert len(result.key) < len(original.key)
+    _assert_pruned_from(result, original, min_stitches)
+
+
+@pytest.mark.parametrize("min_stitches", PRUNING_THRESHOLDS)
+def test_every_pruned_entry_moves_to_its_nearest_kept_entry(min_stitches: int) -> None:
+    original = shades()
+    result = prune_rare_threads(original, min_stitches=min_stitches)
+    after = codes_of(result)
+    pruned = [code for code in codes_of(original) if code not in after]
+    assert pruned
+    for position, code in enumerate(codes_of(original)):
+        if code in after:
+            continue
+        targets = np.unique(result.grid[original.grid == position])
+        assert targets.size == 1, code
+        target = after[int(targets[0])]
+        nearest = min(distance(code, other) for other in after)
+        assert distance(code, target) <= nearest + 1e-9, (code, target)
+
+
+# ------------------------------------------------------------------------ invalid input
+
+
+@pytest.mark.parametrize("min_stitches", [-1, -1000], ids=["minus-1", "minus-1000"])
+@pytest.mark.parametrize("make", [near_uneven, all_bare], ids=["near-pair", "all-bare"])
+def test_a_negative_min_stitches_raises_value_error(
+    make: PatternFactory, min_stitches: int
+) -> None:
+    with pytest.raises(ValueError, match="min stitches"):
+        prune_rare_threads(make(), min_stitches=min_stitches)
+
+
+# ------------------------------------------------------------- purity and determinism
+
+
+def test_pruning_leaves_the_input_pattern_untouched() -> None:
+    original = shades()
+    grid = original.grid.copy()
+    key = original.key
+    result = prune_rare_threads(original, min_stitches=40)
+    assert len(result.key) < len(key)
+    assert np.array_equal(original.grid, grid)
+    assert original.key == key
+    assert not original.grid.flags.writeable
+    assert original.fabric_count == FABRIC_COUNT
+
+
+def test_the_same_pruning_twice_gives_the_same_pattern() -> None:
+    original = shades()
+    assert_equal_patterns(
+        prune_rare_threads(original, min_stitches=40),
+        prune_rare_threads(original, min_stitches=40),
+    )
+
+
+def test_equal_patterns_built_separately_prune_the_same_way() -> None:
+    assert_equal_patterns(
+        prune_rare_threads(shades(), min_stitches=40),
+        prune_rare_threads(shades(), min_stitches=40),
     )

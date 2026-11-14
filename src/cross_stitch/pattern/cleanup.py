@@ -1,4 +1,4 @@
-"""Key cleanup: merge threads a stitcher cannot tell apart.
+"""Key cleanup: merge threads a stitcher cannot tell apart, fold rare threads into others.
 
 Every step rewrites which thread each key entry's cells use and hands the grid back to
 `build_pattern`, so counts, skeins and key order follow from the grid. Colours are compared
@@ -12,8 +12,9 @@ import numpy.typing as npt
 
 from cross_stitch.colour import delta_e_2000_matrix, srgb_to_lab
 from cross_stitch.pattern.model import Pattern, build_pattern
+from cross_stitch.threads import nearest_indices
 
-__all__ = ["merge_similar_threads"]
+__all__ = ["merge_similar_threads", "prune_rare_threads"]
 
 
 def merge_similar_threads(pattern: Pattern, *, merge_distance: float) -> Pattern:
@@ -36,6 +37,29 @@ def merge_similar_threads(pattern: Pattern, *, merge_distance: float) -> Pattern
         [entry.stitches for entry in pattern.key],
         merge_distance,
     )
+    return _reassign(pattern, owner)
+
+
+def prune_rare_threads(pattern: Pattern, *, min_stitches: int) -> Pattern:
+    """Move every entry with fewer than `min_stitches` stitches onto its nearest kept entry.
+
+    Kept entries are those with at least `min_stitches` stitches in the input, and always
+    the first key entry, so a threshold above every count leaves a one-thread pattern. Each
+    other entry takes the kept thread nearest to its own in CIEDE2000 (ties to the earlier
+    key entry). Counts are read once from the input, so a pruned entry is never a target and
+    the order of processing does not matter. No cell becomes bare fabric. `min_stitches` 0
+    or 1 returns the pattern unchanged.
+    """
+    if min_stitches < 0:
+        raise ValueError(f"min stitches must be >= 0, got {min_stitches!r}")
+    if not pattern.key:
+        return pattern
+    kept = [0] + [i for i, entry in enumerate(pattern.key) if i and entry.stitches >= min_stitches]
+    if len(kept) == len(pattern.key):
+        return pattern
+    lab = srgb_to_lab([entry.thread.rgb for entry in pattern.key])
+    nearest = nearest_indices(lab, lab[kept])
+    owner = [i if i in kept else kept[int(nearest[i])] for i in range(len(pattern.key))]
     return _reassign(pattern, owner)
 
 
