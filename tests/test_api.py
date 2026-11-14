@@ -11,7 +11,15 @@ from starlette.formparsers import MultiPartParser
 
 from cross_stitch.api.app import MAX_COLOURS, MAX_UPLOAD_BYTES, app
 from cross_stitch.export import SYMBOLS, key_symbols, render_pdf
-from cross_stitch.pattern import EMPTY, convert_image
+from cross_stitch.pattern import (
+    EMPTY,
+    CleanedPattern,
+    Pattern,
+    clean_pattern,
+    convert_image,
+    isolated_stitches,
+    merge_similar_threads,
+)
 from cross_stitch.threads import dmc_thread
 
 client = TestClient(app)
@@ -310,3 +318,225 @@ def test_the_pdf_refuses_uploads_patterns_refuses_alike(upload: bytes | None, st
 
 def test_the_json_route_is_unchanged_by_the_pdf_fields() -> None:
     assert _stripes_response(variant="bw", paper="A3") == _stripes_response()
+
+
+# --- cleanup settings ------------------------------------------------------------------------
+
+type Pixel = tuple[int, int]
+
+# All three cleanup settings on (`_cleaned_cleanable` passes the same values to the core),
+# and all three at their upper limits.
+CLEANUP_FORM = {"merge_distance": "3", "min_stitches": "5", "confetti_size": "1"}
+CLEANUP_MAX_FORM = {"merge_distance": "10", "min_stitches": "1000", "confetti_size": "10"}
+
+
+def _field_image(shape: Pixel, marks: dict[Pixel, str]) -> Image.Image:
+    """An image of `shape` (height, width) pixels in DMC 797 (royal blue), with each pixel
+    of `marks`, (row, column) -> DMC code, in that thread's colour."""
+    pixels = np.full((*shape, 3), dmc_thread("797").rgb, dtype=np.uint8)
+    for pixel, code in marks.items():
+        pixels[pixel] = dmc_thread(code).rgb
+    return Image.fromarray(pixels)
+
+
+def _lone_pixel() -> Image.Image:
+    """7 x 9 royal blue with one red (321) pixel in the middle: one isolated stitch."""
+    return _field_image((7, 9), {(3, 4): "321"})
+
+
+def _block(code: str, rows: range, columns: range) -> dict[Pixel, str]:
+    return {(row, column): code for row in rows for column in columns}
+
+
+def _cleanable() -> Image.Image:
+    """8 x 12 royal blue with work for each cleanup step: two 3 x 3 blocks of near-identical
+    greys (3799 and 844) to merge, one white (Blanc) pixel of confetti, and a red (321)
+    domino too small for `min_stitches` 5 but too large for `confetti_size` 1."""
+    marks = {
+        (1, 2): "Blanc",
+        (1, 8): "321",
+        (1, 9): "321",
+        **_block("3799", range(4, 7), range(1, 4)),
+        **_block("844", range(4, 7), range(6, 9)),
+    }
+    return _field_image((8, 12), marks)
+
+
+def _fields_for(image: Image.Image, max_colours: int, **extra: str) -> dict[str, str]:
+    return {"width": str(image.width), "max_colours": str(max_colours), **extra}
+
+
+def _core_converted(image: Image.Image, max_colours: int) -> Pattern:
+    return convert_image(image, width=image.width, max_colours=max_colours, fabric_count=14)
+
+
+def _cleaned_cleanable() -> CleanedPattern:
+    """What the core makes of `_cleanable()` with `CLEANUP_FORM`."""
+    pattern = _core_converted(_cleanable(), 5)
+    return clean_pattern(pattern, merge_distance=3.0, min_stitches=5, confetti_size=1)
+
+
+def _grid_json(pattern: Pattern) -> list[list[int | None]]:
+    return [[None if cell == EMPTY else cell for cell in row] for row in pattern.grid.tolist()]
+
+
+def _key_json(pattern: Pattern) -> list[dict[str, Any]]:
+    symbols = key_symbols(pattern.key)
+    return [
+        {
+            "code": entry.thread.code,
+            "name": entry.thread.name,
+            "rgb": list(entry.thread.rgb),
+            "stitches": entry.stitches,
+            "skeins": entry.skeins,
+            "symbol": symbol,
+        }
+        for entry, symbol in zip(pattern.key, symbols, strict=True)
+    ]
+
+
+def _body(image: Image.Image, max_colours: int, **extra: str) -> dict[str, Any]:
+    response = _post(_png(image), _fields_for(image, max_colours, **extra))
+    assert response.status_code == 200, response.text
+    body: dict[str, Any] = response.json()
+    return body
+
+
+def test_confetti_size_gives_the_pattern_and_counts_the_core_cleans_to() -> None:
+    converted = _core_converted(_lone_pixel(), 2)
+    cleaned = clean_pattern(converted, merge_distance=0.0, min_stitches=0, confetti_size=1)
+    # The case has confetti to remove.
+    assert (cleaned.isolated_before, cleaned.isolated_after) == (1, 0)
+    assert _grid_json(cleaned.pattern) != _grid_json(converted)
+
+    body = _body(_lone_pixel(), 2, confetti_size="1")
+
+    assert body["grid"] == _grid_json(cleaned.pattern)
+    assert body["key"] == _key_json(cleaned.pattern)
+    assert body["total_stitches"] == cleaned.pattern.total_stitches
+    assert body["isolated_stitches"] == {
+        "before": cleaned.isolated_before,
+        "after": cleaned.isolated_after,
+    }
+
+
+def test_without_cleanup_fields_the_pattern_is_the_converted_one() -> None:
+    converted = _core_converted(_lone_pixel(), 2)
+    assert isolated_stitches(converted) == 1
+
+    body = _body(_lone_pixel(), 2)
+
+    assert body["grid"] == _grid_json(converted)
+    assert body["key"] == _key_json(converted)
+    assert body["isolated_stitches"] == {"before": 1, "after": 1}
+
+
+def test_the_stripes_have_no_isolated_stitch() -> None:
+    assert _stripes_response()["isolated_stitches"] == {"before": 0, "after": 0}
+
+
+def test_cleanup_fields_sent_as_zero_give_the_same_body_as_none() -> None:
+    zeros = {"merge_distance": "0", "min_stitches": "0", "confetti_size": "0"}
+    assert _stripes_response(**zeros) == _stripes_response()
+    assert _body(_lone_pixel(), 2, **zeros) == _body(_lone_pixel(), 2)
+
+
+def test_all_three_cleanup_settings_give_the_pattern_the_core_cleans_to() -> None:
+    converted = _core_converted(_cleanable(), 5)
+    cleaned = _cleaned_cleanable()
+    # Each step has work: the two greys merge, the white pixel is confetti, the red domino
+    # is pruned, leaving the field and the merged grey.
+    assert len(converted.key) == 5
+    assert len(merge_similar_threads(converted, merge_distance=3.0).key) == 4
+    assert isolated_stitches(converted) == 1
+    assert {entry.thread.code for entry in cleaned.pattern.key} == {"797", "844"}
+
+    body = _body(_cleanable(), 5, **CLEANUP_FORM)
+
+    assert body["grid"] == _grid_json(cleaned.pattern)
+    assert body["key"] == _key_json(cleaned.pattern)
+    assert body["total_stitches"] == cleaned.pattern.total_stitches
+    assert body["isolated_stitches"] == {
+        "before": cleaned.isolated_before,
+        "after": cleaned.isolated_after,
+    }
+
+
+def test_the_same_cleaned_request_twice_gives_identical_bodies() -> None:
+    assert _body(_cleanable(), 5, **CLEANUP_FORM) == _body(_cleanable(), 5, **CLEANUP_FORM)
+
+
+def test_the_pdf_is_exactly_what_the_core_renders_of_the_cleaned_pattern() -> None:
+    cleaned = _cleaned_cleanable()
+    # The cleaned chart is not the uncleaned one, so the route cannot pass by skipping it.
+    assert render_pdf(cleaned.pattern) != render_pdf(_core_converted(_cleanable(), 5))
+
+    response = _post_pdf(_png(_cleanable()), _fields_for(_cleanable(), 5, **CLEANUP_FORM))
+
+    assert response.status_code == 200, response.text
+    assert response.content == render_pdf(cleaned.pattern)
+
+
+def test_the_pdf_of_cleaned_settings_follows_the_chart_choices_too() -> None:
+    fields = _fields_for(_cleanable(), 5, variant="bw", paper="A5", **CLEANUP_FORM)
+    response = _post_pdf(_png(_cleanable()), fields)
+    assert response.status_code == 200, response.text
+    assert response.content == render_pdf(_cleaned_cleanable().pattern, variant="bw", paper="A5")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("merge_distance", "-1"),
+        ("merge_distance", "-0.001"),
+        ("merge_distance", "10.5"),
+        ("merge_distance", "10.001"),
+        ("merge_distance", "nan"),
+        ("merge_distance", "inf"),
+        ("merge_distance", "-inf"),
+        ("merge_distance", "abc"),
+        ("min_stitches", "-1"),
+        ("min_stitches", "1001"),
+        ("min_stitches", "2.5"),
+        ("min_stitches", "abc"),
+        ("confetti_size", "-1"),
+        ("confetti_size", "11"),
+        ("confetti_size", "1.5"),
+    ],
+)
+def test_a_refused_cleanup_setting_gives_the_same_422_naming_it_on_both_routes(
+    field: str, value: str
+) -> None:
+    fields = {"width": "40", "max_colours": "4", field: value}
+    by_json = _post(_png(_stripes()), fields)
+    by_pdf = _post_pdf(_png(_stripes()), fields)
+    assert by_json.status_code == by_pdf.status_code == 422
+    assert by_json.json() == by_pdf.json()
+    assert {tuple(error["loc"]) for error in by_json.json()["detail"]} == {("body", field)}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("merge_distance", "0"),
+        ("merge_distance", "10"),
+        ("min_stitches", "0"),
+        ("min_stitches", "1000"),
+        ("confetti_size", "0"),
+        ("confetti_size", "10"),
+    ],
+)
+def test_the_cleanup_limits_themselves_are_accepted_on_both_routes(field: str, value: str) -> None:
+    fields = _fields_for(_cleanable(), 5, **{field: value})
+    assert _post(_png(_cleanable()), fields).status_code == 200
+    assert _post_pdf(_png(_cleanable()), fields).status_code == 200
+
+
+def test_every_cleanup_setting_at_its_maximum_gives_the_core_pattern() -> None:
+    converted = _core_converted(_cleanable(), 5)
+    cleaned = clean_pattern(converted, merge_distance=10.0, min_stitches=1000, confetti_size=10)
+
+    body = _body(_cleanable(), 5, **CLEANUP_MAX_FORM)
+
+    assert body["grid"] == _grid_json(cleaned.pattern)
+    assert body["key"] == _key_json(cleaned.pattern)
