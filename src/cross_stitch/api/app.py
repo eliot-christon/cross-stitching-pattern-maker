@@ -8,9 +8,11 @@ decoding, and the JSON shape. Run locally with
 `uv run uvicorn cross_stitch.api.app:app --reload`.
 """
 
+import functools
 import io
 import json
 import warnings
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
@@ -20,7 +22,14 @@ from starlette.formparsers import MultiPartParser
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from cross_stitch.export import Orientation, Paper, Variant, key_symbols, render_pdf
-from cross_stitch.pattern import EMPTY, Pattern, convert_image, stitch_height
+from cross_stitch.pattern import (
+    EMPTY,
+    CleanedPattern,
+    Pattern,
+    clean_pattern,
+    convert_image,
+    stitch_height,
+)
 
 __all__ = ["MAX_UPLOAD_BYTES", "app"]
 
@@ -29,6 +38,9 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_WIDTH = 1000
 MAX_HEIGHT = 1000
 MAX_COLOURS = 100
+MAX_MERGE_DISTANCE = 10.0
+MAX_MIN_STITCHES = 1000
+MAX_CONFETTI_SIZE = 10
 # Room for the multipart framing and the form fields around the image.
 _MAX_BODY_BYTES = MAX_UPLOAD_BYTES + 64 * 1024
 _TOO_LARGE = f"the upload is larger than {MAX_UPLOAD_BYTES} bytes"
@@ -55,6 +67,13 @@ class FinishedSizeOut(BaseModel):
     height_cm: float
 
 
+class IsolatedStitchesOut(BaseModel):
+    """Stitched cells with no neighbour of the same thread, before and after cleanup."""
+
+    before: int
+    after: int
+
+
 class PatternOut(BaseModel):
     width: int
     height: int
@@ -64,6 +83,7 @@ class PatternOut(BaseModel):
     key: list[KeyEntryOut]
     total_stitches: int
     finished_size: FinishedSizeOut
+    isolated_stitches: IsolatedStitchesOut
 
 
 class _BodyTooLarge(HTTPException):
@@ -133,7 +153,8 @@ def _decode(upload: bytes) -> Image.Image:
         raise HTTPException(400, "the image has too many pixels") from error
 
 
-def _to_json(pattern: Pattern) -> PatternOut:
+def _to_json(cleaned: CleanedPattern) -> PatternOut:
+    pattern = cleaned.pattern
     return PatternOut(
         width=pattern.width,
         height=pattern.height,
@@ -157,6 +178,41 @@ def _to_json(pattern: Pattern) -> PatternOut:
             width_cm=pattern.width_cm,
             height_cm=pattern.height_cm,
         ),
+        isolated_stitches=IsolatedStitchesOut(
+            before=cleaned.isolated_before, after=cleaned.isolated_after
+        ),
+    )
+
+
+_Cleanup = Callable[[Pattern], CleanedPattern]
+
+
+def _cleanup(
+    merge_distance: Annotated[
+        float,
+        Form(
+            ge=0,
+            le=MAX_MERGE_DISTANCE,
+            allow_inf_nan=False,
+            description="Merge threads closer than this (CIEDE2000); 0 is off",
+        ),
+    ] = 0.0,
+    min_stitches: Annotated[
+        int,
+        Form(ge=0, le=MAX_MIN_STITCHES, description="Fold threads with fewer stitches; 0 is off"),
+    ] = 0,
+    confetti_size: Annotated[
+        int,
+        Form(ge=0, le=MAX_CONFETTI_SIZE, description="Merge clusters up to this size; 0 is off"),
+    ] = 0,
+) -> _Cleanup:
+    """The cleanup settings, taken by `_converted` so both routes share them: the core's
+    `clean_pattern` with those settings."""
+    return functools.partial(
+        clean_pattern,
+        merge_distance=merge_distance,
+        min_stitches=min_stitches,
+        confetti_size=confetti_size,
     )
 
 
@@ -164,10 +220,11 @@ def _converted(
     image: Annotated[UploadFile, File(description="The image to convert")],
     width: Annotated[int, Form(ge=1, le=MAX_WIDTH, description="Width in stitches")],
     max_colours: Annotated[int, Form(ge=1, le=MAX_COLOURS, description="Most threads used")],
+    cleanup: Annotated[_Cleanup, Depends(_cleanup)],
     fabric_count: Annotated[
         float, Form(gt=0, allow_inf_nan=False, description="Stitches per inch")
     ] = 14.0,
-) -> Pattern:
+) -> CleanedPattern:
     """The conversion inputs both routes share: validated, decoded and converted here, so
     `POST /patterns` and `POST /patterns/pdf` accept and refuse exactly the same requests."""
     upload = image.file.read(MAX_UPLOAD_BYTES + 1)
@@ -180,18 +237,20 @@ def _converted(
             422,
             f"height would be {height} stitches at width {width}; at most {MAX_HEIGHT}",
         )
-    return convert_image(decoded, width=width, max_colours=max_colours, fabric_count=fabric_count)
+    return cleanup(
+        convert_image(decoded, width=width, max_colours=max_colours, fabric_count=fabric_count)
+    )
 
 
 @app.post("/patterns")
-def create_pattern(pattern: Annotated[Pattern, Depends(_converted)]) -> PatternOut:
+def create_pattern(cleaned: Annotated[CleanedPattern, Depends(_converted)]) -> PatternOut:
     """Convert an image into a DMC cross-stitch pattern."""
-    return _to_json(pattern)
+    return _to_json(cleaned)
 
 
 @app.post("/patterns/pdf", response_class=Response)
 def create_pattern_pdf(
-    pattern: Annotated[Pattern, Depends(_converted)],
+    cleaned: Annotated[CleanedPattern, Depends(_converted)],
     variant: Annotated[Variant, Form(description="Colour or black and white")] = "colour",
     paper: Annotated[Paper, Form(description="Paper size")] = "A4",
     orientation: Annotated[Orientation, Form(description="Page orientation")] = "portrait",
@@ -202,7 +261,7 @@ def create_pattern_pdf(
     of the pattern it shows; nothing is stored between requests.
     """
     return Response(
-        render_pdf(pattern, variant=variant, paper=paper, orientation=orientation),
+        render_pdf(cleaned.pattern, variant=variant, paper=paper, orientation=orientation),
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="pattern.pdf"'},
     )

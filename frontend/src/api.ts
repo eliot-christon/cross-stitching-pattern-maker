@@ -15,6 +15,12 @@ export interface Settings {
   width: string;
   maxColours: string;
   fabricCount: string;
+  /** Merge threads closer than this (CIEDE2000); "0" is off. */
+  mergeDistance: string;
+  /** Fold threads with fewer stitches into their nearest kept thread; "0" is off. */
+  minStitches: string;
+  /** Merge clusters of one thread up to this many cells into their surroundings; "0" is off. */
+  confettiSize: string;
 }
 
 /** The PDF chart endpoint: the same inputs as `PATTERNS_URL` plus the chart options. */
@@ -50,6 +56,9 @@ async function post(
   body.append("width", settings.width);
   body.append("max_colours", settings.maxColours);
   body.append("fabric_count", settings.fabricCount);
+  body.append("merge_distance", settings.mergeDistance);
+  body.append("min_stitches", settings.minStitches);
+  body.append("confetti_size", settings.confettiSize);
   for (const [name, value] of Object.entries(extra)) {
     body.append(name, value);
   }

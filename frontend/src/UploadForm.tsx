@@ -40,6 +40,9 @@ export function UploadForm() {
   const [width, setWidth] = useState("100");
   const [maxColours, setMaxColours] = useState("20");
   const [fabricCount, setFabricCount] = useState("14");
+  const [mergeDistance, setMergeDistance] = useState("0");
+  const [minStitches, setMinStitches] = useState("0");
+  const [confettiSize, setConfettiSize] = useState("0");
   const [state, setState] = useState<State>({ kind: "idle" });
   const [chart, setChart] = useState<ChartOptions>(DEFAULT_CHART);
   const [download, setDownload] = useState<Download>({ kind: "idle" });
@@ -51,7 +54,8 @@ export function UploadForm() {
     if (image === null || busy) {
       return;
     }
-    const source = { image, settings: { width, maxColours, fabricCount } };
+    const settings = { width, maxColours, fabricCount, mergeDistance, minStitches, confettiSize };
+    const source = { image, settings };
     setState({ kind: "busy" });
     setDownload({ kind: "idle" });
     const result = await convertImage(source.image, source.settings);
@@ -110,6 +114,33 @@ export function UploadForm() {
             step="any"
             value={fabricCount}
             onChange={(event) => setFabricCount(event.target.value)}
+          />
+        </label>
+        <label>
+          Merge similar threads (colour distance)
+          <input
+            type="number"
+            step="any"
+            value={mergeDistance}
+            onChange={(event) => setMergeDistance(event.target.value)}
+          />
+        </label>
+        <label>
+          Minimum stitches per thread
+          <input
+            type="number"
+            step="any"
+            value={minStitches}
+            onChange={(event) => setMinStitches(event.target.value)}
+          />
+        </label>
+        <label>
+          Largest confetti cluster (stitches)
+          <input
+            type="number"
+            step="any"
+            value={confettiSize}
+            onChange={(event) => setConfettiSize(event.target.value)}
           />
         </label>
         <button type="submit" disabled={image === null || busy}>
