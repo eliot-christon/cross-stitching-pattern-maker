@@ -1,5 +1,6 @@
-"""The HTTP API: `POST /patterns` turns an uploaded image into a DMC pattern as JSON, and
-`POST /patterns/pdf` turns the same inputs into a printable PDF chart.
+"""The HTTP API: `POST /patterns` turns an uploaded image into a DMC pattern as JSON,
+`POST /patterns/pdf` turns the same inputs into a printable PDF chart, and `GET /limits`
+says what the tunable inputs accept.
 
 Stateless: the upload is decoded in memory, converted by `cross_stitch.pattern`, and
 returned as JSON or rendered by `cross_stitch.export`; nothing is kept between requests.
@@ -13,6 +14,7 @@ import io
 import json
 import warnings
 from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
@@ -33,14 +35,30 @@ from cross_stitch.pattern import (
 
 __all__ = ["MAX_UPLOAD_BYTES", "app"]
 
+
+@dataclass(frozen=True)
+class _Setting[T: (int, float)]:
+    """What one tunable form field accepts, `min` to `max` inclusive, and what a client
+    offers: a `step` for a slider and a `default` to start from. The `Form` constraints
+    of the routes and `GET /limits` both read these, so they cannot disagree."""
+
+    min: T
+    max: T
+    step: T
+    default: T
+
+
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 """Largest accepted image upload."""
-MAX_WIDTH = 1000
 MAX_HEIGHT = 1000
-MAX_COLOURS = 100
-MAX_MERGE_DISTANCE = 10.0
-MAX_MIN_STITCHES = 1000
-MAX_CONFETTI_SIZE = 10
+_WIDTH = _Setting(min=1, max=1000, step=1, default=100)
+_MAX_COLOURS = _Setting(min=1, max=100, step=1, default=20)
+MAX_COLOURS = _MAX_COLOURS.max
+# A step of 0.1 is about a twentieth of a just-noticeable difference (CIEDE2000 about
+# 2.3); the routes accept any finite value in range.
+_MERGE_DISTANCE = _Setting(min=0.0, max=10.0, step=0.1, default=0.0)
+_MIN_STITCHES = _Setting(min=0, max=1000, step=1, default=0)
+_CONFETTI_SIZE = _Setting(min=0, max=10, step=1, default=0)
 # Room for the multipart framing and the form fields around the image.
 _MAX_BODY_BYTES = MAX_UPLOAD_BYTES + 64 * 1024
 _TOO_LARGE = f"the upload is larger than {MAX_UPLOAD_BYTES} bytes"
@@ -84,6 +102,34 @@ class PatternOut(BaseModel):
     total_stitches: int
     finished_size: FinishedSizeOut
     isolated_stitches: IsolatedStitchesOut
+
+
+class SettingOut(BaseModel):
+    min: int | float
+    max: int | float
+    step: int | float
+    default: int | float
+
+
+class LimitsOut(BaseModel):
+    max_upload_bytes: int
+    settings: dict[str, SettingOut]
+    """Keyed by the form field name of `POST /patterns`."""
+
+
+_LIMITS = LimitsOut(
+    max_upload_bytes=MAX_UPLOAD_BYTES,
+    settings={
+        name: SettingOut(**asdict(setting))
+        for name, setting in {
+            "width": _WIDTH,
+            "max_colours": _MAX_COLOURS,
+            "merge_distance": _MERGE_DISTANCE,
+            "min_stitches": _MIN_STITCHES,
+            "confetti_size": _CONFETTI_SIZE,
+        }.items()
+    },
+)
 
 
 class _BodyTooLarge(HTTPException):
@@ -191,20 +237,28 @@ def _cleanup(
     merge_distance: Annotated[
         float,
         Form(
-            ge=0,
-            le=MAX_MERGE_DISTANCE,
+            ge=_MERGE_DISTANCE.min,
+            le=_MERGE_DISTANCE.max,
             allow_inf_nan=False,
             description="Merge threads closer than this (CIEDE2000); 0 is off",
         ),
-    ] = 0.0,
+    ] = _MERGE_DISTANCE.default,
     min_stitches: Annotated[
         int,
-        Form(ge=0, le=MAX_MIN_STITCHES, description="Fold threads with fewer stitches; 0 is off"),
-    ] = 0,
+        Form(
+            ge=_MIN_STITCHES.min,
+            le=_MIN_STITCHES.max,
+            description="Fold threads with fewer stitches; 0 is off",
+        ),
+    ] = _MIN_STITCHES.default,
     confetti_size: Annotated[
         int,
-        Form(ge=0, le=MAX_CONFETTI_SIZE, description="Merge clusters up to this size; 0 is off"),
-    ] = 0,
+        Form(
+            ge=_CONFETTI_SIZE.min,
+            le=_CONFETTI_SIZE.max,
+            description="Merge clusters up to this size; 0 is off",
+        ),
+    ] = _CONFETTI_SIZE.default,
 ) -> _Cleanup:
     """The cleanup settings, taken by `_converted` so both routes share them: the core's
     `clean_pattern` with those settings."""
@@ -218,8 +272,11 @@ def _cleanup(
 
 def _converted(
     image: Annotated[UploadFile, File(description="The image to convert")],
-    width: Annotated[int, Form(ge=1, le=MAX_WIDTH, description="Width in stitches")],
-    max_colours: Annotated[int, Form(ge=1, le=MAX_COLOURS, description="Most threads used")],
+    width: Annotated[int, Form(ge=_WIDTH.min, le=_WIDTH.max, description="Width in stitches")],
+    max_colours: Annotated[
+        int,
+        Form(ge=_MAX_COLOURS.min, le=_MAX_COLOURS.max, description="Most threads used"),
+    ],
     cleanup: Annotated[_Cleanup, Depends(_cleanup)],
     fabric_count: Annotated[
         float, Form(gt=0, allow_inf_nan=False, description="Stitches per inch")
@@ -240,6 +297,13 @@ def _converted(
     return cleanup(
         convert_image(decoded, width=width, max_colours=max_colours, fabric_count=fabric_count)
     )
+
+
+@app.get("/limits")
+def limits() -> LimitsOut:
+    """What the tunable inputs of `POST /patterns` accept, keyed by form field, with a
+    slider step and a starting value for each, and the largest image upload."""
+    return _LIMITS
 
 
 @app.post("/patterns")
