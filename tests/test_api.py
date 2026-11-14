@@ -9,7 +9,8 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from starlette.formparsers import MultiPartParser
 
-from cross_stitch.api.app import MAX_UPLOAD_BYTES, app
+from cross_stitch.api.app import MAX_COLOURS, MAX_UPLOAD_BYTES, app
+from cross_stitch.export import SYMBOLS, key_symbols
 from cross_stitch.pattern import EMPTY, convert_image
 from cross_stitch.threads import dmc_thread
 
@@ -60,9 +61,19 @@ def test_golden_stripes_give_four_threads_of_200_stitches() -> None:
     assert all(len(row) == 40 for row in body["grid"])
 
 
+def test_golden_stripes_key_entries_carry_the_first_four_symbols_in_order() -> None:
+    body = _stripes_response()
+    assert [entry["symbol"] for entry in body["key"]] == list(SYMBOLS[:4])
+
+
+def test_the_symbol_list_covers_the_maximum_number_of_colours() -> None:
+    assert len(SYMBOLS) == MAX_COLOURS
+
+
 def test_body_is_exactly_what_the_core_returns() -> None:
     body = _stripes_response(fabric_count="18")
     pattern = convert_image(_stripes(), width=40, max_colours=4, fabric_count=18)
+    symbols = key_symbols(pattern.key)
     assert body["key"] == [
         {
             "code": entry.thread.code,
@@ -70,8 +81,9 @@ def test_body_is_exactly_what_the_core_returns() -> None:
             "rgb": list(entry.thread.rgb),
             "stitches": entry.stitches,
             "skeins": entry.skeins,
+            "symbol": symbol,
         }
-        for entry in pattern.key
+        for entry, symbol in zip(pattern.key, symbols, strict=True)
     ]
     assert body["grid"] == [
         [None if cell == EMPTY else cell for cell in row] for row in pattern.grid.tolist()
