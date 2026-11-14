@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MAX_UPLOAD_BYTES, PATTERNS_URL, convertImage } from "./api";
+import { MAX_UPLOAD_BYTES, PATTERN_PDF_URL, PATTERNS_URL, convertImage, downloadPdf } from "./api";
 import type { Pattern } from "./pattern";
 
 const SETTINGS = { width: "40", maxColours: "4", fabricCount: "16" };
@@ -172,5 +172,88 @@ describe("convertImage", () => {
 
   it("uses the API's limit of 20 * 1024 * 1024 bytes", () => {
     expect(MAX_UPLOAD_BYTES).toBe(20 * 1024 * 1024);
+  });
+});
+
+describe("downloadPdf", () => {
+  const OPTIONS = { variant: "bw", paper: "A3", orientation: "landscape" } as const;
+
+  function pdf(): Response {
+    // A string body: jsdom's Blob is not the one Node's Response reads.
+    return new Response("%PDF-1.4 chart", {
+      status: 200,
+      headers: { "Content-Type": "application/pdf" },
+    });
+  }
+
+  it("posts the file, the settings and the chart options to the PDF URL", async () => {
+    const fetchMock = stubFetch(pdf());
+    const file = image();
+
+    await downloadPdf(file, { width: "40", maxColours: "4", fabricCount: "14" }, OPTIONS);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(PATTERN_PDF_URL);
+    expect(PATTERN_PDF_URL).toBe("/api/patterns/pdf");
+    expect(init.method).toBe("POST");
+    const body = init.body as FormData;
+    expect(body.get("image")).toBe(file);
+    expect(body.get("width")).toBe("40");
+    expect(body.get("max_colours")).toBe("4");
+    expect(body.get("fabric_count")).toBe("14");
+    expect(body.get("variant")).toBe("bw");
+    expect(body.get("paper")).toBe("A3");
+    expect(body.get("orientation")).toBe("landscape");
+  });
+
+  it("returns the PDF bytes of a 200", async () => {
+    stubFetch(pdf());
+
+    const result = await downloadPdf(image(), SETTINGS, OPTIONS);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(await result.pdf.text()).toBe("%PDF-1.4 chart");
+    }
+  });
+
+  it("names the field of a validation 422", async () => {
+    stubFetch(json(422, { detail: [{ loc: ["body", "width"], msg: "too big" }] }));
+
+    expect(await downloadPdf(image(), SETTINGS, OPTIONS)).toEqual({
+      ok: false,
+      message: "width: too big",
+    });
+  });
+
+  it("shows a string detail as is", async () => {
+    stubFetch(json(400, { detail: "the upload is not a decodable image" }));
+
+    expect(await downloadPdf(image(), SETTINGS, OPTIONS)).toEqual({
+      ok: false,
+      message: "the upload is not a decodable image",
+    });
+  });
+
+  it("refuses a file over the limit without any request", async () => {
+    const fetchMock = stubFetch(pdf());
+
+    const result = await downloadPdf(image(MAX_UPLOAD_BYTES + 1), SETTINGS, OPTIONS);
+
+    expect(result).toEqual({
+      ok: false,
+      message: "The image is larger than 20 MB, the most the server accepts.",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("says the server cannot be reached when fetch rejects", async () => {
+    stubFetch(new TypeError("Failed to fetch"));
+
+    expect(await downloadPdf(image(), SETTINGS, OPTIONS)).toEqual({
+      ok: false,
+      message: "Cannot reach the server. Is the API running?",
+    });
   });
 });
