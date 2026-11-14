@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { Limits } from "./api";
 import type { Pattern } from "./pattern";
 import { UploadForm } from "./UploadForm";
 
@@ -18,6 +19,20 @@ const PATTERN: Pattern = {
   isolated_stitches: { before: 2, after: 0 },
 };
 
+/** Limits unlike the API's real ones, so a number hard-coded in the page fails a test. */
+const LIMITS: Limits = {
+  max_upload_bytes: 1000,
+  settings: {
+    width: { min: 1, max: 500, step: 1, default: 100 },
+    max_colours: { min: 1, max: 100, step: 1, default: 7 },
+    merge_distance: { min: 0, max: 10, step: 0.5, default: 0 },
+    min_stitches: { min: 0, max: 1000, step: 1, default: 0 },
+    confetti_size: { min: 0, max: 10, step: 1, default: 0 },
+  },
+};
+
+const WIDTH = "Width (stitches)";
+const COLOURS = "Max colours";
 const MERGE = "Merge similar threads (colour distance)";
 const MIN_STITCHES = "Minimum stitches per thread";
 const CONFETTI = "Largest confetti cluster (stitches)";
@@ -27,6 +42,48 @@ function json(status: number, body: unknown): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+type Handler = (init?: RequestInit) => Promise<Response>;
+
+/**
+ * fetch answering `/api/limits` with LIMITS, and the conversion and PDF URLs with their
+ * handlers (a conversion of PATTERN by default).
+ */
+function stubApi(
+  handlers: { patterns?: Handler; pdf?: Handler } = {},
+): ReturnType<typeof vi.fn<(url: string, init?: RequestInit) => Promise<Response>>> {
+  const patterns = handlers.patterns ?? (() => Promise.resolve(json(200, PATTERN)));
+  const pdf = handlers.pdf ?? (() => Promise.reject(new Error("no PDF expected")));
+  const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+    if (url === "/api/limits") {
+      return Promise.resolve(json(200, LIMITS));
+    }
+    return url === "/api/patterns" ? patterns(init) : pdf(init);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** The bodies posted to `url`, in order. */
+function posted(fetchMock: ReturnType<typeof stubApi>, url: string): FormData[] {
+  return fetchMock.mock.calls
+    .filter(([calledUrl]) => calledUrl === url)
+    .map(([, init]) => init?.body as FormData);
+}
+
+/** Render the form and wait until the limits are in and it is shown. */
+async function renderForm() {
+  render(<UploadForm />);
+  await screen.findByLabelText("Image");
+}
+
+function numberField(name: string): HTMLElement {
+  return screen.getByRole("spinbutton", { name });
+}
+
+function slider(name: string): HTMLElement {
+  return screen.getByRole("slider", { name });
 }
 
 function chooseFile(): File {
@@ -43,16 +100,107 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("UploadForm", () => {
-  it("starts with the default settings and submit disabled until a file is chosen", () => {
+describe("UploadForm limits", () => {
+  it("shows a status and no form while the limits load", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
     render(<UploadForm />);
 
-    expect(screen.getByLabelText("Width (stitches)")).toHaveValue(100);
-    expect(screen.getByLabelText("Max colours")).toHaveValue(20);
+    expect(screen.getByRole("status")).toHaveTextContent(/loading the settings/i);
+    expect(screen.queryByRole("button", { name: /convert/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Image")).not.toBeInTheDocument();
+  });
+
+  it("says so, with no form, when the limits cannot be fetched", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))));
+    render(<UploadForm />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/cannot reach the server/i);
+    expect(screen.queryByLabelText("Image")).not.toBeInTheDocument();
+  });
+
+  it("asks for the limits once, at the limits URL", async () => {
+    const fetchMock = stubApi();
+    await renderForm();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/limits");
+  });
+
+  it("takes every slider's range, step and starting value from the limits", async () => {
+    stubApi();
+    await renderForm();
+
+    const width = slider(WIDTH);
+    expect(width).toHaveAttribute("min", "1");
+    expect(width).toHaveAttribute("max", "500");
+    expect(width).toHaveAttribute("step", "1");
+    expect(width).toHaveValue("100");
+    expect(numberField(WIDTH)).toHaveValue(100);
+    expect(slider(COLOURS)).toHaveValue("7");
+    expect(numberField(COLOURS)).toHaveValue(7);
+    expect(slider(MERGE)).toHaveAttribute("step", "0.5");
+    expect(slider(MERGE)).toHaveAttribute("max", "10");
+    expect(slider(MIN_STITCHES)).toHaveAttribute("max", "1000");
+    expect(slider(CONFETTI)).toHaveAttribute("max", "10");
+    for (const name of [MERGE, MIN_STITCHES, CONFETTI]) {
+      expect(numberField(name)).toHaveValue(0);
+    }
+  });
+
+  it("keeps fabric count a number field at 14, with no slider", async () => {
+    stubApi();
+    await renderForm();
+
     expect(screen.getByLabelText("Fabric count")).toHaveValue(14);
-    expect(screen.getByLabelText(MERGE)).toHaveValue(0);
-    expect(screen.getByLabelText(MIN_STITCHES)).toHaveValue(0);
-    expect(screen.getByLabelText(CONFETTI)).toHaveValue(0);
+    expect(screen.queryByRole("slider", { name: "Fabric count" })).not.toBeInTheDocument();
+  });
+
+  it("moves the number field with the slider and posts the slider's value", async () => {
+    const fetchMock = stubApi();
+    await renderForm();
+
+    chooseFile();
+    fireEvent.change(slider(CONFETTI), { target: { value: "3" } });
+    expect(numberField(CONFETTI)).toHaveValue(3);
+    fireEvent.click(submitButton());
+
+    await screen.findByRole("table", { name: "Thread key" });
+    expect(posted(fetchMock, "/api/patterns")[0]?.get("confetti_size")).toBe("3");
+  });
+
+  it("moves the slider with the number field", async () => {
+    stubApi();
+    await renderForm();
+
+    fireEvent.change(numberField(WIDTH), { target: { value: "250" } });
+
+    expect(slider(WIDTH)).toHaveValue("250");
+  });
+
+  it("refuses an image over the reported upload limit without converting", async () => {
+    const fetchMock = stubApi();
+    await renderForm();
+
+    const big = new File(["x".repeat(1001)], "big.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText("Image"), { target: { files: [big] } });
+    fireEvent.click(submitButton());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("larger than 1000 bytes");
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(0);
+  });
+});
+
+describe("UploadForm", () => {
+  it("starts with the default settings and submit disabled until a file is chosen", async () => {
+    stubApi();
+    await renderForm();
+
+    expect(numberField(WIDTH)).toHaveValue(100);
+    expect(numberField(COLOURS)).toHaveValue(7);
+    expect(screen.getByLabelText("Fabric count")).toHaveValue(14);
+    expect(numberField(MERGE)).toHaveValue(0);
+    expect(numberField(MIN_STITCHES)).toHaveValue(0);
+    expect(numberField(CONFETTI)).toHaveValue(0);
     expect(submitButton()).toBeDisabled();
 
     chooseFile();
@@ -61,24 +209,22 @@ describe("UploadForm", () => {
   });
 
   it("posts the chosen file with the values entered", async () => {
-    const fetchMock = vi.fn(() => Promise.resolve(json(200, PATTERN)));
-    vi.stubGlobal("fetch", fetchMock);
-    render(<UploadForm />);
+    const fetchMock = stubApi();
+    await renderForm();
 
     const file = chooseFile();
-    fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: "40" } });
-    fireEvent.change(screen.getByLabelText("Max colours"), { target: { value: "4" } });
+    fireEvent.change(numberField(WIDTH), { target: { value: "40" } });
+    fireEvent.change(numberField(COLOURS), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("Fabric count"), { target: { value: "16" } });
-    fireEvent.change(screen.getByLabelText(MERGE), { target: { value: "2.5" } });
-    fireEvent.change(screen.getByLabelText(MIN_STITCHES), { target: { value: "10" } });
-    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "3" } });
+    fireEvent.change(numberField(MERGE), { target: { value: "2.5" } });
+    fireEvent.change(numberField(MIN_STITCHES), { target: { value: "10" } });
+    fireEvent.change(numberField(CONFETTI), { target: { value: "3" } });
     fireEvent.click(submitButton());
 
     expect(await screen.findByRole("table", { name: "Thread key" })).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("/api/patterns");
-    const body = init.body as FormData;
+    const bodies = posted(fetchMock, "/api/patterns");
+    expect(bodies).toHaveLength(1);
+    const body = bodies[0] as FormData;
     expect((body.get("image") as File).name).toBe(file.name);
     expect(body.get("width")).toBe("40");
     expect(body.get("max_colours")).toBe("4");
@@ -88,17 +234,18 @@ describe("UploadForm", () => {
     expect(body.get("confetti_size")).toBe("3");
   });
 
-  it("posts the cleanup settings as 0 when left alone", async () => {
-    const fetchMock = vi.fn(() => Promise.resolve(json(200, PATTERN)));
-    vi.stubGlobal("fetch", fetchMock);
-    render(<UploadForm />);
+  it("posts the reported defaults when the settings are left alone", async () => {
+    const fetchMock = stubApi();
+    await renderForm();
 
     chooseFile();
     fireEvent.click(submitButton());
 
     await screen.findByRole("table", { name: "Thread key" });
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    const body = init.body as FormData;
+    const body = posted(fetchMock, "/api/patterns")[0] as FormData;
+    expect(body.get("width")).toBe("100");
+    expect(body.get("max_colours")).toBe("7");
+    expect(body.get("fabric_count")).toBe("14");
     expect(body.get("merge_distance")).toBe("0");
     expect(body.get("min_stitches")).toBe("0");
     expect(body.get("confetti_size")).toBe("0");
@@ -112,11 +259,11 @@ describe("UploadForm", () => {
         type: "less_than_equal",
       },
     ];
-    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(json(422, { detail }))));
-    render(<UploadForm />);
+    stubApi({ patterns: () => Promise.resolve(json(422, { detail })) });
+    await renderForm();
 
     chooseFile();
-    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "11" } });
+    fireEvent.change(numberField(CONFETTI), { target: { value: "11" } });
     fireEvent.click(submitButton());
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -126,16 +273,13 @@ describe("UploadForm", () => {
 
   it("shows a busy state while the request is in flight, then the preview", async () => {
     let resolve: (response: Response) => void = () => undefined;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        () =>
-          new Promise<Response>((r) => {
-            resolve = r;
-          }),
-      ),
-    );
-    render(<UploadForm />);
+    stubApi({
+      patterns: () =>
+        new Promise<Response>((r) => {
+          resolve = r;
+        }),
+    });
+    await renderForm();
 
     chooseFile();
     fireEvent.click(submitButton());
@@ -154,11 +298,11 @@ describe("UploadForm", () => {
   });
 
   it("shows the API's message on an error", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(() => Promise.resolve(json(400, { detail: "the upload is not a decodable image" }))),
-    );
-    render(<UploadForm />);
+    stubApi({
+      patterns: () =>
+        Promise.resolve(json(400, { detail: "the upload is not a decodable image" })),
+    });
+    await renderForm();
 
     chooseFile();
     fireEvent.click(submitButton());
@@ -169,12 +313,12 @@ describe("UploadForm", () => {
   });
 
   it("clears the error when the next submit succeeds", async () => {
-    const fetchMock = vi
-      .fn()
+    const patterns = vi
+      .fn<Handler>()
       .mockResolvedValueOnce(json(400, { detail: "the upload is not a decodable image" }))
       .mockResolvedValueOnce(json(200, PATTERN));
-    vi.stubGlobal("fetch", fetchMock);
-    render(<UploadForm />);
+    stubApi({ patterns });
+    await renderForm();
 
     chooseFile();
     fireEvent.click(submitButton());
@@ -187,12 +331,12 @@ describe("UploadForm", () => {
   });
 
   it("clears the previous preview when the next submit fails", async () => {
-    const fetchMock = vi
-      .fn()
+    const patterns = vi
+      .fn<Handler>()
       .mockResolvedValueOnce(json(200, PATTERN))
       .mockResolvedValueOnce(json(400, { detail: "the upload is not a decodable image" }));
-    vi.stubGlobal("fetch", fetchMock);
-    render(<UploadForm />);
+    stubApi({ patterns });
+    await renderForm();
 
     chooseFile();
     fireEvent.click(submitButton());
@@ -205,30 +349,29 @@ describe("UploadForm", () => {
   });
 
   it("posts a width of 0 as typed: the form does no range check", async () => {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        json(422, {
-          detail: [{ loc: ["body", "width"], msg: "Input should be greater than or equal to 1" }],
-        }),
-      ),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    render(<UploadForm />);
+    const fetchMock = stubApi({
+      patterns: () =>
+        Promise.resolve(
+          json(422, {
+            detail: [{ loc: ["body", "width"], msg: "Input should be greater than or equal to 1" }],
+          }),
+        ),
+    });
+    await renderForm();
 
     chooseFile();
-    fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: "0" } });
+    fireEvent.change(numberField(WIDTH), { target: { value: "0" } });
     fireEvent.click(submitButton());
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "width: Input should be greater than or equal to 1",
     );
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect((init.body as FormData).get("width")).toBe("0");
+    expect(posted(fetchMock, "/api/patterns")[0]?.get("width")).toBe("0");
   });
 
   it("shows a message, not a crash, when the server cannot be reached", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))));
-    render(<UploadForm />);
+    stubApi({ patterns: () => Promise.reject(new TypeError("Failed to fetch")) });
+    await renderForm();
 
     chooseFile();
     fireEvent.click(submitButton());
@@ -244,15 +387,6 @@ describe("UploadForm PDF download", () => {
       status: 200,
       headers: { "Content-Type": "application/pdf" },
     });
-  }
-
-  /** fetch answering the conversion with PATTERN and the PDF request with `pdf`. */
-  function stubBoth(pdf: () => Promise<Response>) {
-    const fetchMock = vi.fn((url: string) =>
-      url === "/api/patterns" ? Promise.resolve(json(200, PATTERN)) : pdf(),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    return fetchMock;
   }
 
   function stubSave() {
@@ -271,7 +405,7 @@ describe("UploadForm PDF download", () => {
 
   async function convert(width = "40") {
     chooseFile();
-    fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: width } });
+    fireEvent.change(numberField(WIDTH), { target: { value: width } });
     fireEvent.click(submitButton());
     await screen.findByRole("table", { name: "Thread key" });
   }
@@ -284,15 +418,16 @@ describe("UploadForm PDF download", () => {
     vi.restoreAllMocks();
   });
 
-  it("offers no download before a conversion", () => {
-    render(<UploadForm />);
+  it("offers no download before a conversion", async () => {
+    stubApi();
+    await renderForm();
 
     expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
   });
 
   it("offers the download with colour, A4 and portrait chosen after a conversion", async () => {
-    stubBoth(() => Promise.resolve(pdfResponse()));
-    render(<UploadForm />);
+    stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    await renderForm();
 
     await convert();
 
@@ -309,26 +444,25 @@ describe("UploadForm PDF download", () => {
   });
 
   it("asks for the PDF of the preview shown, with the choices made, and saves it", async () => {
-    const fetchMock = stubBoth(() => Promise.resolve(pdfResponse()));
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
     const { createObjectURL, click } = stubSave();
-    render(<UploadForm />);
+    await renderForm();
 
-    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "3" } });
+    fireEvent.change(numberField(CONFETTI), { target: { value: "3" } });
     await convert("40");
-    fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: "80" } });
-    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "5" } });
+    fireEvent.change(numberField(WIDTH), { target: { value: "80" } });
+    fireEvent.change(numberField(CONFETTI), { target: { value: "5" } });
     fireEvent.change(screen.getByLabelText("Chart"), { target: { value: "bw" } });
     fireEvent.change(screen.getByLabelText("Paper"), { target: { value: "A3" } });
     fireEvent.change(screen.getByLabelText("Orientation"), { target: { value: "landscape" } });
     fireEvent.click(downloadButton());
 
     await vi.waitFor(() => expect(click).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const [url, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
-    expect(url).toBe("/api/patterns/pdf");
-    const body = init.body as FormData;
+    const pdfs = posted(fetchMock, "/api/patterns/pdf");
+    expect(pdfs).toHaveLength(1);
+    const body = pdfs[0] as FormData;
     expect(body.get("width")).toBe("40");
-    expect(body.get("max_colours")).toBe("20");
+    expect(body.get("max_colours")).toBe("7");
     expect(body.get("fabric_count")).toBe("14");
     expect(body.get("confetti_size")).toBe("3");
     expect(body.get("merge_distance")).toBe("0");
@@ -343,9 +477,9 @@ describe("UploadForm PDF download", () => {
 
   it("disables the button and says so while the PDF is being made", async () => {
     let resolve: (response: Response) => void = () => undefined;
-    stubBoth(() => new Promise<Response>((done) => (resolve = done)));
+    stubApi({ pdf: () => new Promise<Response>((done) => (resolve = done)) });
     stubSave();
-    render(<UploadForm />);
+    await renderForm();
     await convert();
 
     fireEvent.click(downloadButton());
@@ -359,10 +493,11 @@ describe("UploadForm PDF download", () => {
   });
 
   it("shows the API's message on a failed download and keeps the preview", async () => {
-    stubBoth(() =>
-      Promise.resolve(json(422, { detail: [{ loc: ["body", "paper"], msg: "bad paper" }] })),
-    );
-    render(<UploadForm />);
+    stubApi({
+      pdf: () =>
+        Promise.resolve(json(422, { detail: [{ loc: ["body", "paper"], msg: "bad paper" }] })),
+    });
+    await renderForm();
     await convert();
 
     fireEvent.click(downloadButton());

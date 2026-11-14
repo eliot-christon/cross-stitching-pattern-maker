@@ -1,6 +1,14 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 
-import { convertImage, downloadPdf, type ChartOptions, type Settings } from "./api";
+import {
+  convertImage,
+  downloadPdf,
+  getLimits,
+  type ChartOptions,
+  type Limits,
+  type SettingLimits,
+  type Settings,
+} from "./api";
 import type { Pattern } from "./pattern";
 import { PatternPreview } from "./PatternPreview";
 
@@ -17,6 +25,11 @@ type State =
   | { kind: "failed"; message: string };
 
 type Download = { kind: "idle" } | { kind: "busy" } | { kind: "failed"; message: string };
+
+type LimitsState =
+  | { kind: "loading" }
+  | { kind: "ready"; limits: Limits }
+  | { kind: "failed"; message: string };
 
 const DEFAULT_CHART: ChartOptions = { variant: "colour", paper: "A4", orientation: "portrait" };
 const PAPERS: ChartOptions["paper"][] = ["A2", "A3", "A4", "A5"];
@@ -35,14 +48,80 @@ function saveFile(file: Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/**
+ * A setting as a slider and a number field, both named by `label` and showing `value`;
+ * either one edits it. The slider's range comes from the API; the number field takes any
+ * text, posted as typed (the API's 422 says what is wrong).
+ */
+function SettingField(props: {
+  label: string;
+  limits: SettingLimits;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const { label, limits, value, onChange } = props;
+  const labelId = useId();
+  return (
+    <div role="group" aria-labelledby={labelId}>
+      <span id={labelId}>{label}</span>
+      <input
+        type="range"
+        aria-labelledby={labelId}
+        min={limits.min}
+        max={limits.max}
+        step={limits.step}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <input
+        type="number"
+        aria-labelledby={labelId}
+        step="any"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </div>
+  );
+}
+
+/** The form, once the API has said what its settings accept. */
 export function UploadForm() {
+  const [limits, setLimits] = useState<LimitsState>({ kind: "loading" });
+
+  useEffect(() => {
+    let current = true;
+    void getLimits().then((result) => {
+      if (current) {
+        setLimits(
+          result.ok
+            ? { kind: "ready", limits: result.limits }
+            : { kind: "failed", message: result.message },
+        );
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  if (limits.kind === "loading") {
+    return <p role="status">Loading the settings...</p>;
+  }
+  if (limits.kind === "failed") {
+    return <p role="alert">{limits.message}</p>;
+  }
+  return <Converter limits={limits.limits} />;
+}
+
+function Converter({ limits }: { limits: Limits }) {
+  const { settings: ranges } = limits;
   const [image, setImage] = useState<File | null>(null);
-  const [width, setWidth] = useState("100");
-  const [maxColours, setMaxColours] = useState("20");
+  const [width, setWidth] = useState(String(ranges.width.default));
+  const [maxColours, setMaxColours] = useState(String(ranges.max_colours.default));
   const [fabricCount, setFabricCount] = useState("14");
-  const [mergeDistance, setMergeDistance] = useState("0");
-  const [minStitches, setMinStitches] = useState("0");
-  const [confettiSize, setConfettiSize] = useState("0");
+  const [mergeDistance, setMergeDistance] = useState(String(ranges.merge_distance.default));
+  const [minStitches, setMinStitches] = useState(String(ranges.min_stitches.default));
+  const [confettiSize, setConfettiSize] = useState(String(ranges.confetti_size.default));
   const [state, setState] = useState<State>({ kind: "idle" });
   const [chart, setChart] = useState<ChartOptions>(DEFAULT_CHART);
   const [download, setDownload] = useState<Download>({ kind: "idle" });
@@ -58,7 +137,7 @@ export function UploadForm() {
     const source = { image, settings };
     setState({ kind: "busy" });
     setDownload({ kind: "idle" });
-    const result = await convertImage(source.image, source.settings);
+    const result = await convertImage(source.image, source.settings, limits.max_upload_bytes);
     setState(
       result.ok
         ? { kind: "done", pattern: result.pattern, source }
@@ -68,7 +147,12 @@ export function UploadForm() {
 
   async function savePdf(source: Source) {
     setDownload({ kind: "busy" });
-    const result = await downloadPdf(source.image, source.settings, chart);
+    const result = await downloadPdf(
+      source.image,
+      source.settings,
+      chart,
+      limits.max_upload_bytes,
+    );
     if (result.ok) {
       saveFile(result.pdf, PDF_NAME);
       setDownload({ kind: "idle" });
@@ -89,24 +173,18 @@ export function UploadForm() {
             onChange={(event) => setImage(event.target.files?.[0] ?? null)}
           />
         </label>
-        <label>
-          Width (stitches)
-          <input
-            type="number"
-            step="any"
-            value={width}
-            onChange={(event) => setWidth(event.target.value)}
-          />
-        </label>
-        <label>
-          Max colours
-          <input
-            type="number"
-            step="any"
-            value={maxColours}
-            onChange={(event) => setMaxColours(event.target.value)}
-          />
-        </label>
+        <SettingField
+          label="Width (stitches)"
+          limits={ranges.width}
+          value={width}
+          onChange={setWidth}
+        />
+        <SettingField
+          label="Max colours"
+          limits={ranges.max_colours}
+          value={maxColours}
+          onChange={setMaxColours}
+        />
         <label>
           Fabric count
           <input
@@ -116,33 +194,24 @@ export function UploadForm() {
             onChange={(event) => setFabricCount(event.target.value)}
           />
         </label>
-        <label>
-          Merge similar threads (colour distance)
-          <input
-            type="number"
-            step="any"
-            value={mergeDistance}
-            onChange={(event) => setMergeDistance(event.target.value)}
-          />
-        </label>
-        <label>
-          Minimum stitches per thread
-          <input
-            type="number"
-            step="any"
-            value={minStitches}
-            onChange={(event) => setMinStitches(event.target.value)}
-          />
-        </label>
-        <label>
-          Largest confetti cluster (stitches)
-          <input
-            type="number"
-            step="any"
-            value={confettiSize}
-            onChange={(event) => setConfettiSize(event.target.value)}
-          />
-        </label>
+        <SettingField
+          label="Merge similar threads (colour distance)"
+          limits={ranges.merge_distance}
+          value={mergeDistance}
+          onChange={setMergeDistance}
+        />
+        <SettingField
+          label="Minimum stitches per thread"
+          limits={ranges.min_stitches}
+          value={minStitches}
+          onChange={setMinStitches}
+        />
+        <SettingField
+          label="Largest confetti cluster (stitches)"
+          limits={ranges.confetti_size}
+          value={confettiSize}
+          onChange={setConfettiSize}
+        />
         <button type="submit" disabled={image === null || busy}>
           {busy ? "Converting..." : "Convert"}
         </button>

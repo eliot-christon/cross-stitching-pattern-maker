@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MAX_UPLOAD_BYTES, PATTERN_PDF_URL, PATTERNS_URL, convertImage, downloadPdf } from "./api";
+import {
+  LIMITS_URL,
+  PATTERN_PDF_URL,
+  PATTERNS_URL,
+  convertImage,
+  downloadPdf,
+  getLimits,
+  type Limits,
+} from "./api";
 import type { Pattern } from "./pattern";
 
 const SETTINGS = {
@@ -11,6 +19,9 @@ const SETTINGS = {
   minStitches: "10",
   confettiSize: "1",
 };
+
+/** An upload limit as the API reports it today; the size checks take it as an argument. */
+const LIMIT = 20 * 1024 * 1024;
 
 const PATTERN: Pattern = {
   width: 2,
@@ -55,7 +66,7 @@ describe("convertImage", () => {
     const fetchMock = stubFetch(json(200, PATTERN));
     const file = image();
 
-    await convertImage(file, SETTINGS);
+    await convertImage(file, SETTINGS, LIMIT);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -77,13 +88,13 @@ describe("convertImage", () => {
   it("returns the pattern from a 200", async () => {
     stubFetch(json(200, PATTERN));
 
-    expect(await convertImage(image(), SETTINGS)).toEqual({ ok: true, pattern: PATTERN });
+    expect(await convertImage(image(), SETTINGS, LIMIT)).toEqual({ ok: true, pattern: PATTERN });
   });
 
   it("sends out-of-range settings anyway: the API decides", async () => {
     const fetchMock = stubFetch(json(200, PATTERN));
 
-    await convertImage(image(), { ...SETTINGS, width: "0" });
+    await convertImage(image(), { ...SETTINGS, width: "0" }, LIMIT);
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect((init.body as FormData).get("width")).toBe("0");
@@ -96,7 +107,7 @@ describe("convertImage", () => {
   ])("shows the API's string detail for a %i", async (status, detail) => {
     stubFetch(json(status, { detail }));
 
-    expect(await convertImage(image(), SETTINGS)).toEqual({ ok: false, message: detail });
+    expect(await convertImage(image(), SETTINGS, LIMIT)).toEqual({ ok: false, message: detail });
   });
 
   it("names the field of a validation 422", async () => {
@@ -108,7 +119,7 @@ describe("convertImage", () => {
       }),
     );
 
-    const result = await convertImage(image(), SETTINGS);
+    const result = await convertImage(image(), SETTINGS, LIMIT);
 
     expect(result.ok).toBe(false);
     const { message } = result as { message: string };
@@ -126,7 +137,7 @@ describe("convertImage", () => {
       }),
     );
 
-    const { message } = (await convertImage(image(), SETTINGS)) as { message: string };
+    const { message } = (await convertImage(image(), SETTINGS, LIMIT)) as { message: string };
 
     expect(message).toContain("width: Input should be greater than or equal to 1");
     expect(message).toContain("max_colours: Input should be a valid integer");
@@ -135,7 +146,7 @@ describe("convertImage", () => {
   it("gives a generic message for a 500 with an HTML body", async () => {
     stubFetch(new Response("<html>Internal Server Error</html>", { status: 500 }));
 
-    const result = await convertImage(image(), SETTINGS);
+    const result = await convertImage(image(), SETTINGS, LIMIT);
 
     expect(result).toEqual({ ok: false, message: expect.stringContaining("500") });
   });
@@ -143,7 +154,7 @@ describe("convertImage", () => {
   it("gives a generic message for a 502 with an empty body", async () => {
     stubFetch(new Response(null, { status: 502 }));
 
-    const result = await convertImage(image(), SETTINGS);
+    const result = await convertImage(image(), SETTINGS, LIMIT);
 
     expect(result).toEqual({ ok: false, message: expect.stringContaining("502") });
   });
@@ -151,7 +162,7 @@ describe("convertImage", () => {
   it("gives a generic message for a 200 that is not JSON", async () => {
     stubFetch(new Response("not json", { status: 200 }));
 
-    const result = await convertImage(image(), SETTINGS);
+    const result = await convertImage(image(), SETTINGS, LIMIT);
 
     expect(result.ok).toBe(false);
   });
@@ -159,7 +170,7 @@ describe("convertImage", () => {
   it("says the server cannot be reached when fetch rejects", async () => {
     stubFetch(new TypeError("Failed to fetch"));
 
-    const { message } = (await convertImage(image(), SETTINGS)) as { message: string };
+    const { message } = (await convertImage(image(), SETTINGS, LIMIT)) as { message: string };
 
     expect(message).toMatch(/cannot reach the server/i);
   });
@@ -167,7 +178,7 @@ describe("convertImage", () => {
   it("refuses a file one byte over the limit without any request", async () => {
     const fetchMock = stubFetch(json(200, PATTERN));
 
-    const result = await convertImage(image(MAX_UPLOAD_BYTES + 1), SETTINGS);
+    const result = await convertImage(image(LIMIT + 1), SETTINGS, LIMIT);
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: false, message: expect.stringContaining("20 MB") });
@@ -176,13 +187,72 @@ describe("convertImage", () => {
   it("posts a file of exactly the limit", async () => {
     const fetchMock = stubFetch(json(200, PATTERN));
 
-    await convertImage(image(MAX_UPLOAD_BYTES), SETTINGS);
+    await convertImage(image(LIMIT), SETTINGS, LIMIT);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the API's limit of 20 * 1024 * 1024 bytes", () => {
-    expect(MAX_UPLOAD_BYTES).toBe(20 * 1024 * 1024);
+  it("checks the size against the limit it is given", async () => {
+    const fetchMock = stubFetch(json(200, PATTERN));
+
+    const result = await convertImage(image(1001), SETTINGS, 1000);
+
+    expect(result).toEqual({
+      ok: false,
+      message: "The image is larger than 1000 bytes, the most the server accepts.",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await convertImage(image(1000), SETTINGS, 1000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("getLimits", () => {
+  const LIMITS: Limits = {
+    max_upload_bytes: 1000,
+    settings: {
+      width: { min: 1, max: 500, step: 1, default: 100 },
+      max_colours: { min: 1, max: 100, step: 1, default: 7 },
+      merge_distance: { min: 0, max: 10, step: 0.5, default: 0 },
+      min_stitches: { min: 0, max: 1000, step: 1, default: 0 },
+      confetti_size: { min: 0, max: 10, step: 1, default: 0 },
+    },
+  };
+
+  it("gets the limits from the limits URL and returns them as sent", async () => {
+    const fetchMock = stubFetch(json(200, LIMITS));
+
+    expect(await getLimits()).toEqual({ ok: true, limits: LIMITS });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit | undefined];
+    expect(url).toBe(LIMITS_URL);
+    expect(LIMITS_URL).toBe("/api/limits");
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("fails with a message on a 500", async () => {
+    stubFetch(new Response("<html>oops</html>", { status: 500 }));
+
+    expect(await getLimits()).toEqual({
+      ok: false,
+      message: "Loading the settings failed (HTTP 500).",
+    });
+  });
+
+  it("fails with the API's message when it gives one", async () => {
+    stubFetch(json(503, { detail: "starting up" }));
+
+    expect(await getLimits()).toEqual({ ok: false, message: "starting up" });
+  });
+
+  it("says the server cannot be reached when fetch rejects", async () => {
+    stubFetch(new TypeError("Failed to fetch"));
+
+    expect(await getLimits()).toEqual({
+      ok: false,
+      message: "Cannot reach the server. Is the API running?",
+    });
   });
 });
 
@@ -201,7 +271,7 @@ describe("downloadPdf", () => {
     const fetchMock = stubFetch(pdf());
     const file = image();
 
-    await downloadPdf(file, { ...SETTINGS, fabricCount: "14" }, OPTIONS);
+    await downloadPdf(file, { ...SETTINGS, fabricCount: "14" }, OPTIONS, LIMIT);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -224,7 +294,7 @@ describe("downloadPdf", () => {
   it("returns the PDF bytes of a 200", async () => {
     stubFetch(pdf());
 
-    const result = await downloadPdf(image(), SETTINGS, OPTIONS);
+    const result = await downloadPdf(image(), SETTINGS, OPTIONS, LIMIT);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -235,7 +305,7 @@ describe("downloadPdf", () => {
   it("names the field of a validation 422", async () => {
     stubFetch(json(422, { detail: [{ loc: ["body", "width"], msg: "too big" }] }));
 
-    expect(await downloadPdf(image(), SETTINGS, OPTIONS)).toEqual({
+    expect(await downloadPdf(image(), SETTINGS, OPTIONS, LIMIT)).toEqual({
       ok: false,
       message: "width: too big",
     });
@@ -244,7 +314,7 @@ describe("downloadPdf", () => {
   it("shows a string detail as is", async () => {
     stubFetch(json(400, { detail: "the upload is not a decodable image" }));
 
-    expect(await downloadPdf(image(), SETTINGS, OPTIONS)).toEqual({
+    expect(await downloadPdf(image(), SETTINGS, OPTIONS, LIMIT)).toEqual({
       ok: false,
       message: "the upload is not a decodable image",
     });
@@ -253,7 +323,7 @@ describe("downloadPdf", () => {
   it("refuses a file over the limit without any request", async () => {
     const fetchMock = stubFetch(pdf());
 
-    const result = await downloadPdf(image(MAX_UPLOAD_BYTES + 1), SETTINGS, OPTIONS);
+    const result = await downloadPdf(image(LIMIT + 1), SETTINGS, OPTIONS, LIMIT);
 
     expect(result).toEqual({
       ok: false,
@@ -265,7 +335,7 @@ describe("downloadPdf", () => {
   it("says the server cannot be reached when fetch rejects", async () => {
     stubFetch(new TypeError("Failed to fetch"));
 
-    expect(await downloadPdf(image(), SETTINGS, OPTIONS)).toEqual({
+    expect(await downloadPdf(image(), SETTINGS, OPTIONS, LIMIT)).toEqual({
       ok: false,
       message: "Cannot reach the server. Is the API running?",
     });
