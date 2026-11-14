@@ -540,3 +540,152 @@ def test_every_cleanup_setting_at_its_maximum_gives_the_core_pattern() -> None:
 
     assert body["grid"] == _grid_json(cleaned.pattern)
     assert body["key"] == _key_json(cleaned.pattern)
+
+
+# --- GET /limits ---------------------------------------------------------------------------
+
+
+SETTING_NAMES = ["width", "max_colours", "merge_distance", "min_stitches", "confetti_size"]
+
+
+def _limits() -> dict[str, Any]:
+    response = client.get("/limits")
+    assert response.status_code == 200, response.text
+    body: dict[str, Any] = response.json()
+    return body
+
+
+def _setting(name: str) -> dict[str, Any]:
+    setting: dict[str, Any] = _limits()["settings"][name]
+    return setting
+
+
+def _one_colour() -> Image.Image:
+    """10 x 1 royal blue: 100 rows at the widest width, one at the narrowest."""
+    return _field_image((1, 10), {})
+
+
+def _post_setting(name: str, value: float) -> Any:
+    """`POST /patterns` of `_one_colour()` with `name` at `value`, the other fields valid."""
+    return _post(_png(_one_colour()), {"width": "10", "max_colours": "1", name: str(value)})
+
+
+def test_the_limits_are_the_contract_the_frontend_relies_on() -> None:
+    assert _limits() == {
+        "max_upload_bytes": 20 * 1024 * 1024,
+        "settings": {
+            "width": {"min": 1, "max": 1000, "step": 1, "default": 100},
+            "max_colours": {"min": 1, "max": 100, "step": 1, "default": 20},
+            "merge_distance": {"min": 0, "max": 10, "step": 0.1, "default": 0},
+            "min_stitches": {"min": 0, "max": 1000, "step": 1, "default": 0},
+            "confetti_size": {"min": 0, "max": 10, "step": 1, "default": 0},
+        },
+    }
+    assert list(_limits()["settings"]) == SETTING_NAMES
+
+
+@pytest.mark.parametrize("name", SETTING_NAMES)
+@pytest.mark.parametrize("bound", ["min", "max"])
+def test_every_reported_bound_is_accepted(name: str, bound: str) -> None:
+    response = _post_setting(name, _setting(name)[bound])
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("name", SETTING_NAMES)
+@pytest.mark.parametrize(("bound", "direction"), [("min", -1), ("max", 1)])
+def test_one_step_beyond_a_reported_bound_gives_a_422_naming_the_field(
+    name: str, bound: str, direction: int
+) -> None:
+    setting = _setting(name)
+    response = _post_setting(name, setting[bound] + direction * setting["step"])
+    assert response.status_code == 422
+    assert {tuple(error["loc"]) for error in response.json()["detail"]} == {("body", name)}
+
+
+@pytest.mark.parametrize("name", SETTING_NAMES)
+def test_every_default_lies_within_its_bounds(name: str) -> None:
+    setting = _setting(name)
+    assert setting["min"] <= setting["default"] <= setting["max"]
+
+
+def test_every_setting_at_its_default_is_accepted() -> None:
+    defaults = {name: str(_setting(name)["default"]) for name in SETTING_NAMES}
+    response = _post(_png(_cleanable()), defaults)
+    assert response.status_code == 200, response.text
+
+
+def test_omitted_cleanup_fields_give_the_same_body_as_their_reported_defaults() -> None:
+    defaults = {
+        name: str(_setting(name)["default"])
+        for name in ["merge_distance", "min_stitches", "confetti_size"]
+    }
+    assert _body(_lone_pixel(), 2, **defaults) == _body(_lone_pixel(), 2)
+
+
+def test_the_reported_upload_limit_is_the_one_enforced() -> None:
+    limit = _limits()["max_upload_bytes"]
+    assert limit == MAX_UPLOAD_BYTES
+    fields = {"width": "40", "max_colours": "4"}
+    assert _post(b"\x00" * limit, fields).status_code == 400  # not an image, not too large
+    assert _post(b"\x00" * (limit + 1), fields).status_code == 413
+
+
+def test_the_limits_are_the_same_every_time() -> None:
+    assert client.get("/limits").json() == client.get("/limits").json()
+
+
+# --- converted: the pattern before cleanup -------------------------------------------------
+
+
+def _code_at(grid: list[list[int | None]], key: list[dict[str, Any]], cell: Pixel) -> str | None:
+    index = grid[cell[0]][cell[1]]
+    return None if index is None else str(key[index]["code"])
+
+
+def test_converted_is_the_core_pattern_before_cleanup() -> None:
+    converted = _core_converted(_cleanable(), 5)
+    cleaned = _cleaned_cleanable()
+    # Cleanup changes the pattern, so `converted` cannot pass by repeating the top level.
+    assert _grid_json(cleaned.pattern) != _grid_json(converted)
+
+    body = _body(_cleanable(), 5, **CLEANUP_FORM)
+
+    assert body["converted"] == {
+        "grid": _grid_json(converted),
+        "key": _key_json(converted),
+        "total_stitches": converted.total_stitches,
+    }
+    assert body["grid"] == _grid_json(cleaned.pattern)
+    assert body["key"] == _key_json(cleaned.pattern)
+
+
+def test_converted_holds_the_confetti_the_cleaned_grid_no_longer_has() -> None:
+    body = _body(_cleanable(), 5, confetti_size="1")
+    before = body["converted"]
+    assert _code_at(before["grid"], before["key"], (1, 2)) == "Blanc"
+    assert _code_at(body["grid"], body["key"], (1, 2)) == "797"
+
+
+def test_converted_has_as_many_stitches_as_the_cleaned_pattern() -> None:
+    body = _body(_cleanable(), 5, **CLEANUP_FORM)
+    before = body["converted"]
+    assert before["total_stitches"] == body["total_stitches"]
+    assert sum(entry["stitches"] for entry in before["key"]) == body["total_stitches"]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"merge_distance": "0", "min_stitches": "0", "confetti_size": "0"}],
+    ids=["omitted", "zeros"],
+)
+def test_converted_is_null_when_every_cleanup_setting_is_zero(extra: dict[str, str]) -> None:
+    assert _stripes_response(**extra)["converted"] is None
+
+
+def test_converted_is_sent_when_cleanup_is_on_with_nothing_to_clean() -> None:
+    body = _stripes_response(confetti_size="1")
+    assert body["converted"] == {
+        "grid": body["grid"],
+        "key": body["key"],
+        "total_stitches": body["total_stitches"],
+    }

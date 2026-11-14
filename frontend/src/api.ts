@@ -3,12 +3,32 @@ import type { Pattern } from "./pattern";
 /** The conversion endpoint, on the page's own origin; the Vite dev server proxies it. */
 export const PATTERNS_URL = "/api/patterns";
 
-/**
- * Largest accepted upload: `MAX_UPLOAD_BYTES` in src/cross_stitch/api/app.py, which stays
- * the authority. It is checked here too because the API refuses an oversized body before
- * reading it, and through a proxy that refusal arrives as a bare 502.
- */
-export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+/** What the API's tunable inputs accept: `GET /limits`, through the same proxy. */
+export const LIMITS_URL = "/api/limits";
+
+/** One tunable setting: `min` to `max` inclusive, a slider `step`, and where to start. */
+export interface SettingLimits {
+  min: number;
+  max: number;
+  step: number;
+  default: number;
+}
+
+/** The `GET /limits` body, written by hand to match `LimitsOut` in src/cross_stitch/api/app.py. */
+export interface Limits {
+  /**
+   * Largest accepted upload. Checked here too because the API refuses an oversized body
+   * before reading it, and through a proxy that refusal arrives as a bare 502.
+   */
+  max_upload_bytes: number;
+  /** Keyed by the form field name of `POST /patterns`. */
+  settings: Record<
+    "width" | "max_colours" | "merge_distance" | "min_stitches" | "confetti_size",
+    SettingLimits
+  >;
+}
+
+export type LimitsResult = { ok: true; limits: Limits } | { ok: false; message: string };
 
 /** The settings as the user typed them; the API validates them. */
 export interface Settings {
@@ -39,15 +59,45 @@ export type PdfResult = { ok: true; pdf: Blob } | { ok: false; message: string }
 
 type Sent = { ok: true; response: Response } | { ok: false; message: string };
 
-/** Post the image and settings (and any extra fields), after the client-side size check. */
+const UNREACHABLE = "Cannot reach the server. Is the API running?";
+const MEGABYTE = 1024 * 1024;
+
+/** A byte count as people read it: whole megabytes when it is some, bytes otherwise. */
+function formatBytes(bytes: number): string {
+  return bytes >= MEGABYTE ? `${Math.round((bytes / MEGABYTE) * 10) / 10} MB` : `${bytes} bytes`;
+}
+
+/** The limits the API reports for its tunable settings and the upload. */
+export async function getLimits(): Promise<LimitsResult> {
+  let response: Response;
+  try {
+    response = await fetch(LIMITS_URL);
+  } catch {
+    return { ok: false, message: UNREACHABLE };
+  }
+  const payload = await readJson(response);
+  if (response.ok && payload !== undefined) {
+    return { ok: true, limits: payload as Limits };
+  }
+  return {
+    ok: false,
+    message: errorMessage(response.status, payload, "Loading the settings failed"),
+  };
+}
+
+/**
+ * Post the image and settings (and any extra fields), after the client-side size check
+ * against `maxUploadBytes`, the API's reported limit.
+ */
 async function post(
   url: string,
   image: File,
   settings: Settings,
+  maxUploadBytes: number,
   extra: Record<string, string> = {},
 ): Promise<Sent> {
-  if (image.size > MAX_UPLOAD_BYTES) {
-    const limit = `${MAX_UPLOAD_BYTES / (1024 * 1024)} MB`;
+  if (image.size > maxUploadBytes) {
+    const limit = formatBytes(maxUploadBytes);
     return { ok: false, message: `The image is larger than ${limit}, the most the server accepts.` };
   }
 
@@ -66,7 +116,16 @@ async function post(
   try {
     return { ok: true, response: await fetch(url, { method: "POST", body }) };
   } catch {
-    return { ok: false, message: "Cannot reach the server. Is the API running?" };
+    return { ok: false, message: UNREACHABLE };
+  }
+}
+
+/** The JSON body of a response, or `undefined` when it has none. */
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return (await response.json()) as unknown;
+  } catch {
+    return undefined;
   }
 }
 
@@ -75,8 +134,9 @@ export async function downloadPdf(
   image: File,
   settings: Settings,
   options: ChartOptions,
+  maxUploadBytes: number,
 ): Promise<PdfResult> {
-  const sent = await post(PATTERN_PDF_URL, image, settings, { ...options });
+  const sent = await post(PATTERN_PDF_URL, image, settings, maxUploadBytes, { ...options });
   if (!sent.ok) {
     return sent;
   }
@@ -84,29 +144,20 @@ export async function downloadPdf(
   if (response.ok) {
     return { ok: true, pdf: await response.blob() };
   }
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    payload = undefined;
-  }
-  return { ok: false, message: errorMessage(response.status, payload) };
+  return { ok: false, message: errorMessage(response.status, await readJson(response)) };
 }
 
-export async function convertImage(image: File, settings: Settings): Promise<ConvertResult> {
-  const sent = await post(PATTERNS_URL, image, settings);
+export async function convertImage(
+  image: File,
+  settings: Settings,
+  maxUploadBytes: number,
+): Promise<ConvertResult> {
+  const sent = await post(PATTERNS_URL, image, settings, maxUploadBytes);
   if (!sent.ok) {
     return sent;
   }
   const { response } = sent;
-
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    payload = undefined;
-  }
-
+  const payload = await readJson(response);
   if (response.ok && payload !== undefined) {
     return { ok: true, pattern: payload as Pattern };
   }
@@ -127,8 +178,15 @@ function isValidationError(item: unknown): item is ValidationError {
   );
 }
 
-/** The API's `detail`: a string, or FastAPI's list of `{loc, msg}`, each shown with its field. */
-function errorMessage(status: number, payload: unknown): string {
+/**
+ * The API's `detail`: a string, or FastAPI's list of `{loc, msg}`, each shown with its
+ * field; `failed` and the status otherwise.
+ */
+function errorMessage(
+  status: number,
+  payload: unknown,
+  failed = "The conversion failed",
+): string {
   const detail =
     typeof payload === "object" && payload !== null
       ? (payload as { detail?: unknown }).detail
@@ -139,5 +197,5 @@ function errorMessage(status: number, payload: unknown): string {
   if (Array.isArray(detail) && detail.length > 0 && detail.every(isValidationError)) {
     return detail.map((error) => `${String(error.loc.at(-1))}: ${error.msg}`).join("; ");
   }
-  return `The conversion failed (HTTP ${status}).`;
+  return `${failed} (HTTP ${status}).`;
 }

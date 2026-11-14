@@ -1,6 +1,14 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  type RenderResult,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { Limits } from "./api";
 import type { Pattern } from "./pattern";
 import { UploadForm } from "./UploadForm";
 
@@ -16,11 +24,61 @@ const PATTERN: Pattern = {
   total_stitches: 2,
   finished_size: { width_in: 0.14, height_in: 0.07, width_cm: 0.36, height_cm: 0.18 },
   isolated_stitches: { before: 2, after: 0 },
+  converted: null,
 };
 
+/** A second conversion, told apart from PATTERN on screen by its thread codes. */
+const PATTERN_B: Pattern = {
+  width: 3,
+  height: 1,
+  fabric_count: 14,
+  grid: [[0, 0, 1]],
+  key: [
+    {
+      code: "3865",
+      name: "Winter White",
+      rgb: [250, 246, 240],
+      stitches: 2,
+      skeins: 1,
+      symbol: "A",
+    },
+    { code: "666", name: "Bright Red", rgb: [227, 29, 66], stitches: 1, skeins: 1, symbol: "B" },
+  ],
+  total_stitches: 3,
+  finished_size: { width_in: 0.21, height_in: 0.07, width_cm: 0.54, height_cm: 0.18 },
+  isolated_stitches: { before: 1, after: 0 },
+  converted: null,
+};
+
+/** A thread only PATTERN's key holds, and one only PATTERN_B's holds. */
+const A_CODE = "321";
+const B_CODE = "666";
+
+/** Limits unlike the API's real ones, so a number hard-coded in the page fails a test. */
+const LIMITS: Limits = {
+  max_upload_bytes: 1000,
+  settings: {
+    width: { min: 1, max: 500, step: 1, default: 100 },
+    max_colours: { min: 1, max: 100, step: 1, default: 7 },
+    merge_distance: { min: 0, max: 10, step: 0.5, default: 0 },
+    min_stitches: { min: 0, max: 1000, step: 1, default: 0 },
+    confetti_size: { min: 0, max: 10, step: 1, default: 0 },
+  },
+};
+
+const WIDTH = "Width (stitches)";
+const COLOURS = "Max colours";
 const MERGE = "Merge similar threads (colour distance)";
 const MIN_STITCHES = "Minimum stitches per thread";
 const CONFETTI = "Largest confetti cluster (stitches)";
+
+/** The quiet delay after the last change before a conversion is sent. */
+const QUIET_MS = 500;
+
+/** What the status says while the preview is being updated. */
+const BUSY = /converting|updating/i;
+
+const NOT_AN_IMAGE = "the upload is not a decodable image";
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -29,56 +87,308 @@ function json(status: number, body: unknown): Response {
   });
 }
 
-function chooseFile(): File {
-  const file = new File(["png bytes"], "photo.png", { type: "image/png" });
-  fireEvent.change(screen.getByLabelText("Image"), { target: { files: [file] } });
+/** FastAPI's 422 body for one refused field. */
+function refused(field: string, msg: string): Response {
+  return json(422, { detail: [{ loc: ["body", field], msg, type: "value_error" }] });
+}
+
+type Handler = (init?: RequestInit) => Promise<Response>;
+
+/**
+ * fetch answering `/api/limits` with LIMITS, and the conversion and PDF URLs with their
+ * handlers (a conversion of PATTERN by default).
+ */
+function stubApi(
+  handlers: { patterns?: Handler; pdf?: Handler } = {},
+): ReturnType<typeof vi.fn<(url: string, init?: RequestInit) => Promise<Response>>> {
+  const patterns = handlers.patterns ?? (() => Promise.resolve(json(200, PATTERN)));
+  const pdf = handlers.pdf ?? (() => Promise.reject(new Error("no PDF expected")));
+  const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+    if (url === "/api/limits") {
+      return Promise.resolve(json(200, LIMITS));
+    }
+    return url === "/api/patterns" ? patterns(init) : pdf(init);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** The bodies posted to `url`, in order. */
+function posted(fetchMock: ReturnType<typeof stubApi>, url: string): FormData[] {
+  return fetchMock.mock.calls
+    .filter(([calledUrl]) => calledUrl === url)
+    .map(([, init]) => init?.body as FormData);
+}
+
+/** The value of `field` in each conversion posted, in order. */
+function sent(fetchMock: ReturnType<typeof stubApi>, field: string): unknown[] {
+  return posted(fetchMock, "/api/patterns").map((body) => body.get(field));
+}
+
+/** The name of the image in each conversion posted, in order. */
+function sentImages(fetchMock: ReturnType<typeof stubApi>): string[] {
+  return posted(fetchMock, "/api/patterns").map((body) => (body.get("image") as File).name);
+}
+
+/** Render the form and wait until the limits are in and it is shown. */
+async function renderForm(): Promise<RenderResult> {
+  const view = render(<UploadForm />);
+  await screen.findByLabelText("Image");
+  return view;
+}
+
+/**
+ * Render the form with the real clock (the limits load through it), then take the clock
+ * over: from here the test moves time itself. Only the timer functions are faked, so
+ * promises, React's scheduling and the Response body readers run as usual.
+ */
+async function renderLive(): Promise<RenderResult> {
+  const view = await renderForm();
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
+  });
+  return view;
+}
+
+/** Move the clock by `ms`, running the timers that fall due and what they cause. */
+async function wait(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+/** Let the requests already answered run to the end, without moving the clock. */
+async function settle() {
+  for (let round = 0; round < 3; round += 1) {
+    await wait(0);
+  }
+}
+
+/**
+ * A conversion handler that answers only when the test says so: `answer(i, response)`
+ * resolves the i-th conversion sent (from 0) and lets the page take it in.
+ */
+function controlled() {
+  const pending: ((response: Response) => void)[] = [];
+  const handler: Handler = () =>
+    new Promise<Response>((resolve) => {
+      pending.push(resolve);
+    });
+  async function answer(index: number, response: Response) {
+    const resolve = pending[index];
+    if (resolve === undefined) {
+      throw new Error(`conversion ${String(index)} was never sent`);
+    }
+    await act(async () => {
+      resolve(response);
+    });
+    await settle();
+  }
+  return { handler, answer };
+}
+
+function numberField(name: string): HTMLElement {
+  return screen.getByRole("spinbutton", { name });
+}
+
+function slider(name: string): HTMLElement {
+  return screen.getByRole("slider", { name });
+}
+
+function fabricCount(): HTMLElement {
+  return screen.getByLabelText("Fabric count");
+}
+
+function imageInput(): HTMLElement {
+  return screen.getByLabelText("Image");
+}
+
+function chooseFile(name = "photo.png", bytes = "png bytes"): File {
+  const file = new File([bytes], name, { type: "image/png" });
+  fireEvent.change(imageInput(), { target: { files: [file] } });
   return file;
 }
 
-function submitButton(): HTMLElement {
-  return screen.getByRole("button", { name: /convert/i });
+function setValue(field: HTMLElement, value: string) {
+  fireEvent.change(field, { target: { value } });
+}
+
+/** Whether the key on screen lists the thread `code`: which response the preview shows. */
+function keyShows(code: string): boolean {
+  return screen.queryByRole("cell", { name: code }) !== null;
+}
+
+function downloadButton(): HTMLElement {
+  return screen.getByRole("button", { name: /pdf/i });
+}
+
+function convertButton(): HTMLElement | null {
+  return screen.queryByRole("button", { name: /convert/i });
 }
 
 afterEach(() => {
+  // Unmount under the clock the test used, so its pending timers go with the fake one.
+  cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
-describe("UploadForm", () => {
-  it("starts with the default settings and submit disabled until a file is chosen", () => {
+describe("UploadForm limits", () => {
+  it("shows a status and no form while the limits load", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
     render(<UploadForm />);
 
-    expect(screen.getByLabelText("Width (stitches)")).toHaveValue(100);
-    expect(screen.getByLabelText("Max colours")).toHaveValue(20);
-    expect(screen.getByLabelText("Fabric count")).toHaveValue(14);
-    expect(screen.getByLabelText(MERGE)).toHaveValue(0);
-    expect(screen.getByLabelText(MIN_STITCHES)).toHaveValue(0);
-    expect(screen.getByLabelText(CONFETTI)).toHaveValue(0);
-    expect(submitButton()).toBeDisabled();
-
-    chooseFile();
-
-    expect(submitButton()).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent(/loading the settings/i);
+    expect(convertButton()).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Image")).not.toBeInTheDocument();
   });
 
-  it("posts the chosen file with the values entered", async () => {
-    const fetchMock = vi.fn(() => Promise.resolve(json(200, PATTERN)));
-    vi.stubGlobal("fetch", fetchMock);
+  it("says so, with no form, when the limits cannot be fetched", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))));
     render(<UploadForm />);
 
-    const file = chooseFile();
-    fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: "40" } });
-    fireEvent.change(screen.getByLabelText("Max colours"), { target: { value: "4" } });
-    fireEvent.change(screen.getByLabelText("Fabric count"), { target: { value: "16" } });
-    fireEvent.change(screen.getByLabelText(MERGE), { target: { value: "2.5" } });
-    fireEvent.change(screen.getByLabelText(MIN_STITCHES), { target: { value: "10" } });
-    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "3" } });
-    fireEvent.click(submitButton());
+    expect(await screen.findByRole("alert")).toHaveTextContent(/cannot reach the server/i);
+    expect(screen.queryByLabelText("Image")).not.toBeInTheDocument();
+  });
 
-    expect(await screen.findByRole("table", { name: "Thread key" })).toBeInTheDocument();
+  it("asks for the limits once, at the limits URL", async () => {
+    const fetchMock = stubApi();
+    await renderForm();
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("/api/patterns");
-    const body = init.body as FormData;
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/limits");
+  });
+
+  it("takes every slider's range, step and starting value from the limits", async () => {
+    stubApi();
+    await renderForm();
+
+    const width = slider(WIDTH);
+    expect(width).toHaveAttribute("min", "1");
+    expect(width).toHaveAttribute("max", "500");
+    expect(width).toHaveAttribute("step", "1");
+    expect(width).toHaveValue("100");
+    expect(numberField(WIDTH)).toHaveValue(100);
+    expect(slider(COLOURS)).toHaveValue("7");
+    expect(numberField(COLOURS)).toHaveValue(7);
+    expect(slider(MERGE)).toHaveAttribute("step", "0.5");
+    expect(slider(MERGE)).toHaveAttribute("max", "10");
+    expect(slider(MIN_STITCHES)).toHaveAttribute("max", "1000");
+    expect(slider(CONFETTI)).toHaveAttribute("max", "10");
+    for (const name of [MERGE, MIN_STITCHES, CONFETTI]) {
+      expect(numberField(name)).toHaveValue(0);
+    }
+  });
+
+  it("keeps fabric count a number field at 14, with no slider", async () => {
+    stubApi();
+    await renderForm();
+
+    expect(fabricCount()).toHaveValue(14);
+    expect(screen.queryByRole("slider", { name: "Fabric count" })).not.toBeInTheDocument();
+  });
+
+  it("moves the number field with the slider and posts the slider's value", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+
+    chooseFile();
+    setValue(slider(CONFETTI), "3");
+    expect(numberField(CONFETTI)).toHaveValue(3);
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(screen.getByRole("table", { name: "Thread key" })).toBeInTheDocument();
+    expect(sent(fetchMock, "confetti_size")).toEqual(["3"]);
+  });
+
+  it("moves the slider with the number field", async () => {
+    stubApi();
+    await renderForm();
+
+    setValue(numberField(WIDTH), "250");
+
+    expect(slider(WIDTH)).toHaveValue("250");
+  });
+
+  it("refuses an image over the reported upload limit without converting", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+
+    chooseFile("big.png", "x".repeat(1001));
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(screen.getByRole("alert")).toHaveTextContent("larger than 1000 bytes");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    await wait(5000);
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(0);
+  });
+});
+
+describe("UploadForm live conversion", () => {
+  it("starts with the reported settings and sends nothing before an image is chosen", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+
+    expect(numberField(WIDTH)).toHaveValue(100);
+    expect(numberField(COLOURS)).toHaveValue(7);
+    expect(fabricCount()).toHaveValue(14);
+    expect(numberField(MERGE)).toHaveValue(0);
+    expect(numberField(MIN_STITCHES)).toHaveValue(0);
+    expect(numberField(CONFETTI)).toHaveValue(0);
+    expect(convertButton()).not.toBeInTheDocument();
+
+    setValue(numberField(WIDTH), "50");
+    await wait(2 * QUIET_MS);
+
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(0);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Thread key" })).not.toBeInTheDocument();
+  });
+
+  it("converts a chosen image once nothing has changed for 500 ms, with no Convert button", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+
+    const file = chooseFile();
+    expect(screen.getByRole("status")).toHaveTextContent(BUSY);
+    await wait(QUIET_MS - 1);
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(0);
+
+    await wait(1);
+    expect(sentImages(fetchMock)).toEqual([file.name]);
+    expect(screen.getByRole("status")).toHaveTextContent(BUSY);
+
+    await calls.answer(0, json(200, PATTERN));
+
+    expect(keyShows(A_CODE)).toBe(true);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(convertButton()).not.toBeInTheDocument();
+    await wait(10 * QUIET_MS);
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(1);
+  });
+
+  it("posts the chosen file with the values entered, as one request", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+
+    const file = chooseFile();
+    setValue(numberField(WIDTH), "40");
+    setValue(numberField(COLOURS), "4");
+    setValue(fabricCount(), "16");
+    setValue(numberField(MERGE), "2.5");
+    setValue(numberField(MIN_STITCHES), "10");
+    setValue(numberField(CONFETTI), "3");
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(screen.getByRole("table", { name: "Thread key" })).toBeInTheDocument();
+    const bodies = posted(fetchMock, "/api/patterns");
+    expect(bodies).toHaveLength(1);
+    const body = bodies[0] as FormData;
     expect((body.get("image") as File).name).toBe(file.name);
     expect(body.get("width")).toBe("40");
     expect(body.get("max_colours")).toBe("4");
@@ -88,153 +398,521 @@ describe("UploadForm", () => {
     expect(body.get("confetti_size")).toBe("3");
   });
 
-  it("posts the cleanup settings as 0 when left alone", async () => {
-    const fetchMock = vi.fn(() => Promise.resolve(json(200, PATTERN)));
-    vi.stubGlobal("fetch", fetchMock);
-    render(<UploadForm />);
+  it("posts the reported defaults when the settings are left alone", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
 
     chooseFile();
-    fireEvent.click(submitButton());
+    await wait(QUIET_MS);
+    await settle();
 
-    await screen.findByRole("table", { name: "Thread key" });
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    const body = init.body as FormData;
+    const body = posted(fetchMock, "/api/patterns")[0] as FormData;
+    expect(body.get("width")).toBe("100");
+    expect(body.get("max_colours")).toBe("7");
+    expect(body.get("fabric_count")).toBe("14");
     expect(body.get("merge_distance")).toBe("0");
     expect(body.get("min_stitches")).toBe("0");
     expect(body.get("confetti_size")).toBe("0");
   });
 
-  it("shows the field of a refused cleanup setting from the API's 422", async () => {
-    const detail = [
-      {
-        loc: ["body", "confetti_size"],
-        msg: "Input should be less than or equal to 10",
-        type: "less_than_equal",
-      },
-    ];
-    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(json(422, { detail }))));
-    render(<UploadForm />);
+  it("sends one conversion 500 ms after the last of three slider changes, with the third value", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+
+    setValue(slider(WIDTH), "50");
+    await wait(100);
+    setValue(slider(WIDTH), "60");
+    await wait(100);
+    setValue(slider(WIDTH), "70");
+    await wait(QUIET_MS - 1);
+    expect(sent(fetchMock, "width")).toEqual(["100"]);
+
+    await wait(1);
+    expect(sent(fetchMock, "width")).toEqual(["100", "70"]);
+  });
+
+  it.each([
+    { control: "width slider", field: () => slider(WIDTH), name: "width", value: "60" },
+    {
+      control: "max colours number field",
+      field: () => numberField(COLOURS),
+      name: "max_colours",
+      value: "5",
+    },
+    { control: "fabric count field", field: fabricCount, name: "fabric_count", value: "18" },
+    { control: "merge slider", field: () => slider(MERGE), name: "merge_distance", value: "1.5" },
+    {
+      control: "minimum stitches number field",
+      field: () => numberField(MIN_STITCHES),
+      name: "min_stitches",
+      value: "4",
+    },
+    {
+      control: "confetti slider",
+      field: () => slider(CONFETTI),
+      name: "confetti_size",
+      value: "2",
+    },
+  ])(
+    "re-converts 500 ms after a change of the $control",
+    async ({ field, name, value }) => {
+      const calls = controlled();
+      const fetchMock = stubApi({ patterns: calls.handler });
+      await renderLive();
+      chooseFile();
+      await wait(QUIET_MS);
+      await calls.answer(0, json(200, PATTERN));
+
+      setValue(field(), value);
+      await wait(QUIET_MS - 1);
+      expect(posted(fetchMock, "/api/patterns")).toHaveLength(1);
+
+      await wait(1);
+      expect(sent(fetchMock, name)).toHaveLength(2);
+      expect(sent(fetchMock, name)[1]).toBe(value);
+    },
+  );
+
+  it("never converts on a change of the chart choices", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+
+    setValue(screen.getByLabelText("Chart"), "bw");
+    setValue(screen.getByLabelText("Paper"), "A3");
+    setValue(screen.getByLabelText("Orientation"), "landscape");
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    await wait(10 * QUIET_MS);
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(1);
+    expect(downloadButton()).toBeEnabled();
+  });
+
+  it("sends nothing when confetti goes to 3 and back to the preview's 0 within 500 ms", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+
+    setValue(slider(CONFETTI), "3");
+    await wait(200);
+    setValue(numberField(CONFETTI), "0");
+    await wait(2 * QUIET_MS);
+
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(1);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(keyShows(A_CODE)).toBe(true);
+    expect(downloadButton()).toBeEnabled();
+  });
+
+  it("shows a status while an update is pending or running, with the previous preview kept", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    setValue(numberField(MIN_STITCHES), "4");
+
+    expect(screen.getByRole("status")).toHaveTextContent(BUSY);
+    expect(keyShows(A_CODE)).toBe(true);
+
+    await wait(QUIET_MS);
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(2);
+    expect(screen.getByRole("status")).toHaveTextContent(BUSY);
+    expect(keyShows(A_CODE)).toBe(true);
+
+    await calls.answer(1, json(200, PATTERN_B));
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(keyShows(B_CODE)).toBe(true);
+    expect(keyShows(A_CODE)).toBe(false);
+  });
+
+  it("clears the preview and sends nothing when the image is cleared", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+
+    setValue(slider(WIDTH), "60");
+    fireEvent.change(imageInput(), { target: { files: [] } });
+
+    expect(keyShows(A_CODE)).toBe(false);
+    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+    await wait(10 * QUIET_MS);
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(1);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("sends nothing after unmounting with a change pending", async () => {
+    const fetchMock = stubApi();
+    const { unmount } = await renderLive();
 
     chooseFile();
-    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "11" } });
-    fireEvent.click(submitButton());
+    await wait(200);
+    unmount();
+    await wait(10 * QUIET_MS);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(0);
+  });
+
+  it("sends no follow-up and logs no error after unmounting while a conversion runs", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    const { unmount } = await renderLive();
+    const errors = vi.spyOn(console, "error");
+    chooseFile();
+    await wait(QUIET_MS);
+    setValue(slider(WIDTH), "60");
+    await wait(2 * QUIET_MS);
+
+    unmount();
+    await calls.answer(0, json(200, PATTERN));
+    await wait(10 * QUIET_MS);
+
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(1);
+    expect(errors).not.toHaveBeenCalled();
+  });
+});
+
+describe("UploadForm one conversion at a time", () => {
+  it("holds a change made while A runs until A ends, shows A, then sends one B", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+
+    setValue(slider(WIDTH), "60");
+    await wait(2 * QUIET_MS);
+    expect(sent(fetchMock, "width")).toEqual(["100"]);
+    expect(screen.getByRole("status")).toHaveTextContent(BUSY);
+
+    await calls.answer(0, json(200, PATTERN));
+
+    expect(keyShows(A_CODE)).toBe(true);
+    expect(sent(fetchMock, "width")).toEqual(["100", "60"]);
+    expect(screen.getByRole("status")).toHaveTextContent(BUSY);
+  });
+
+  it("coalesces three changes made while A runs into one follow-up with the last value", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+
+    setValue(slider(WIDTH), "50");
+    await wait(100);
+    setValue(slider(WIDTH), "60");
+    await wait(100);
+    setValue(numberField(WIDTH), "70");
+    await wait(2 * QUIET_MS);
+    expect(sent(fetchMock, "width")).toEqual(["100"]);
+
+    await calls.answer(0, json(200, PATTERN));
+    expect(sent(fetchMock, "width")).toEqual(["100", "70"]);
+
+    await calls.answer(1, json(200, PATTERN_B));
+    await wait(10 * QUIET_MS);
+    expect(sent(fetchMock, "width")).toEqual(["100", "70"]);
+  });
+
+  it("lets the follow-up wait out the quiet delay when A ends before it expires", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+    await wait(300);
+
+    setValue(slider(WIDTH), "60");
+    await wait(100);
+    await calls.answer(0, json(200, PATTERN));
+    expect(sent(fetchMock, "width")).toEqual(["100"]);
+
+    await wait(QUIET_MS - 100 - 1);
+    expect(sent(fetchMock, "width")).toEqual(["100"]);
+
+    await wait(1);
+    expect(sent(fetchMock, "width")).toEqual(["100", "60"]);
+  });
+
+  it("restarts the quiet delay for a change made after a follow-up fell due", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+
+    setValue(slider(WIDTH), "60");
+    await wait(QUIET_MS);
+    setValue(slider(WIDTH), "70");
+    await wait(100);
+    await calls.answer(0, json(200, PATTERN));
+    expect(sent(fetchMock, "width")).toEqual(["100"]);
+
+    await wait(QUIET_MS - 100 - 1);
+    expect(sent(fetchMock, "width")).toEqual(["100"]);
+
+    await wait(1);
+    expect(sent(fetchMock, "width")).toEqual(["100", "70"]);
+  });
+
+  it("sends no follow-up when a change made while A runs is undone before A ends", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+
+    setValue(slider(WIDTH), "60");
+    await wait(100);
+    setValue(numberField(WIDTH), "100");
+    await wait(2 * QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+    await wait(10 * QUIET_MS);
+
+    expect(sent(fetchMock, "width")).toEqual(["100"]);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(keyShows(A_CODE)).toBe(true);
+  });
+
+  it("replaces A's preview with B's, which stays, with nothing sent after it", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+    setValue(slider(WIDTH), "60");
+    await wait(QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+    expect(keyShows(A_CODE)).toBe(true);
+
+    await calls.answer(1, json(200, PATTERN_B));
+
+    expect(keyShows(B_CODE)).toBe(true);
+    expect(keyShows(A_CODE)).toBe(false);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    await wait(20 * QUIET_MS);
+    expect(keyShows(B_CODE)).toBe(true);
+    expect(keyShows(A_CODE)).toBe(false);
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(2);
+  });
+});
+
+describe("UploadForm errors and image changes", () => {
+  it("keeps the preview and its download on a 422 naming width, until a success clears the alert", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+
+    setValue(numberField(WIDTH), "900");
+    await wait(QUIET_MS);
+    await calls.answer(1, refused("width", "Input should be less than or equal to 500"));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "width: Input should be less than or equal to 500",
+    );
+    expect(keyShows(A_CODE)).toBe(true);
+    expect(downloadButton()).toBeEnabled();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    setValue(numberField(WIDTH), "50");
+    await wait(QUIET_MS);
+    await calls.answer(2, json(200, PATTERN_B));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(keyShows(B_CODE)).toBe(true);
+    expect(sent(fetchMock, "width")).toEqual(["100", "900", "50"]);
+  });
+
+  it("shows the field of a refused cleanup setting from the API's 422", async () => {
+    stubApi({
+      patterns: () =>
+        Promise.resolve(refused("confetti_size", "Input should be less than or equal to 10")),
+    });
+    await renderLive();
+
+    chooseFile();
+    setValue(numberField(CONFETTI), "11");
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
       "confetti_size: Input should be less than or equal to 10",
     );
   });
 
-  it("shows a busy state while the request is in flight, then the preview", async () => {
-    let resolve: (response: Response) => void = () => undefined;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        () =>
-          new Promise<Response>((r) => {
-            resolve = r;
-          }),
-      ),
-    );
-    render(<UploadForm />);
+  it("posts a width of 0 as typed: the form does no range check", async () => {
+    const fetchMock = stubApi({
+      patterns: () =>
+        Promise.resolve(refused("width", "Input should be greater than or equal to 1")),
+    });
+    await renderLive();
 
     chooseFile();
-    fireEvent.click(submitButton());
+    setValue(numberField(WIDTH), "0");
+    await wait(QUIET_MS);
+    await settle();
 
-    expect(screen.getByRole("status")).toHaveTextContent(/converting/i);
-    expect(submitButton()).toBeDisabled();
-
-    await act(async () => {
-      resolve(json(200, PATTERN));
-    });
-
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(submitButton()).toBeEnabled();
-    expect(screen.getByText("321")).toBeInTheDocument();
-    expect(screen.getByText("310")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "width: Input should be greater than or equal to 1",
+    );
+    expect(sent(fetchMock, "width")).toEqual(["0"]);
   });
 
   it("shows the API's message on an error", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(() => Promise.resolve(json(400, { detail: "the upload is not a decodable image" }))),
-    );
-    render(<UploadForm />);
+    stubApi({ patterns: () => Promise.resolve(json(400, { detail: NOT_AN_IMAGE })) });
+    await renderLive();
 
     chooseFile();
-    fireEvent.click(submitButton());
+    await wait(QUIET_MS);
+    await settle();
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "the upload is not a decodable image",
-    );
+    expect(screen.getByRole("alert")).toHaveTextContent(NOT_AN_IMAGE);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
-  it("clears the error when the next submit succeeds", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(json(400, { detail: "the upload is not a decodable image" }))
-      .mockResolvedValueOnce(json(200, PATTERN));
-    vi.stubGlobal("fetch", fetchMock);
-    render(<UploadForm />);
-
+  it("does not send a failed conversion again while its settings stand", async () => {
+    const fetchMock = stubApi({
+      patterns: () => Promise.resolve(json(400, { detail: NOT_AN_IMAGE })),
+    });
+    await renderLive();
     chooseFile();
-    fireEvent.click(submitButton());
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await wait(QUIET_MS);
+    await settle();
+    expect(screen.getByRole("alert")).toHaveTextContent(NOT_AN_IMAGE);
 
-    fireEvent.click(submitButton());
+    await wait(20 * QUIET_MS);
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(1);
 
-    expect(await screen.findByRole("table", { name: "Thread key" })).toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
+    setValue(slider(WIDTH), "50");
+    await wait(200);
+    setValue(numberField(WIDTH), "100");
+    await wait(2 * QUIET_MS);
 
-  it("clears the previous preview when the next submit fails", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(json(200, PATTERN))
-      .mockResolvedValueOnce(json(400, { detail: "the upload is not a decodable image" }));
-    vi.stubGlobal("fetch", fetchMock);
-    render(<UploadForm />);
-
-    chooseFile();
-    fireEvent.click(submitButton());
-    expect(await screen.findByRole("table", { name: "Thread key" })).toBeInTheDocument();
-
-    fireEvent.click(submitButton());
-
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
-    expect(screen.queryByRole("table", { name: "Thread key" })).not.toBeInTheDocument();
-  });
-
-  it("posts a width of 0 as typed: the form does no range check", async () => {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        json(422, {
-          detail: [{ loc: ["body", "width"], msg: "Input should be greater than or equal to 1" }],
-        }),
-      ),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    render(<UploadForm />);
-
-    chooseFile();
-    fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: "0" } });
-    fireEvent.click(submitButton());
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "width: Input should be greater than or equal to 1",
-    );
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect((init.body as FormData).get("width")).toBe("0");
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(1);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("shows a message, not a crash, when the server cannot be reached", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))));
-    render(<UploadForm />);
+    stubApi({ patterns: () => Promise.reject(new TypeError("Failed to fetch")) });
+    await renderLive();
 
     chooseFile();
-    fireEvent.click(submitButton());
+    await wait(QUIET_MS);
+    await settle();
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/cannot reach the server/i);
-    expect(submitButton()).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/cannot reach the server/i);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("clears the preview at once when another image is chosen, then converts that image", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile("photo.png");
+    await wait(QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+
+    chooseFile("other.png");
+
+    expect(keyShows(A_CODE)).toBe(false);
+    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(BUSY);
+
+    await wait(QUIET_MS);
+    expect(sentImages(fetchMock)).toEqual(["photo.png", "other.png"]);
+    await calls.answer(1, json(200, PATTERN_B));
+    expect(keyShows(B_CODE)).toBe(true);
+  });
+
+  it("clears the error at once when another image is chosen", async () => {
+    const calls = controlled();
+    stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile("photo.png");
+    await wait(QUIET_MS);
+    await calls.answer(0, json(400, { detail: NOT_AN_IMAGE }));
+    expect(screen.getByRole("alert")).toHaveTextContent(NOT_AN_IMAGE);
+
+    chooseFile("other.png");
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("shows the alert and no preview when a new image's conversion fails", async () => {
+    const calls = controlled();
+    stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile("photo.png");
+    await wait(QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+
+    chooseFile("other.png");
+    await wait(QUIET_MS);
+    await calls.answer(1, json(400, { detail: NOT_AN_IMAGE }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(NOT_AN_IMAGE);
+    expect(keyShows(A_CODE)).toBe(false);
+    expect(screen.queryByRole("table", { name: "Thread key" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+  });
+
+  it("discards a preview of the image no longer chosen, then sends the new image's request", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile("photo.png");
+    await wait(QUIET_MS);
+
+    chooseFile("other.png");
+    await wait(2 * QUIET_MS);
+    expect(sentImages(fetchMock)).toEqual(["photo.png"]);
+
+    await calls.answer(0, json(200, PATTERN));
+
+    expect(keyShows(A_CODE)).toBe(false);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(sentImages(fetchMock)).toEqual(["photo.png", "other.png"]);
+    expect(screen.getByRole("status")).toHaveTextContent(BUSY);
+
+    await calls.answer(1, json(200, PATTERN_B));
+    expect(keyShows(B_CODE)).toBe(true);
+  });
+
+  it("discards a failure for the image no longer chosen, with no alert", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ patterns: calls.handler });
+    await renderLive();
+    chooseFile("photo.png");
+    await wait(QUIET_MS);
+
+    chooseFile("other.png");
+    await wait(2 * QUIET_MS);
+    await calls.answer(0, json(400, { detail: NOT_AN_IMAGE }));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(sentImages(fetchMock)).toEqual(["photo.png", "other.png"]);
   });
 });
 
@@ -244,15 +922,6 @@ describe("UploadForm PDF download", () => {
       status: 200,
       headers: { "Content-Type": "application/pdf" },
     });
-  }
-
-  /** fetch answering the conversion with PATTERN and the PDF request with `pdf`. */
-  function stubBoth(pdf: () => Promise<Response>) {
-    const fetchMock = vi.fn((url: string) =>
-      url === "/api/patterns" ? Promise.resolve(json(200, PATTERN)) : pdf(),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    return fetchMock;
   }
 
   function stubSave() {
@@ -269,30 +938,25 @@ describe("UploadForm PDF download", () => {
     return { createObjectURL, click };
   }
 
+  /** Choose an image at `width` and let its conversion (answered at once) show. */
   async function convert(width = "40") {
     chooseFile();
-    fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: width } });
-    fireEvent.click(submitButton());
-    await screen.findByRole("table", { name: "Thread key" });
+    setValue(numberField(WIDTH), width);
+    await wait(QUIET_MS);
+    await settle();
+    expect(screen.getByRole("table", { name: "Thread key" })).toBeInTheDocument();
   }
 
-  function downloadButton(): HTMLElement {
-    return screen.getByRole("button", { name: /pdf/i });
-  }
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("offers no download before a conversion", () => {
-    render(<UploadForm />);
+  it("offers no download before a conversion", async () => {
+    stubApi();
+    await renderForm();
 
     expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
   });
 
   it("offers the download with colour, A4 and portrait chosen after a conversion", async () => {
-    stubBoth(() => Promise.resolve(pdfResponse()));
-    render(<UploadForm />);
+    stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    await renderLive();
 
     await convert();
 
@@ -309,26 +973,25 @@ describe("UploadForm PDF download", () => {
   });
 
   it("asks for the PDF of the preview shown, with the choices made, and saves it", async () => {
-    const fetchMock = stubBoth(() => Promise.resolve(pdfResponse()));
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
     const { createObjectURL, click } = stubSave();
-    render(<UploadForm />);
+    await renderLive();
 
-    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "3" } });
+    setValue(numberField(CONFETTI), "3");
     await convert("40");
-    fireEvent.change(screen.getByLabelText("Width (stitches)"), { target: { value: "80" } });
-    fireEvent.change(screen.getByLabelText(CONFETTI), { target: { value: "5" } });
-    fireEvent.change(screen.getByLabelText("Chart"), { target: { value: "bw" } });
-    fireEvent.change(screen.getByLabelText("Paper"), { target: { value: "A3" } });
-    fireEvent.change(screen.getByLabelText("Orientation"), { target: { value: "landscape" } });
+    setValue(screen.getByLabelText("Chart"), "bw");
+    setValue(screen.getByLabelText("Paper"), "A3");
+    setValue(screen.getByLabelText("Orientation"), "landscape");
     fireEvent.click(downloadButton());
+    await settle();
 
-    await vi.waitFor(() => expect(click).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const [url, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
-    expect(url).toBe("/api/patterns/pdf");
-    const body = init.body as FormData;
+    expect(click).toHaveBeenCalledTimes(1);
+    const pdfs = posted(fetchMock, "/api/patterns/pdf");
+    expect(pdfs).toHaveLength(1);
+    const body = pdfs[0] as FormData;
+    expect((body.get("image") as File).name).toBe("photo.png");
     expect(body.get("width")).toBe("40");
-    expect(body.get("max_colours")).toBe("20");
+    expect(body.get("max_colours")).toBe("7");
     expect(body.get("fabric_count")).toBe("14");
     expect(body.get("confetti_size")).toBe("3");
     expect(body.get("merge_distance")).toBe("0");
@@ -341,33 +1004,136 @@ describe("UploadForm PDF download", () => {
     expect(link.href).toBe("blob:chart");
   });
 
+  it("disables the download while an update is pending or running, then asks for B's settings", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({
+      patterns: calls.handler,
+      pdf: () => Promise.resolve(pdfResponse()),
+    });
+    const { click } = stubSave();
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+    expect(downloadButton()).toBeEnabled();
+
+    setValue(slider(WIDTH), "80");
+    setValue(numberField(CONFETTI), "5");
+    expect(downloadButton()).toBeDisabled();
+    fireEvent.click(downloadButton());
+    await wait(QUIET_MS);
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(2);
+    expect(downloadButton()).toBeDisabled();
+
+    await calls.answer(1, json(200, PATTERN_B));
+
+    expect(keyShows(B_CODE)).toBe(true);
+    expect(downloadButton()).toBeEnabled();
+    expect(posted(fetchMock, "/api/patterns/pdf")).toHaveLength(0);
+    fireEvent.click(downloadButton());
+    await settle();
+
+    expect(click).toHaveBeenCalledTimes(1);
+    const pdfs = posted(fetchMock, "/api/patterns/pdf");
+    expect(pdfs).toHaveLength(1);
+    const body = pdfs[0] as FormData;
+    expect(body.get("width")).toBe("80");
+    expect(body.get("confetti_size")).toBe("5");
+    expect(body.get("max_colours")).toBe("7");
+  });
+
+  it("asks for the PDF of the preview kept after a failed update", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({
+      patterns: calls.handler,
+      pdf: () => Promise.resolve(pdfResponse()),
+    });
+    const { click } = stubSave();
+    await renderLive();
+    chooseFile();
+    await wait(QUIET_MS);
+    await calls.answer(0, json(200, PATTERN));
+    setValue(numberField(WIDTH), "900");
+    await wait(QUIET_MS);
+    await calls.answer(1, refused("width", "Input should be less than or equal to 500"));
+
+    fireEvent.click(downloadButton());
+    await settle();
+
+    expect(click).toHaveBeenCalledTimes(1);
+    const body = posted(fetchMock, "/api/patterns/pdf")[0] as FormData;
+    expect(body.get("width")).toBe("100");
+  });
+
   it("disables the button and says so while the PDF is being made", async () => {
     let resolve: (response: Response) => void = () => undefined;
-    stubBoth(() => new Promise<Response>((done) => (resolve = done)));
+    stubApi({ pdf: () => new Promise<Response>((done) => (resolve = done)) });
     stubSave();
-    render(<UploadForm />);
+    await renderLive();
     await convert();
 
     fireEvent.click(downloadButton());
+    await settle();
 
-    expect(await screen.findByRole("button", { name: "Preparing PDF..." })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Preparing PDF..." })).toBeDisabled();
 
     await act(async () => resolve(pdfResponse()));
+    await settle();
 
     expect(downloadButton()).toHaveTextContent("Download PDF");
     expect(downloadButton()).toBeEnabled();
   });
 
+  it("clears a failed download's message once the next preview shows", async () => {
+    stubApi({ pdf: () => Promise.resolve(refused("paper", "bad paper")) });
+    await renderLive();
+    await convert();
+    fireEvent.click(downloadButton());
+    await settle();
+    expect(screen.getByRole("alert")).toHaveTextContent("paper: bad paper");
+
+    setValue(numberField(WIDTH), "60");
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(downloadButton()).toHaveTextContent("Download PDF");
+  });
+
+  it("drops the PDF of an image no longer chosen and offers the new one's", async () => {
+    let resolve: (response: Response) => void = () => undefined;
+    const fetchMock = stubApi({ pdf: () => new Promise<Response>((done) => (resolve = done)) });
+    const { click } = stubSave();
+    await renderLive();
+    await convert();
+    fireEvent.click(downloadButton());
+    await settle();
+
+    chooseFile("other.png");
+    await wait(QUIET_MS);
+    await settle();
+    expect(downloadButton()).toHaveTextContent("Download PDF");
+    expect(downloadButton()).toBeEnabled();
+
+    await act(async () => resolve(pdfResponse()));
+    await settle();
+
+    expect(click).not.toHaveBeenCalled();
+    expect(downloadButton()).toBeEnabled();
+    expect(sentImages(fetchMock)).toEqual(["photo.png", "other.png"]);
+  });
+
   it("shows the API's message on a failed download and keeps the preview", async () => {
-    stubBoth(() =>
-      Promise.resolve(json(422, { detail: [{ loc: ["body", "paper"], msg: "bad paper" }] })),
-    );
-    render(<UploadForm />);
+    stubApi({
+      pdf: () => Promise.resolve(refused("paper", "bad paper")),
+    });
+    await renderLive();
     await convert();
 
     fireEvent.click(downloadButton());
+    await settle();
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("paper: bad paper");
+    expect(screen.getByRole("alert")).toHaveTextContent("paper: bad paper");
     expect(screen.getByRole("table", { name: "Thread key" })).toBeInTheDocument();
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { gridPixels } from "./grid";
 import type { Pattern } from "./pattern";
@@ -47,7 +47,7 @@ export function PatternPreview({ pattern }: { pattern: Pattern }) {
         </label>
       </fieldset>
 
-      {mode === "colours" ? <ColourGrid pattern={pattern} /> : <SymbolGrid pattern={pattern} />}
+      {mode === "colours" ? <ColourView pattern={pattern} /> : <SymbolGrid pattern={pattern} />}
 
       <dl>
         <dt>Size</dt>
@@ -104,9 +104,41 @@ export function PatternPreview({ pattern }: { pattern: Pattern }) {
   );
 }
 
-function ColourGrid({ pattern }: { pattern: Pattern }) {
+/**
+ * The colour grid; with the pattern before cleanup in the response, that one and the
+ * cleaned one side by side, at the same size.
+ */
+function ColourView({ pattern }: { pattern: Pattern }) {
+  const { width, height, converted } = pattern;
+  // Kept between renders, so the before canvas repaints only when the pattern changes.
+  const before = useMemo(
+    () => (converted === null ? null : { width, height, grid: converted.grid, key: converted.key }),
+    [converted, width, height],
+  );
+  if (before === null) {
+    return <ColourGrid cells={pattern} label={`Pattern preview, ${width} x ${height} stitches`} />;
+  }
+  return (
+    <div style={{ display: "flex", gap: "1em", alignItems: "flex-start" }}>
+      <figure style={{ flex: "1 1 0", minWidth: 0, margin: 0 }}>
+        <figcaption>Before cleanup</figcaption>
+        <ColourGrid cells={before} label={`Before cleanup, ${width} x ${height} stitches`} />
+      </figure>
+      <figure style={{ flex: "1 1 0", minWidth: 0, margin: 0 }}>
+        <figcaption>After cleanup</figcaption>
+        <ColourGrid cells={pattern} label={`After cleanup, ${width} x ${height} stitches`} />
+      </figure>
+    </div>
+  );
+}
+
+function ColourGrid(props: {
+  cells: Pick<Pattern, "width" | "height" | "grid" | "key">;
+  label: string;
+}) {
+  const { cells, label } = props;
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { width, height } = pattern;
+  const { width, height } = cells;
 
   useEffect(() => {
     // One canvas pixel per cell, scaled up by CSS: a 1000x1000 pattern is one image, not a
@@ -115,14 +147,14 @@ function ColourGrid({ pattern }: { pattern: Pattern }) {
     if (!context) {
       return;
     }
-    context.putImageData(new ImageData(gridPixels(pattern), width, height), 0, 0);
-  }, [pattern, width, height]);
+    context.putImageData(new ImageData(gridPixels(cells), width, height), 0, 0);
+  }, [cells, width, height]);
 
   return (
     <canvas
       ref={canvasRef}
       role="img"
-      aria-label={`Pattern preview, ${width} x ${height} stitches`}
+      aria-label={label}
       width={width}
       height={height}
       style={{

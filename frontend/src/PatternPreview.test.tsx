@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { gridPixels } from "./grid";
 import type { KeyEntry, Pattern } from "./pattern";
 import { PatternPreview } from "./PatternPreview";
 
@@ -18,6 +19,7 @@ function makePattern(overrides: Partial<Pattern> = {}): Pattern {
     total_stitches: 123,
     finished_size: { width_in: 9.99, height_in: 5.04, width_cm: 25.4, height_cm: 12.7 },
     isolated_stitches: { before: 0, after: 0 },
+    converted: null,
     ...overrides,
   };
 }
@@ -193,5 +195,131 @@ describe("PatternPreview", () => {
     expect(keyRows()).toHaveLength(1);
     expect(screen.getByText("0 stitches in total")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /^Pattern preview/ })).toBeInTheDocument();
+  });
+});
+
+describe("PatternPreview before and after cleanup", () => {
+  /** 3 x 1: the cleaned grid holds red, black, bare; before cleanup the black cell was white. */
+  function cleanedPattern(): Pattern {
+    return makePattern({
+      width: 3,
+      height: 1,
+      grid: [[0, 1, null]],
+      converted: {
+        grid: [[0, 2, null]],
+        key: [
+          { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "Z" },
+          { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 0, skeins: 0, symbol: "A" },
+          { code: "Blanc", name: "White", rgb: [252, 251, 248], stitches: 1, skeins: 1, symbol: "B" },
+        ],
+        total_stitches: 2,
+      },
+    });
+  }
+
+  /** A 2D context per canvas, recording what each one is painted with, by accessible name. */
+  function stubCanvas() {
+    vi.stubGlobal(
+      "ImageData",
+      class {
+        constructor(
+          public data: Uint8ClampedArray,
+          public width: number,
+          public height: number,
+        ) {}
+      },
+    );
+    const painted = new Map<string, Uint8ClampedArray[]>();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (
+      this: HTMLCanvasElement,
+    ) {
+      const name = this.getAttribute("aria-label") ?? "";
+      return {
+        putImageData: (image: { data: Uint8ClampedArray }) => {
+          painted.set(name, [...(painted.get(name) ?? []), image.data]);
+        },
+      } as unknown as CanvasRenderingContext2D;
+    } as unknown as HTMLCanvasElement["getContext"]);
+    return painted;
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows a before and an after grid, each named, when the response has converted", () => {
+    render(<PatternPreview pattern={cleanedPattern()} />);
+
+    const images = screen.getAllByRole("img");
+    expect(images.map((image) => image.getAttribute("aria-label"))).toEqual([
+      "Before cleanup, 3 x 1 stitches",
+      "After cleanup, 3 x 1 stitches",
+    ]);
+    expect(screen.getByText("Before cleanup")).toBeInTheDocument();
+    expect(screen.getByText("After cleanup")).toBeInTheDocument();
+  });
+
+  it("shows one grid, named as without cleanup, when converted is null", () => {
+    render(<PatternPreview pattern={makePattern({ converted: null })} />);
+
+    const images = screen.getAllByRole("img");
+    expect(images).toHaveLength(1);
+    expect(images[0]).toHaveAccessibleName("Pattern preview, 40 x 20 stitches");
+    expect(screen.queryByText("Before cleanup")).not.toBeInTheDocument();
+  });
+
+  it("paints the before grid from converted and the after grid from the top level", () => {
+    const painted = stubCanvas();
+    const pattern = cleanedPattern();
+    const converted = pattern.converted;
+    if (converted === null) {
+      throw new Error("fixture has no converted pattern");
+    }
+    const before = gridPixels({ width: 3, height: 1, grid: converted.grid, key: converted.key });
+    const after = gridPixels(pattern);
+    // The fixture's two grids differ, so the canvases cannot pass by swapping.
+    expect(Array.from(before)).not.toEqual(Array.from(after));
+
+    render(<PatternPreview pattern={pattern} />);
+
+    expect(painted.get("Before cleanup, 3 x 1 stitches")?.map((d) => Array.from(d))).toEqual([
+      Array.from(before),
+    ]);
+    expect(painted.get("After cleanup, 3 x 1 stitches")?.map((d) => Array.from(d))).toEqual([
+      Array.from(after),
+    ]);
+  });
+
+  it("does not repaint either grid when shown again with the same pattern", () => {
+    const painted = stubCanvas();
+    const pattern = cleanedPattern();
+
+    const { rerender } = render(<PatternPreview pattern={pattern} />);
+    rerender(<PatternPreview pattern={pattern} />);
+
+    expect(painted.get("Before cleanup, 3 x 1 stitches")).toHaveLength(1);
+    expect(painted.get("After cleanup, 3 x 1 stitches")).toHaveLength(1);
+  });
+
+  it("shows one symbol grid, the cleaned one, in the symbol view", () => {
+    render(<PatternPreview pattern={cleanedPattern()} />);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Symbols" }));
+
+    const images = screen.getAllByRole("img");
+    expect(images).toHaveLength(1);
+    expect(images[0]).toHaveAccessibleName("Pattern symbols, 3 x 1 stitches");
+  });
+
+  it("lists the cleaned key only, not the threads cleanup removed", () => {
+    render(<PatternPreview pattern={cleanedPattern()} />);
+
+    const codes = keyRows()
+      .slice(1)
+      .map((row) => cellTexts(row)[2]);
+    expect(codes).toEqual(["321", "310"]);
+    expect(screen.queryByText("Blanc")).not.toBeInTheDocument();
+    expect(screen.getByText("123 stitches in total")).toBeInTheDocument();
   });
 });
