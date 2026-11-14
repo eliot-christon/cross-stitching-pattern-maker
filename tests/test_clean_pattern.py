@@ -142,19 +142,40 @@ def test_all_three_settings_zero_return_the_input_and_equal_isolated_counts(
     assert cleaned.isolated_before == cleaned.isolated_after == isolated
 
 
-def test_the_cleaned_pattern_is_a_frozen_record_of_the_pattern_and_both_counts() -> None:
+def test_the_cleaned_pattern_is_a_frozen_record_of_both_patterns_and_both_counts() -> None:
     cleaned = clean_pattern(
         drawn(LONE_IN_FIELD, FIELD), merge_distance=0.0, min_stitches=0, confetti_size=1
     )
     assert isinstance(cleaned, CleanedPattern)
     names = {field.name for field in dataclasses.fields(cleaned)}
-    assert names == {"pattern", "isolated_before", "isolated_after"}
+    assert names == {"pattern", "converted", "isolated_before", "isolated_after"}
     assert isinstance(cleaned.pattern, Pattern)
+    assert isinstance(cleaned.converted, Pattern)
     # Plain ints, not numpy integers, so the API can return them as they are.
     assert isinstance(cleaned.isolated_before, int)
     assert isinstance(cleaned.isolated_after, int)
     with pytest.raises(dataclasses.FrozenInstanceError):
         cleaned.isolated_after = 5  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("merge_distance", "min_stitches", "confetti_size"),
+    [(0.0, 0, 0), (0.0, 0, 1), (3.0, 5, 1)],
+    ids=["all-zero", "confetti", "all-three"],
+)
+def test_converted_is_the_input_pattern_itself_unchanged(
+    merge_distance: float, min_stitches: int, confetti_size: int
+) -> None:
+    pattern = drawn(LONE_IN_FIELD, FIELD)
+    cleaned = clean_pattern(
+        pattern,
+        merge_distance=merge_distance,
+        min_stitches=min_stitches,
+        confetti_size=confetti_size,
+    )
+    assert cleaned.converted is pattern
+    assert_equal_patterns(cleaned.converted, drawn(LONE_IN_FIELD, FIELD))
+    assert cleaned.isolated_before == isolated_stitches(cleaned.converted)
 
 
 # ------------------------------------------------------------------------------ the order

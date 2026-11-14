@@ -22,10 +22,11 @@ __all__ = ["CleanedPattern", "clean_pattern", "merge_similar_threads", "prune_ra
 
 @dataclass(frozen=True)
 class CleanedPattern:
-    """A cleaned pattern with the isolated stitches (see `isolated_stitches`) of the
-    pattern it was cleaned from and of itself."""
+    """A cleaned pattern, the pattern it was cleaned from (`converted`, the same object),
+    and the isolated stitches (see `isolated_stitches`) of each."""
 
     pattern: Pattern
+    converted: Pattern
     isolated_before: int
     isolated_after: int
 
@@ -47,6 +48,7 @@ def clean_pattern(
     )
     return CleanedPattern(
         pattern=cleaned,
+        converted=pattern,
         isolated_before=isolated_stitches(pattern),
         isolated_after=isolated_stitches(cleaned),
     )
