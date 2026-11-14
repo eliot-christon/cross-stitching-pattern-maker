@@ -540,3 +540,95 @@ def test_every_cleanup_setting_at_its_maximum_gives_the_core_pattern() -> None:
 
     assert body["grid"] == _grid_json(cleaned.pattern)
     assert body["key"] == _key_json(cleaned.pattern)
+
+
+# --- GET /limits ---------------------------------------------------------------------------
+
+
+SETTING_NAMES = ["width", "max_colours", "merge_distance", "min_stitches", "confetti_size"]
+
+
+def _limits() -> dict[str, Any]:
+    response = client.get("/limits")
+    assert response.status_code == 200, response.text
+    body: dict[str, Any] = response.json()
+    return body
+
+
+def _setting(name: str) -> dict[str, Any]:
+    setting: dict[str, Any] = _limits()["settings"][name]
+    return setting
+
+
+def _one_colour() -> Image.Image:
+    """10 x 1 royal blue: 100 rows at the widest width, one at the narrowest."""
+    return _field_image((1, 10), {})
+
+
+def _post_setting(name: str, value: float) -> Any:
+    """`POST /patterns` of `_one_colour()` with `name` at `value`, the other fields valid."""
+    return _post(_png(_one_colour()), {"width": "10", "max_colours": "1", name: str(value)})
+
+
+def test_the_limits_are_the_contract_the_frontend_relies_on() -> None:
+    assert _limits() == {
+        "max_upload_bytes": 20 * 1024 * 1024,
+        "settings": {
+            "width": {"min": 1, "max": 1000, "step": 1, "default": 100},
+            "max_colours": {"min": 1, "max": 100, "step": 1, "default": 20},
+            "merge_distance": {"min": 0, "max": 10, "step": 0.1, "default": 0},
+            "min_stitches": {"min": 0, "max": 1000, "step": 1, "default": 0},
+            "confetti_size": {"min": 0, "max": 10, "step": 1, "default": 0},
+        },
+    }
+    assert list(_limits()["settings"]) == SETTING_NAMES
+
+
+@pytest.mark.parametrize("name", SETTING_NAMES)
+@pytest.mark.parametrize("bound", ["min", "max"])
+def test_every_reported_bound_is_accepted(name: str, bound: str) -> None:
+    response = _post_setting(name, _setting(name)[bound])
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("name", SETTING_NAMES)
+@pytest.mark.parametrize(("bound", "direction"), [("min", -1), ("max", 1)])
+def test_one_step_beyond_a_reported_bound_gives_a_422_naming_the_field(
+    name: str, bound: str, direction: int
+) -> None:
+    setting = _setting(name)
+    response = _post_setting(name, setting[bound] + direction * setting["step"])
+    assert response.status_code == 422
+    assert {tuple(error["loc"]) for error in response.json()["detail"]} == {("body", name)}
+
+
+@pytest.mark.parametrize("name", SETTING_NAMES)
+def test_every_default_lies_within_its_bounds(name: str) -> None:
+    setting = _setting(name)
+    assert setting["min"] <= setting["default"] <= setting["max"]
+
+
+def test_every_setting_at_its_default_is_accepted() -> None:
+    defaults = {name: str(_setting(name)["default"]) for name in SETTING_NAMES}
+    response = _post(_png(_cleanable()), defaults)
+    assert response.status_code == 200, response.text
+
+
+def test_omitted_cleanup_fields_give_the_same_body_as_their_reported_defaults() -> None:
+    defaults = {
+        name: str(_setting(name)["default"])
+        for name in ["merge_distance", "min_stitches", "confetti_size"]
+    }
+    assert _body(_lone_pixel(), 2, **defaults) == _body(_lone_pixel(), 2)
+
+
+def test_the_reported_upload_limit_is_the_one_enforced() -> None:
+    limit = _limits()["max_upload_bytes"]
+    assert limit == MAX_UPLOAD_BYTES
+    fields = {"width": "40", "max_colours": "4"}
+    assert _post(b"\x00" * limit, fields).status_code == 400  # not an image, not too large
+    assert _post(b"\x00" * (limit + 1), fields).status_code == 413
+
+
+def test_the_limits_are_the_same_every_time() -> None:
+    assert client.get("/limits").json() == client.get("/limits").json()
