@@ -6,8 +6,8 @@ import { PatternPreview } from "./PatternPreview";
 
 function makePattern(overrides: Partial<Pattern> = {}): Pattern {
   const key: KeyEntry[] = [
-    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 5, skeins: 1 },
-    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 9, skeins: 2 },
+    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 5, skeins: 1, symbol: "Z" },
+    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 9, skeins: 2, symbol: "A" },
   ];
   return {
     width: 40,
