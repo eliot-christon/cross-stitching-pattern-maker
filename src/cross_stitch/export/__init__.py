@@ -1,5 +1,32 @@
-"""Chart output: the symbol of each key entry."""
+"""Chart output: the symbol of each key entry and the printable PDF chart."""
 
+from cross_stitch.export.pdf import (
+    CELL_MM,
+    FONT_PATH,
+    ORIENTATIONS,
+    OVERLAP,
+    PAPERS,
+    VARIANTS,
+    Orientation,
+    Paper,
+    Variant,
+    chart_capacity,
+    render_pdf,
+)
 from cross_stitch.export.symbols import SYMBOLS, key_symbols
 
-__all__ = ["SYMBOLS", "key_symbols"]
+__all__ = [
+    "CELL_MM",
+    "FONT_PATH",
+    "ORIENTATIONS",
+    "OVERLAP",
+    "PAPERS",
+    "SYMBOLS",
+    "VARIANTS",
+    "Orientation",
+    "Paper",
+    "Variant",
+    "chart_capacity",
+    "key_symbols",
+    "render_pdf",
+]

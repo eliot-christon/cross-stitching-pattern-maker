@@ -4,14 +4,19 @@ version = "0.1.0"
 description = "Turn an image into a printable cross-stitch pattern with real thread colours"
 readme = "README.md"
 authors = [{ name = "Eliot Christon", email = "eliot.christon@gmail.com" }]
-license = "Apache-2.0 AND CC-BY-4.0"
-license-files = ["LICENSE", "src/cross_stitch/threads/DMC_SOURCE.md"]
+license = "Apache-2.0 AND CC-BY-4.0 AND Bitstream-Vera"
+license-files = [
+    "LICENSE",
+    "src/cross_stitch/threads/DMC_SOURCE.md",
+    "src/cross_stitch/export/FONT_SOURCE.md",
+]
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.162.6",
     "numpy>=2.5.4",
     "pillow>=13.0.0",
     "python-multipart>=0.0.33",
+    "reportlab>=5.1.0",
     "uvicorn>=0.54.0",
 ]
 
@@ -28,8 +33,10 @@ dev = [
     "mypy>=2.4.1",
     "pre-commit>=4.7.0",
     "pylint>=4.1.3",
+    "pypdf>=7.1.0",
     "pytest>=9.2.0",
     "ruff>=0.17.5",
+    "types-reportlab>=5.1.0.20261104",
 ]
 
 [tool.ruff]
