@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import {
   convertImage,
@@ -18,11 +18,16 @@ interface Source {
   settings: Settings;
 }
 
-type State =
-  | { kind: "idle" }
-  | { kind: "busy" }
-  | { kind: "done"; pattern: Pattern; source: Source }
-  | { kind: "failed"; message: string };
+/** The form as it stands: the image chosen (if any) and the settings as typed. */
+interface Inputs {
+  image: File | null;
+  settings: Settings;
+}
+
+interface Preview {
+  pattern: Pattern;
+  source: Source;
+}
 
 type Download = { kind: "idle" } | { kind: "busy" } | { kind: "failed"; message: string };
 
@@ -34,6 +39,16 @@ type LimitsState =
 const DEFAULT_CHART: ChartOptions = { variant: "colour", paper: "A4", orientation: "portrait" };
 const PAPERS: ChartOptions["paper"][] = ["A2", "A3", "A4", "A5"];
 const PDF_NAME = "pattern.pdf";
+/** How long the inputs must stay unchanged before a conversion is sent. */
+const QUIET_MS = 500;
+
+function sameSource(a: Source | null, b: Source): boolean {
+  if (a === null || a.image !== b.image) {
+    return false;
+  }
+  const keys = Object.keys(b.settings) as (keyof Settings)[];
+  return keys.every((key) => a.settings[key] === b.settings[key]);
+}
 
 /** Hand the browser a file to save, through a temporary object URL. */
 function saveFile(file: Blob, name: string) {
@@ -113,36 +128,140 @@ export function UploadForm() {
   return <Converter limits={limits.limits} />;
 }
 
+/**
+ * The live form: any change of the image or a setting converts once the inputs have been
+ * quiet for `QUIET_MS`. At most one conversion runs at a time; changes made meanwhile are
+ * sent as one follow-up when it ends. Inputs equal to the last request sent send nothing,
+ * so a failed request is not retried until something changes.
+ */
 function Converter({ limits }: { limits: Limits }) {
   const { settings: ranges } = limits;
-  const [image, setImage] = useState<File | null>(null);
-  const [width, setWidth] = useState(String(ranges.width.default));
-  const [maxColours, setMaxColours] = useState(String(ranges.max_colours.default));
-  const [fabricCount, setFabricCount] = useState("14");
-  const [mergeDistance, setMergeDistance] = useState(String(ranges.merge_distance.default));
-  const [minStitches, setMinStitches] = useState(String(ranges.min_stitches.default));
-  const [confettiSize, setConfettiSize] = useState(String(ranges.confetti_size.default));
-  const [state, setState] = useState<State>({ kind: "idle" });
+  const [inputs, setInputs] = useState<Inputs>(() => ({
+    image: null,
+    settings: {
+      width: String(ranges.width.default),
+      maxColours: String(ranges.max_colours.default),
+      fabricCount: "14",
+      mergeDistance: String(ranges.merge_distance.default),
+      minStitches: String(ranges.min_stitches.default),
+      confettiSize: String(ranges.confetti_size.default),
+    },
+  }));
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  /** A change is waiting: the quiet delay is counting, or it expired while one ran. */
+  const [pending, setPending] = useState(false);
+  const [running, setRunning] = useState(false);
   const [chart, setChart] = useState<ChartOptions>(DEFAULT_CHART);
   const [download, setDownload] = useState<Download>({ kind: "idle" });
 
-  const busy = state.kind === "busy";
+  // What the timers and the request callbacks read: they outlive the render that set them.
+  const latest = useRef(inputs);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlight = useRef(false);
+  /** The quiet delay expired while a conversion ran: send when it ends. */
+  const due = useRef(false);
+  const lastSent = useRef<Source | null>(null);
+  const mounted = useRef(true);
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (image === null || busy) {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (timer.current !== null) {
+        clearTimeout(timer.current);
+      }
+    };
+  }, []);
+
+  const busy = pending || running;
+
+  function cancelTimer() {
+    if (timer.current !== null) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+  }
+
+  /** Restart the quiet delay after a change, even a follow-up already due waits it out. */
+  function schedule() {
+    cancelTimer();
+    due.current = false;
+    setPending(true);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      if (inFlight.current) {
+        due.current = true;
+      } else {
+        sendIfChanged();
+      }
+    }, QUIET_MS);
+  }
+
+  /** Send the inputs as they stand, unless there is no image or they were the last sent. */
+  function sendIfChanged() {
+    due.current = false;
+    setPending(false);
+    const { image, settings } = latest.current;
+    if (image === null) {
       return;
     }
-    const settings = { width, maxColours, fabricCount, mergeDistance, minStitches, confettiSize };
     const source = { image, settings };
-    setState({ kind: "busy" });
-    setDownload({ kind: "idle" });
+    if (sameSource(lastSent.current, source)) {
+      return;
+    }
+    void send(source);
+  }
+
+  async function send(source: Source) {
+    lastSent.current = source;
+    inFlight.current = true;
+    setRunning(true);
     const result = await convertImage(source.image, source.settings, limits.max_upload_bytes);
-    setState(
-      result.ok
-        ? { kind: "done", pattern: result.pattern, source }
-        : { kind: "failed", message: result.message },
-    );
+    if (!mounted.current) {
+      return;
+    }
+    inFlight.current = false;
+    setRunning(false);
+    // A result for an image no longer chosen is dropped: it belongs to another pattern.
+    if (source.image === latest.current.image) {
+      if (result.ok) {
+        setPreview({ pattern: result.pattern, source });
+        setError(null);
+        // A failed download's message was about the previous preview.
+        setDownload((current) => (current.kind === "failed" ? { kind: "idle" } : current));
+      } else {
+        setError(result.message);
+      }
+    }
+    if (due.current) {
+      sendIfChanged();
+    }
+  }
+
+  function change(next: Inputs) {
+    latest.current = next;
+    setInputs(next);
+  }
+
+  function changeSetting(key: keyof Settings, value: string) {
+    change({ ...latest.current, settings: { ...latest.current.settings, [key]: value } });
+    schedule();
+  }
+
+  function chooseImage(image: File | null) {
+    change({ ...latest.current, image });
+    // The preview, any error and any download belong to the image that was there.
+    setPreview(null);
+    setError(null);
+    setDownload({ kind: "idle" });
+    if (image === null) {
+      cancelTimer();
+      due.current = false;
+      setPending(false);
+    } else {
+      schedule();
+    }
   }
 
   async function savePdf(source: Source) {
@@ -153,6 +272,10 @@ function Converter({ limits }: { limits: Limits }) {
       chart,
       limits.max_upload_bytes,
     );
+    // The chart of an image no longer chosen is not saved: it is not the preview shown.
+    if (!mounted.current || source.image !== latest.current.image) {
+      return;
+    }
     if (result.ok) {
       saveFile(result.pdf, PDF_NAME);
       setDownload({ kind: "idle" });
@@ -161,67 +284,65 @@ function Converter({ limits }: { limits: Limits }) {
     }
   }
 
+  const { settings } = inputs;
   return (
     <>
       {/* noValidate: the API checks the settings and its message is shown, not the browser's. */}
-      <form noValidate onSubmit={(event) => void submit(event)}>
+      <form noValidate onSubmit={(event) => event.preventDefault()}>
         <label>
           Image
           <input
             type="file"
             accept="image/*"
-            onChange={(event) => setImage(event.target.files?.[0] ?? null)}
+            onChange={(event) => chooseImage(event.target.files?.[0] ?? null)}
           />
         </label>
         <SettingField
           label="Width (stitches)"
           limits={ranges.width}
-          value={width}
-          onChange={setWidth}
+          value={settings.width}
+          onChange={(value) => changeSetting("width", value)}
         />
         <SettingField
           label="Max colours"
           limits={ranges.max_colours}
-          value={maxColours}
-          onChange={setMaxColours}
+          value={settings.maxColours}
+          onChange={(value) => changeSetting("maxColours", value)}
         />
         <label>
           Fabric count
           <input
             type="number"
             step="any"
-            value={fabricCount}
-            onChange={(event) => setFabricCount(event.target.value)}
+            value={settings.fabricCount}
+            onChange={(event) => changeSetting("fabricCount", event.target.value)}
           />
         </label>
         <SettingField
           label="Merge similar threads (colour distance)"
           limits={ranges.merge_distance}
-          value={mergeDistance}
-          onChange={setMergeDistance}
+          value={settings.mergeDistance}
+          onChange={(value) => changeSetting("mergeDistance", value)}
         />
         <SettingField
           label="Minimum stitches per thread"
           limits={ranges.min_stitches}
-          value={minStitches}
-          onChange={setMinStitches}
+          value={settings.minStitches}
+          onChange={(value) => changeSetting("minStitches", value)}
         />
         <SettingField
           label="Largest confetti cluster (stitches)"
           limits={ranges.confetti_size}
-          value={confettiSize}
-          onChange={setConfettiSize}
+          value={settings.confettiSize}
+          onChange={(value) => changeSetting("confettiSize", value)}
         />
-        <button type="submit" disabled={image === null || busy}>
-          {busy ? "Converting..." : "Convert"}
-        </button>
       </form>
 
       {busy && <p role="status">Converting the image. This can take a few seconds.</p>}
-      {state.kind === "failed" && <p role="alert">{state.message}</p>}
-      {state.kind === "done" && (
+      {error !== null && <p role="alert">{error}</p>}
+      {preview !== null && (
         <>
-          <PatternPreview pattern={state.pattern} />
+          <PatternPreview pattern={preview.pattern} />
           <section aria-label="PDF chart">
             <label>
               Chart
@@ -267,8 +388,8 @@ function Converter({ limits }: { limits: Limits }) {
             </label>
             <button
               type="button"
-              disabled={download.kind === "busy"}
-              onClick={() => void savePdf(state.source)}
+              disabled={download.kind === "busy" || busy}
+              onClick={() => void savePdf(preview.source)}
             >
               {download.kind === "busy" ? "Preparing PDF..." : "Download PDF"}
             </button>
