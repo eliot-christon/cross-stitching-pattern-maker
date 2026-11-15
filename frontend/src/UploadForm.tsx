@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   convertImage,
@@ -11,10 +11,18 @@ import {
   type Limits,
   type PixelArt,
   type Replacement,
-  type SettingLimits,
   type Settings,
 } from "./api";
-import { SwatchChoice } from "./controls";
+import {
+  ChipChoice,
+  DropZone,
+  Segmented,
+  SheetIcon,
+  SliderField,
+  Stepper,
+  SwatchChoice,
+  Switch,
+} from "./controls";
 import { DEFAULT_FABRIC, FABRICS } from "./fabric";
 import type { KeyEntry, Pattern } from "./pattern";
 import { StitchedHeart, StitchRule } from "./motif";
@@ -76,6 +84,16 @@ type LimitsState =
   | { kind: "failed"; message: string };
 
 const PAPERS: ChartOptions["paper"][] = ["A2", "A3", "A4", "A5"];
+/** Sheet icons, narrow side x long side in px: each paper half the one before, as A sizes
+ * are, drawn a little less unequal so A5 stays visible. */
+const SHEET_PX: Record<ChartOptions["paper"], [number, number]> = {
+  A2: [18, 25],
+  A3: [14, 20],
+  A4: [11, 16],
+  A5: [9, 12],
+};
+/** Fabric counts offered as chips: the common Aida and evenweave counts. */
+const FABRIC_COUNTS = [11, 14, 16, 18, 22, 28] as const;
 const PDF_NAME = "pattern.pdf";
 /** How long the inputs must stay unchanged before a conversion is sent. */
 const QUIET_MS = 500;
@@ -106,46 +124,6 @@ function saveFile(file: Blob, name: string) {
   link.remove();
   // Revoked a moment later: some browsers start the download after `click` returns.
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-/**
- * A setting as a slider and a number field, both named by `label` and showing `value`;
- * either one edits it. The slider's range comes from the API; the number field takes any
- * text, posted as typed (the API's 422 says what is wrong).
- */
-function SettingField(props: {
-  label: string;
-  limits: SettingLimits;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const { label, limits, value, onChange } = props;
-  const labelId = useId();
-  return (
-    <div role="group" aria-labelledby={labelId} className="field">
-      <span id={labelId} className="field-label">
-        {label}
-      </span>
-      <div className="field-row">
-        <input
-          type="range"
-          aria-labelledby={labelId}
-          min={limits.min}
-          max={limits.max}
-          step={limits.step}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        />
-        <input
-          type="number"
-          aria-labelledby={labelId}
-          step="any"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        />
-      </div>
-    </div>
-  );
 }
 
 /** The form, once the API has said what its settings accept. */
@@ -562,6 +540,15 @@ function Converter({ limits }: { limits: Limits }) {
   }
 
   const { settings } = inputs;
+  /** A sheet icon for `paper` as `orientation` turns it. */
+  const sheet = (paper: ChartOptions["paper"], orientation = chart.orientation) => {
+    const [narrow, tall] = SHEET_PX[paper];
+    return orientation === "portrait" ? (
+      <SheetIcon width={narrow} height={tall} />
+    ) : (
+      <SheetIcon width={tall} height={narrow} />
+    );
+  };
   return (
     <div className="layout">
       <aside className="panel" aria-label="Settings">
@@ -569,70 +556,62 @@ function Converter({ limits }: { limits: Limits }) {
         <h2>Settings</h2>
         {/* noValidate: the API checks the settings and its message is shown, not the browser's. */}
         <form className="form" noValidate onSubmit={(event) => event.preventDefault()}>
-          <label className="field">
-            <span className="field-label">Image</span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(event) => chooseImage(event.target.files?.[0] ?? null)}
-            />
-          </label>
+          <DropZone label="Image" file={inputs.image} onChange={chooseImage} />
           {pixelArt !== null && (
             <div className="pixel-art">
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.pixelArt}
-                  onChange={(event) => changeSettings({ pixelArt: event.target.checked })}
-                />
-                <span>Pixel art</span>
-              </label>
+              <Switch
+                label="Pixel art"
+                checked={settings.pixelArt}
+                onChange={(on) => changeSettings({ pixelArt: on })}
+              />
               <p className="field-hint">
                 {`${pixelArt.width} x ${pixelArt.height} pixels, ${pixelArt.colours} colours: ` +
                   (settings.pixelArt ? "one stitch per pixel." : "converted as a picture.")}
               </p>
             </div>
           )}
-          <SettingField
+
+          <h3 className="form-heading">Size and threads</h3>
+          <SliderField
             label="Width (stitches)"
             limits={ranges.width}
             value={settings.width}
             onChange={(value) => changeSetting("width", value)}
           />
-          <SettingField
+          <SliderField
             label="Colours"
             limits={ranges.max_colours}
             value={settings.maxColours}
             onChange={(value) => changeSetting("maxColours", value)}
           />
-          <label className="field">
-            <span className="field-label">Fabric count</span>
-            <input
-              type="number"
-              step="any"
-              value={settings.fabricCount}
-              onChange={(event) => changeSetting("fabricCount", event.target.value)}
-            />
-          </label>
+          <ChipChoice
+            label="Fabric count"
+            presets={FABRIC_COUNTS}
+            value={settings.fabricCount}
+            onChange={(value) => changeSetting("fabricCount", value)}
+          />
           <SwatchChoice
             label="Fabric colour"
             options={FABRICS}
             value={chart.fabricColour}
             onChange={(fabricColour) => setChart({ ...chart, fabricColour })}
           />
-          <SettingField
+
+          <h3 className="form-heading">Cleanup</h3>
+          <p className="field-hint">Each at 0 is off.</p>
+          <SliderField
             label="Merge similar threads (colour distance)"
             limits={ranges.merge_distance}
             value={settings.mergeDistance}
             onChange={(value) => changeSetting("mergeDistance", value)}
           />
-          <SettingField
+          <SliderField
             label="Minimum stitches per thread"
             limits={ranges.min_stitches}
             value={settings.minStitches}
             onChange={(value) => changeSetting("minStitches", value)}
           />
-          <SettingField
+          <Stepper
             label="Largest confetti cluster (stitches)"
             limits={ranges.confetti_size}
             value={settings.confettiSize}
@@ -678,93 +657,74 @@ function Converter({ limits }: { limits: Limits }) {
         {preview !== null && (
           <section aria-label="PDF chart" className="panel-section">
             <h2>PDF chart</h2>
-            <div className="choices">
-              <label className="field">
-                <span className="field-label">Chart</span>
-                <select
-                  value={chart.variant}
-                  onChange={(event) =>
-                    setChart({ ...chart, variant: event.target.value as ChartOptions["variant"] })
-                  }
-                >
-                  <option value="colour">Colour</option>
-                  <option value="bw">Black and white</option>
-                </select>
-              </label>
-              <label className="field">
-                <span className="field-label">Paper</span>
-                <select
-                  value={chart.paper}
-                  onChange={(event) =>
-                    setChart({ ...chart, paper: event.target.value as ChartOptions["paper"] })
-                  }
-                >
-                  {PAPERS.map((paper) => (
-                    <option key={paper} value={paper}>
-                      {paper}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span className="field-label">Orientation</span>
-                <select
-                  value={chart.orientation}
-                  onChange={(event) =>
-                    setChart({
-                      ...chart,
-                      orientation: event.target.value as ChartOptions["orientation"],
-                    })
-                  }
-                >
-                  <option value="portrait">Portrait</option>
-                  <option value="landscape">Landscape</option>
-                </select>
-              </label>
-            </div>
-            <div className="form chart-layout">
-              <label className="field">
-                <span className="field-label">Split</span>
-                <select
-                  value={chart.split}
-                  onChange={(event) =>
-                    setChart({ ...chart, split: event.target.value as ChartOptions["split"] })
-                  }
-                >
-                  <option value="cells">By cell size (3 mm)</option>
-                  <option value="pages">By pages</option>
-                </select>
-              </label>
+            <div className="form">
+              <Segmented
+                legend="Chart"
+                showLegend
+                options={[
+                  { value: "colour", label: "Colour" },
+                  { value: "bw", label: "Black and white" },
+                ]}
+                value={chart.variant}
+                onChange={(variant) => setChart({ ...chart, variant })}
+              />
+              <Segmented
+                legend="Paper"
+                showLegend
+                className="segmented-sheets"
+                options={PAPERS.map((paper) => ({ value: paper, label: paper, icon: sheet(paper) }))}
+                value={chart.paper}
+                onChange={(paper) => setChart({ ...chart, paper })}
+              />
+              <Segmented
+                legend="Orientation"
+                showLegend
+                className="segmented-sheets"
+                options={[
+                  { value: "portrait", label: "Portrait", icon: sheet("A5", "portrait") },
+                  { value: "landscape", label: "Landscape", icon: sheet("A5", "landscape") },
+                ]}
+                value={chart.orientation}
+                onChange={(orientation) => setChart({ ...chart, orientation })}
+              />
+              <Segmented
+                legend="Split"
+                showLegend
+                options={[
+                  { value: "cells", label: "By cell size (3 mm)" },
+                  { value: "pages", label: "By pages" },
+                ]}
+                value={chart.split}
+                onChange={(split) => setChart({ ...chart, split })}
+              />
               {chart.split === "pages" && (
-                <>
-                  <SettingField
+                <div className="stepper-pair">
+                  <Stepper
                     label="Pages across"
                     limits={ranges.pages_across}
                     value={chart.pagesAcross}
                     onChange={(value) => setChart({ ...chart, pagesAcross: value })}
                   />
-                  <SettingField
+                  <Stepper
                     label="Pages down"
                     limits={ranges.pages_down}
                     value={chart.pagesDown}
                     onChange={(value) => setChart({ ...chart, pagesDown: value })}
                   />
-                </>
+                </div>
               )}
-              <SettingField
+              <Stepper
                 label="Repeated rows and columns"
                 limits={ranges.overlap}
                 value={chart.overlap}
                 onChange={(value) => setChart({ ...chart, overlap: value })}
+                hint="Neighbouring pages share these, so their edges line up."
               />
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={chart.centreLines}
-                  onChange={(event) => setChart({ ...chart, centreLines: event.target.checked })}
-                />
-                <span>Centre lines in the PDF</span>
-              </label>
+              <Switch
+                label="Centre lines in the PDF"
+                checked={chart.centreLines}
+                onChange={(centreLines) => setChart({ ...chart, centreLines })}
+              />
             </div>
             <button
               type="button"

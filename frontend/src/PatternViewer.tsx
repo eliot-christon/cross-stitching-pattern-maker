@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { centreLines, tenCellLines } from "./chartAids";
+import { Segmented, Switch } from "./controls";
 import { DEFAULT_FABRIC } from "./fabric";
 import { gridPixels } from "./grid";
 import type { Pattern } from "./pattern";
@@ -251,32 +252,6 @@ function useBoxSize(ref: React.RefObject<HTMLElement | null>): Size {
   return size;
 }
 
-function Segmented<T extends string>(props: {
-  legend: string;
-  name: string;
-  options: { value: T; label: string }[];
-  value: T;
-  onChange: (value: T) => void;
-}) {
-  const { legend, name, options, value, onChange } = props;
-  return (
-    <fieldset className="segmented">
-      <legend className="visually-hidden">{legend}</legend>
-      {options.map((option) => (
-        <label key={option.value}>
-          <input
-            type="radio"
-            name={name}
-            checked={value === option.value}
-            onChange={() => onChange(option.value)}
-          />
-          <span>{option.label}</span>
-        </label>
-      ))}
-    </fieldset>
-  );
-}
-
 /**
  * The pattern on one canvas, zoomable and pannable: Colours or Symbols, and, when the
  * response has the pattern before cleanup, Before / After in Colours.
@@ -471,7 +446,6 @@ export function PatternViewer(props: {
         {pdfView !== undefined && (
           <Segmented
             legend="Show"
-            name="viewer-shows"
             options={[
               { value: "pattern", label: "Pattern" },
               { value: "pdf", label: "PDF" },
@@ -486,7 +460,6 @@ export function PatternViewer(props: {
         <div className="viewer-controls" hidden={pdf}>
         <Segmented
           legend="View"
-          name="viewer-mode"
           options={[
             { value: "colours", label: "Colours" },
             { value: "symbols", label: "Symbols" },
@@ -498,7 +471,6 @@ export function PatternViewer(props: {
         {before !== null && mode === "colours" && (
           <Segmented
             legend="Cleanup"
-            name="viewer-cleanup"
             options={[
               { value: "before", label: "Before cleanup" },
               { value: "after", label: "After cleanup" },
@@ -507,14 +479,7 @@ export function PatternViewer(props: {
             onChange={(value) => setShowBefore(value === "before")}
           />
         )}
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={centreLinesOn}
-            onChange={(event) => setCentreLinesOn(event.target.checked)}
-          />
-          <span>Centre lines</span>
-        </label>
+        <Switch label="Centre lines" checked={centreLinesOn} onChange={setCentreLinesOn} />
         <div className="viewer-zoom">
           <button
             type="button"
