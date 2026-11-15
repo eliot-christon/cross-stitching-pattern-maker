@@ -7,12 +7,13 @@ import {
   type NearThread,
   type ThreadsResult,
 } from "./api";
+import { FabricSwatch, Swatch, type Rgb } from "./swatch";
 
 /** The thread being replaced: the key entry's code, name and colour. */
 export interface PickedFrom {
   code: string;
   name: string;
-  rgb: [number, number, number];
+  rgb: Rgb;
 }
 
 /** Most search results shown at once; a narrower query finds the rest. */
@@ -79,11 +80,7 @@ function Choice(props: {
   return (
     <li>
       <button type="button" className="thread-choice" onClick={() => onPick(thread)}>
-        <span
-          aria-hidden="true"
-          className="swatch"
-          style={{ backgroundColor: `rgb(${thread.rgb.join(", ")})` }}
-        />
+        <Swatch rgb={thread.rgb} />
         <span className="thread-choice-code">{thread.code}</span>
         <span className="thread-choice-name">{thread.name}</span>
         {detail !== undefined && <span className="thread-choice-detail">{detail}</span>}
@@ -93,12 +90,13 @@ function Choice(props: {
 }
 
 /**
- * A dialog to choose a DMC thread in place of `from`: its nearest threads first, as the
- * API ranks them, then a search by code or name over the whole table.
+ * A dialog to choose what replaces `from`: bare fabric (the thread removed), its nearest
+ * threads, as the API ranks them, then a search by code or name over the whole table.
+ * `onPick` gets the thread chosen, or `null` for bare fabric.
  */
 export function ThreadPicker(props: {
   from: PickedFrom;
-  onPick: (thread: DmcThread) => void;
+  onPick: (thread: DmcThread | null) => void;
   onClose: () => void;
 }) {
   const { from, onPick, onClose } = props;
@@ -149,16 +147,20 @@ export function ThreadPicker(props: {
         }}
       >
         <div className="picker-header">
-          <span
-            aria-hidden="true"
-            className="swatch"
-            style={{ backgroundColor: `rgb(${from.rgb.join(", ")})` }}
-          />
+          <Swatch rgb={from.rgb} />
           <h2 id={titleId}>{title}</h2>
           <button type="button" className="icon-button" aria-label="Close" onClick={onClose}>
             ×
           </button>
         </div>
+
+        <section aria-label="Remove" className="picker-section">
+          <button type="button" className="thread-choice" onClick={() => onPick(null)}>
+            <FabricSwatch />
+            <span className="thread-choice-code">Remove</span>
+            <span className="thread-choice-name">Leave bare fabric where it was</span>
+          </button>
+        </section>
 
         <section aria-label="Nearest threads" className="picker-section">
           <h3>Nearest threads</h3>

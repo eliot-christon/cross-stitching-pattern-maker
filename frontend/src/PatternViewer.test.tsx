@@ -282,8 +282,8 @@ describe("PatternViewer", () => {
     });
     // (row + column) even is black: 8 such cells, one of them bare; odd is white: 8.
     const count = (fill: string) => recording.fills.filter((f) => f === fill).length;
-    expect(count("rgb(0 0 0)")).toBe(7);
-    expect(count("rgb(252 251 248)")).toBe(8);
+    expect(count("rgb(0, 0, 0)")).toBe(7);
+    expect(count("rgb(252, 251, 248)")).toBe(8);
   });
 
   it("draws red centre lines only once asked, in every mode, and keeps them for a new pattern", () => {

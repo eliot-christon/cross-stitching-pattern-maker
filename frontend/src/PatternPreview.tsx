@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import type { KeyEntry, Pattern } from "./pattern";
 import { PatternViewer, type ViewerShows } from "./PatternViewer";
+import { Swatch } from "./swatch";
 
 /** The key's columns after the swatch, as their headers read. */
 const COLUMNS = ["Symbol", "Code", "Name", "Stitches", "Skeins"] as const;
@@ -81,11 +82,7 @@ export function PatternPreview(props: {
               }
             >
               <td role="cell" className="key-swatch">
-                <span
-                  aria-hidden="true"
-                  className="swatch"
-                  style={{ backgroundColor: `rgb(${entry.rgb.join(", ")})` }}
-                />
+                <Swatch rgb={entry.rgb} />
               </td>
               <td role="cell" className="key-symbol">
                 {entry.symbol}

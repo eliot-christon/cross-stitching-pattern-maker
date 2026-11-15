@@ -4,6 +4,7 @@ import {
   convertImage,
   downloadPdf,
   getLimits,
+  replacementField,
   type ChartOptions,
   type DmcThread,
   type Limits,
@@ -15,6 +16,7 @@ import type { KeyEntry, Pattern } from "./pattern";
 import { StitchedHeart, StitchRule } from "./motif";
 import { PatternPreview } from "./PatternPreview";
 import { PDF_AUTO_PREVIEW_MAX_CELLS, PdfView, type PdfNote } from "./PdfView";
+import { FabricSwatch, Swatch } from "./swatch";
 import { ThreadPicker } from "./ThreadPicker";
 
 /** The image and settings a preview was made from: the PDF is asked for with these. */
@@ -82,10 +84,10 @@ function sameSource(a: Source | null, b: Source): boolean {
   return (
     keys.every((key) => a.settings[key] === b.settings[key]) &&
     a.replacements.length === b.replacements.length &&
-    a.replacements.every(
-      (pair, i) =>
-        pair.from.code === b.replacements[i]?.from.code && pair.to.code === b.replacements[i]?.to.code,
-    )
+    a.replacements.every((pair, i) => {
+      const other = b.replacements[i];
+      return other !== undefined && replacementField(pair) === replacementField(other);
+    })
   );
 }
 
@@ -344,7 +346,7 @@ function Converter({ limits }: { limits: Limits }) {
     schedule();
   }
 
-  function replaceWith(to: DmcThread) {
+  function replaceWith(to: DmcThread | null) {
     if (picking !== null) {
       const from = { code: picking.code, name: picking.name, rgb: picking.rgb };
       changeReplacements([...latest.current.replacements, { from, to }]);
@@ -577,18 +579,18 @@ function Converter({ limits }: { limits: Limits }) {
                 <li
                   // A pair may be chosen twice; its place keeps the key unique.
                   // oxlint-disable-next-line react/no-array-index-key
-                  key={`${index}-${pair.from.code}-${pair.to.code}`}
+                  key={`${index}-${replacementField(pair)}`}
                   className={inactive.has(pair) ? "replacement inactive" : "replacement"}
                 >
                   <ThreadLabel thread={pair.from} />
                   <span aria-hidden="true">→</span>
                   <span className="visually-hidden">replaced by</span>
-                  <ThreadLabel thread={pair.to} />
+                  {pair.to === null ? <FabricLabel /> : <ThreadLabel thread={pair.to} />}
                   {inactive.has(pair) && <span className="replacement-note">not in the pattern</span>}
                   <button
                     type="button"
                     className="button"
-                    aria-label={`Undo ${pair.from.code} to ${pair.to.code}`}
+                    aria-label={`Undo ${pair.from.code} to ${pair.to?.code ?? "fabric"}`}
                     onClick={() =>
                       changeReplacements(latest.current.replacements.filter((p) => p !== pair))
                     }
@@ -756,13 +758,20 @@ function Converter({ limits }: { limits: Limits }) {
 function ThreadLabel({ thread }: { thread: DmcThread }) {
   return (
     <span className="thread-label">
-      <span
-        aria-hidden="true"
-        className="swatch"
-        style={{ backgroundColor: `rgb(${thread.rgb.join(", ")})` }}
-      />
+      <Swatch rgb={thread.rgb} />
       <span className="thread-label-code">{thread.code}</span>
       <span className="thread-label-name">{thread.name}</span>
+    </span>
+  );
+}
+
+/** Bare fabric, where a removed thread was, as the replacements list shows it. */
+function FabricLabel() {
+  return (
+    <span className="thread-label">
+      <FabricSwatch />
+      <span className="thread-label-code">Fabric</span>
+      <span className="thread-label-name">thread removed</span>
     </span>
   );
 }

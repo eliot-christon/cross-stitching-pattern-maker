@@ -372,19 +372,28 @@ def _cleanup(
     )
 
 
-def _replacement(value: str) -> tuple[Thread, Thread]:
-    """One `FROM:TO` value of the `replace` field, as two DMC threads."""
+FABRIC = "fabric"
+"""The `TO` of a `replace` value that removes a thread, leaving its cells bare fabric. No
+DMC code reads like it, whatever the case."""
+
+
+def _replacement(value: str) -> tuple[Thread, Thread | None]:
+    """One `FROM:TO` value of the `replace` field: a DMC thread and the DMC thread taking
+    its stitches, or `None` for `FABRIC`."""
     parts = value.split(":")
     try:
         if len(parts) != 2 or not all(part.strip() for part in parts):
             raise KeyError(value)
-        return dmc_thread(parts[0]), dmc_thread(parts[1])
+        source, target = parts
+        if target.strip().casefold() == FABRIC:
+            return dmc_thread(source), None
+        return dmc_thread(source), dmc_thread(target)
     except KeyError:
         raise RequestValidationError(
             [
                 {
                     "loc": ("body", "replace"),
-                    "msg": f"{value!r} is not FROM:TO with two DMC codes",
+                    "msg": f"{value!r} is not FROM:TO with two DMC codes (TO may be {FABRIC!r})",
                     "type": "value_error",
                     "input": value,
                 }
@@ -411,7 +420,10 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
     ] = 14.0,
     replace: Annotated[
         list[str] | None,
-        Form(description="Thread swaps FROM:TO (DMC codes), repeated, applied in order"),
+        Form(
+            description="Thread swaps FROM:TO (DMC codes; TO 'fabric' removes FROM), "
+            "repeated, applied in order"
+        ),
     ] = None,
 ) -> _Converted:
     """The conversion inputs both routes share: validated, decoded and converted here, so

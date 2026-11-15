@@ -459,6 +459,18 @@ describe("replacements on the wire", () => {
       [],
     ]);
   });
+
+  it("sends a removal as FROM:fabric, in its place in the order", async () => {
+    const bodies = capture();
+    const image = new File(["x"], "a.png", { type: "image/png" });
+
+    await convertImage(image, settings, 1000, [
+      { from: black, to: null },
+      { from: winter, to: ivory },
+    ]);
+
+    expect(bodies[0]?.getAll("replace")).toEqual(["310:fabric", "3865:3866"]);
+  });
 });
 
 describe("chart layout on the wire", () => {

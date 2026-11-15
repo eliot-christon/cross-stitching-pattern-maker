@@ -638,6 +638,16 @@ input[type="file"]::file-selector-button {
   vertical-align: middle;
 }
 
+/* Bare fabric: no thread, a light diagonal weave on the surface colour. */
+.swatch-fabric {
+  border-style: dashed;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--surface) 0 3px,
+    var(--border) 3px 4px
+  );
+}
+
 /* Below 800 px each key entry is a card; the table stays a table for assistive tech. */
 @media (max-width: 799px) {
   .key,

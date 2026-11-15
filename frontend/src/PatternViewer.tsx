@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { centreLines, tenCellLines } from "./chartAids";
 import { gridPixels } from "./grid";
 import type { Pattern } from "./pattern";
+import { rgbCss } from "./swatch";
 import { visibleCells, visibleSymbols, type View } from "./symbolView";
 import {
   fitViewport,
@@ -168,7 +169,7 @@ function paintSymbolsOnColours(
       context.fillRect(x, y, scale, scale);
       continue;
     }
-    context.fillStyle = `rgb(${entry.rgb.join(" ")})`;
+    context.fillStyle = rgbCss(entry.rgb);
     context.fillRect(x, y, scale, scale);
     context.strokeRect(x + 0.5, y + 0.5, scale - 1, scale - 1);
     context.fillStyle = INK[entry.symbol_ink];
