@@ -35,6 +35,7 @@ from cross_stitch.export import (
     chart_capacity,
     key_symbols,
     render_pdf,
+    symbol_ink,
 )
 from cross_stitch.pattern import EMPTY, KeyEntry, Pattern, build_pattern, convert_image
 from cross_stitch.threads import dmc_thread, dmc_threads
@@ -881,3 +882,20 @@ PINNED_CAPACITIES: dict[tuple[str, str], tuple[int, int]] = {
 @pytest.mark.parametrize(("paper", "orientation"), LAYOUTS, ids=LAYOUT_IDS)
 def test_each_layout_holds_its_pinned_capacity(paper: Paper, orientation: Orientation) -> None:
     assert chart_capacity(paper, orientation) == PINNED_CAPACITIES[(paper, orientation)]
+
+
+# Rec. 601 luminance 0.299 R + 0.587 G + 0.114 B: below 140 the symbol is white, else black.
+@pytest.mark.parametrize(
+    ("rgb", "ink"),
+    [
+        ((0, 0, 0), "white"),  # DMC 310
+        ((252, 251, 248), "black"),  # DMC Blanc
+        ((199, 43, 59), "white"),  # DMC 321, luminance about 91.5
+        ((140, 140, 140), "black"),  # exactly 140
+        ((139, 139, 139), "white"),  # just below
+    ],
+)
+def test_symbol_ink_follows_the_luminance_of_the_thread(
+    rgb: tuple[int, int, int], ink: str
+) -> None:
+    assert symbol_ink(rgb) == ink

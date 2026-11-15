@@ -10,7 +10,7 @@ from PIL import Image
 from starlette.formparsers import MultiPartParser
 
 from cross_stitch.api.app import MAX_COLOURS, MAX_UPLOAD_BYTES, app
-from cross_stitch.export import SYMBOLS, key_symbols, render_pdf
+from cross_stitch.export import SYMBOLS, key_symbols, render_pdf, symbol_ink
 from cross_stitch.pattern import (
     EMPTY,
     CleanedPattern,
@@ -90,6 +90,7 @@ def test_body_is_exactly_what_the_core_returns() -> None:
             "stitches": entry.stitches,
             "skeins": entry.skeins,
             "symbol": symbol,
+            "symbol_ink": symbol_ink(entry.thread.rgb),
         }
         for entry, symbol in zip(pattern.key, symbols, strict=True)
     ]
@@ -390,6 +391,7 @@ def _key_json(pattern: Pattern) -> list[dict[str, Any]]:
             "stitches": entry.stitches,
             "skeins": entry.skeins,
             "symbol": symbol,
+            "symbol_ink": symbol_ink(entry.thread.rgb),
         }
         for entry, symbol in zip(pattern.key, symbols, strict=True)
     ]
@@ -689,3 +691,24 @@ def test_converted_is_sent_when_cleanup_is_on_with_nothing_to_clean() -> None:
         "key": body["key"],
         "total_stitches": body["total_stitches"],
     }
+
+
+def _inks_match_the_threads(key: list[dict[str, Any]]) -> None:
+    for entry in key:
+        assert entry["symbol_ink"] == symbol_ink(tuple(entry["rgb"])), entry["code"]
+
+
+def test_every_key_entry_carries_the_ink_of_its_colour() -> None:
+    key = _stripes_response()["key"]
+    _inks_match_the_threads(key)
+    # 310 (black) takes white ink and Blanc takes black ink, so both inks occur.
+    assert {entry["symbol_ink"] for entry in key} == {"black", "white"}
+
+
+def test_every_converted_key_entry_carries_the_ink_of_its_colour() -> None:
+    body = _body(_cleanable(), 5, **CLEANUP_FORM)
+    assert body["converted"] is not None
+    _inks_match_the_threads(body["key"])
+    _inks_match_the_threads(body["converted"]["key"])
+    inks = {entry["symbol_ink"] for entry in body["converted"]["key"]}
+    assert inks == {"black", "white"}

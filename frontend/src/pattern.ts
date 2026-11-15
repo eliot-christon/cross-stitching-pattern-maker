@@ -10,6 +10,8 @@ export interface KeyEntry {
   skeins: number;
   /** The chart symbol the backend gave this entry; shown as is, never reassigned. */
   symbol: string;
+  /** The symbol's ink on this thread's colour, as the colour PDF prints it. */
+  symbol_ink: "black" | "white";
 }
 
 export interface FinishedSize {

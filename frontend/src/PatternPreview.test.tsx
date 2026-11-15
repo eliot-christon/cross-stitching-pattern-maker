@@ -7,8 +7,8 @@ import { PatternPreview } from "./PatternPreview";
 
 function makePattern(overrides: Partial<Pattern> = {}): Pattern {
   const key: KeyEntry[] = [
-    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 5, skeins: 1, symbol: "Z" },
-    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 9, skeins: 2, symbol: "A" },
+    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 5, skeins: 1, symbol: "Z", symbol_ink: "white" },
+    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 9, skeins: 2, symbol: "A", symbol_ink: "white" },
   ];
   return {
     width: 40,
@@ -92,6 +92,33 @@ describe("PatternPreview", () => {
       expect.objectContaining({ Code: "321", Name: "Red", Stitches: "5", Skeins: "1" }),
       expect.objectContaining({ Code: "310", Name: "Black", Stitches: "9", Skeins: "2" }),
     ]);
+  });
+
+  it("gives each swatch its entry's rgb as given, hidden from assistive tech", () => {
+    render(<PatternPreview pattern={makePattern()} />);
+
+    const swatches = keyRows()
+      .slice(1)
+      .map((row) => row.querySelector(".swatch"));
+
+    expect(swatches.map((swatch) => (swatch as HTMLElement | null)?.style.backgroundColor)).toEqual([
+      "rgb(199, 43, 59)",
+      "rgb(0, 0, 0)",
+    ]);
+    for (const swatch of swatches) {
+      expect(swatch).toHaveAttribute("aria-hidden", "true");
+    }
+  });
+
+  it("keeps the key a table with its column headers", () => {
+    render(<PatternPreview pattern={makePattern()} />);
+
+    const table = screen.getByRole("table", { name: "Thread key" });
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((header) => header.textContent),
+    ).toEqual(["Symbol", "Code", "Name", "Stitches", "Skeins"]);
   });
 
   it("opens in the colour view and offers the symbol view", () => {
@@ -208,16 +235,16 @@ describe("PatternPreview before and after cleanup", () => {
       converted: {
         grid: [[0, 2, null]],
         key: [
-          { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "Z" },
-          { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 0, skeins: 0, symbol: "A" },
-          { code: "Blanc", name: "White", rgb: [252, 251, 248], stitches: 1, skeins: 1, symbol: "B" },
+          { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "Z", symbol_ink: "white" },
+          { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 0, skeins: 0, symbol: "A", symbol_ink: "white" },
+          { code: "Blanc", name: "White", rgb: [252, 251, 248], stitches: 1, skeins: 1, symbol: "B", symbol_ink: "black" },
         ],
         total_stitches: 2,
       },
     });
   }
 
-  /** A 2D context per canvas, recording what each one is painted with, by accessible name. */
+  /** A 2D context on every canvas, recording each image put, in order; the rest is ignored. */
   function stubCanvas() {
     vi.stubGlobal(
       "ImageData",
@@ -229,17 +256,25 @@ describe("PatternPreview before and after cleanup", () => {
         ) {}
       },
     );
-    const painted = new Map<string, Uint8ClampedArray[]>();
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (
-      this: HTMLCanvasElement,
-    ) {
-      const name = this.getAttribute("aria-label") ?? "";
-      return {
+    const painted: Uint8ClampedArray[] = [];
+    const context = new Proxy(
+      {
         putImageData: (image: { data: Uint8ClampedArray }) => {
-          painted.set(name, [...(painted.get(name) ?? []), image.data]);
+          painted.push(image.data);
         },
-      } as unknown as CanvasRenderingContext2D;
-    } as unknown as HTMLCanvasElement["getContext"]);
+        createPattern: () => null,
+      } as Record<string | symbol, unknown>,
+      {
+        get: (target, prop) => (prop in target ? target[prop] : () => undefined),
+        set: () => true,
+      },
+    );
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      (() => context) as unknown as HTMLCanvasElement["getContext"],
+    );
+    // The viewer needs a size to draw anything.
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(120);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(120);
     return painted;
   }
 
@@ -248,16 +283,19 @@ describe("PatternPreview before and after cleanup", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows a before and an after grid, each named, when the response has converted", () => {
+  it("shows the after grid, with a switch to the before grid, when the response has converted", () => {
     render(<PatternPreview pattern={cleanedPattern()} />);
 
-    const images = screen.getAllByRole("img");
-    expect(images.map((image) => image.getAttribute("aria-label"))).toEqual([
-      "Before cleanup, 3 x 1 stitches",
+    expect(screen.getAllByRole("img").map((image) => image.getAttribute("aria-label"))).toEqual([
       "After cleanup, 3 x 1 stitches",
     ]);
-    expect(screen.getByText("Before cleanup")).toBeInTheDocument();
-    expect(screen.getByText("After cleanup")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "After cleanup" })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Before cleanup" }));
+
+    expect(screen.getAllByRole("img").map((image) => image.getAttribute("aria-label"))).toEqual([
+      "Before cleanup, 3 x 1 stitches",
+    ]);
   });
 
   it("shows one grid, named as without cleanup, when converted is null", () => {
@@ -278,28 +316,24 @@ describe("PatternPreview before and after cleanup", () => {
     }
     const before = gridPixels({ width: 3, height: 1, grid: converted.grid, key: converted.key });
     const after = gridPixels(pattern);
-    // The fixture's two grids differ, so the canvases cannot pass by swapping.
+    // The fixture's two grids differ, so the images cannot pass by swapping.
     expect(Array.from(before)).not.toEqual(Array.from(after));
 
     render(<PatternPreview pattern={pattern} />);
+    expect(painted.map((d) => Array.from(d))).toEqual([Array.from(after)]);
 
-    expect(painted.get("Before cleanup, 3 x 1 stitches")?.map((d) => Array.from(d))).toEqual([
-      Array.from(before),
-    ]);
-    expect(painted.get("After cleanup, 3 x 1 stitches")?.map((d) => Array.from(d))).toEqual([
-      Array.from(after),
-    ]);
+    fireEvent.click(screen.getByRole("radio", { name: "Before cleanup" }));
+    expect(painted.map((d) => Array.from(d))).toEqual([Array.from(after), Array.from(before)]);
   });
 
-  it("does not repaint either grid when shown again with the same pattern", () => {
+  it("does not rebuild the grid image when shown again with the same pattern", () => {
     const painted = stubCanvas();
     const pattern = cleanedPattern();
 
     const { rerender } = render(<PatternPreview pattern={pattern} />);
     rerender(<PatternPreview pattern={pattern} />);
 
-    expect(painted.get("Before cleanup, 3 x 1 stitches")).toHaveLength(1);
-    expect(painted.get("After cleanup, 3 x 1 stitches")).toHaveLength(1);
+    expect(painted).toHaveLength(1);
   });
 
   it("shows one symbol grid, the cleaned one, in the symbol view", () => {

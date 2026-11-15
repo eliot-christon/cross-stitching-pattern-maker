@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
@@ -15,15 +15,35 @@ const LIMITS = {
   },
 };
 
-/** fetch answering the page's `/api/limits` request; nothing else is asked for here. */
+const PATTERN = {
+  width: 2,
+  height: 1,
+  fabric_count: 14,
+  grid: [[0, 1]],
+  key: [
+    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "A", symbol_ink: "white" },
+    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol: "B", symbol_ink: "white" },
+  ],
+  total_stitches: 2,
+  finished_size: { width_in: 0.14, height_in: 0.07, width_cm: 0.36, height_cm: 0.18 },
+  isolated_stitches: { before: 2, after: 0 },
+  converted: null,
+};
+
+/** What the viewer area says before there is a pattern to show. */
+const EMPTY = /pattern appears here/i;
+
+function json(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** fetch answering `/api/limits` with LIMITS and any conversion with PATTERN. */
 function stubLimits() {
-  const fetchMock = vi.fn((_url: string) =>
-    Promise.resolve(
-      new Response(JSON.stringify(LIMITS), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    ),
+  const fetchMock = vi.fn((url: string) =>
+    Promise.resolve(json(url === "/api/limits" ? LIMITS : PATTERN)),
   );
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
@@ -54,5 +74,29 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: /convert/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("table", { name: "Thread key" })).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/limits"]);
+  });
+
+  it("shows an empty viewer, neither a status nor an alert, until an image is chosen", async () => {
+    stubLimits();
+    render(<App />);
+
+    await screen.findByLabelText("Image");
+
+    expect(screen.getByText(EMPTY)).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("replaces the empty viewer with the pattern once one is shown", async () => {
+    stubLimits();
+    render(<App />);
+    const image = await screen.findByLabelText("Image");
+
+    fireEvent.change(image, {
+      target: { files: [new File(["x"], "a.png", { type: "image/png" })] },
+    });
+
+    expect(await screen.findByRole("table", { name: "Thread key" })).toBeInTheDocument();
+    expect(screen.queryByText(EMPTY)).not.toBeInTheDocument();
   });
 });
