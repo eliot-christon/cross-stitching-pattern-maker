@@ -197,6 +197,33 @@ def test_gradient_never_exceeds_the_colour_limit_and_counts_add_up(max_colours: 
     _assert_counts_add_up(pattern)
 
 
+def _grey_ramp() -> Image.Image:
+    """64 stripes of grey from black to white: more distinct colours than DMC has greys
+    near some of them, so k-means centroids snap onto one thread."""
+    levels = np.linspace(0, 255, 64).astype(np.uint8)
+    return Image.fromarray(np.repeat(levels[np.newaxis, :], 4, axis=0)).convert("RGB")
+
+
+@pytest.mark.parametrize("max_colours", [6, 12])
+def test_centroids_snapping_together_still_give_the_colours_asked_for(max_colours: int) -> None:
+    pattern = convert_image(_grey_ramp(), width=64, max_colours=max_colours)
+    assert len(pattern.key) == max_colours
+    assert pattern.total_stitches == 64 * 4
+    _assert_counts_add_up(pattern)
+
+
+def test_an_image_with_fewer_colours_than_asked_gives_only_those() -> None:
+    image = _stripes([_rgb(code) for code in ["310", "321", "797", "Blanc", "3865"]], [2] * 5, 3)
+    assert len(convert_image(image, width=10, max_colours=12).key) == 5
+
+
+def test_the_exact_count_is_deterministic() -> None:
+    _assert_same_pattern(
+        convert_image(_grey_ramp(), width=64, max_colours=12),
+        convert_image(_grey_ramp(), width=64, max_colours=12),
+    )
+
+
 # -------------------------------------------------------------------------------- order
 
 
