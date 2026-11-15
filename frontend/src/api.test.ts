@@ -275,6 +275,7 @@ describe("downloadPdf", () => {
     pagesDown: "2",
     overlap: "2",
     centreLines: false,
+    fabricColour: "#f6efe1",
   } as const;
 
   function pdf(): Response {
@@ -453,7 +454,7 @@ describe("replacements on the wire", () => {
     ];
 
     await convertImage(image, settings, 1000, pairs);
-    await downloadPdf(image, settings, { variant: "colour", paper: "A4", orientation: "portrait", split: "cells", pagesAcross: "2", pagesDown: "2", overlap: "2", centreLines: false }, 1000, pairs);
+    await downloadPdf(image, settings, { variant: "colour", paper: "A4", orientation: "portrait", split: "cells", pagesAcross: "2", pagesDown: "2", overlap: "2", centreLines: false, fabricColour: "#ffffff" }, 1000, pairs);
     await convertImage(image, settings, 1000, []);
 
     expect(bodies.map((body) => body.getAll("replace"))).toEqual([
@@ -516,6 +517,7 @@ describe("chart layout on the wire", () => {
       pagesDown: "2",
       overlap: "0",
       centreLines: true,
+      fabricColour: "#1e1e1e",
     } as const;
 
     await downloadPdf(image, settings, options, 1000);
@@ -524,7 +526,9 @@ describe("chart layout on the wire", () => {
     const [pdfBody, conversion] = bodies;
     expect(layoutFields.map((name) => pdfBody?.get(name))).toEqual(["pages", "3", "2", "0", "true"]);
     expect(pdfBody?.get("variant")).toBe("colour");
+    expect(pdfBody?.get("fabric_colour")).toBe("#1e1e1e");
     expect(layoutFields.map((name) => conversion?.get(name))).toEqual([null, null, null, null, null]);
+    expect(conversion?.get("fabric_colour")).toBeNull();
   });
 });
 
