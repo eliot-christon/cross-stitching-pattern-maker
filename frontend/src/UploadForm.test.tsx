@@ -1452,3 +1452,261 @@ describe("PDF chart layout", () => {
     expect(keyShows(A_CODE)).toBe(true);
   });
 });
+
+describe("PDF view", () => {
+  let made = 0;
+  let revoked: string[] = [];
+
+  function pdfResponse(): Response {
+    return new Response("%PDF-1.4 chart", {
+      status: 200,
+      headers: { "Content-Type": "application/pdf" },
+    });
+  }
+
+  /** Object URLs counted (blob:pdf-1, blob:pdf-2, ...) and their revocations recorded. */
+  function stubUrls() {
+    made = 0;
+    revoked = [];
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static override createObjectURL = vi.fn(() => {
+          made += 1;
+          return `blob:pdf-${String(made)}`;
+        });
+        static override revokeObjectURL = vi.fn((url: string) => {
+          revoked.push(url);
+        });
+      },
+    );
+    return vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  }
+
+  async function preview() {
+    chooseFile();
+    await wait(QUIET_MS);
+    await settle();
+    expect(keyShows(A_CODE)).toBe(true);
+  }
+
+  function pdfRequests(fetchMock: ReturnType<typeof stubApi>): FormData[] {
+    return posted(fetchMock, "/api/patterns/pdf");
+  }
+
+  function frameUrl(): string | null {
+    return screen.queryByTitle("PDF chart preview")?.getAttribute("src") ?? null;
+  }
+
+  function showPdf() {
+    fireEvent.click(screen.getByRole("radio", { name: "PDF" }));
+  }
+
+  it("asks for nothing while the pattern is shown", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    await renderLive();
+    await preview();
+
+    await wait(2000);
+
+    expect(pdfRequests(fetchMock)).toHaveLength(0);
+  });
+
+  it("asks at once when shown, then shows the PDF with a link to it", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    await renderLive();
+    await preview();
+
+    showPdf();
+    await settle();
+
+    const requests = pdfRequests(fetchMock);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.get("width")).toBe("100");
+    expect(requests[0]?.get("paper")).toBe("A4");
+    expect(frameUrl()).toBe("blob:pdf-1");
+    expect(screen.getByRole("link", { name: "Open in a new tab" })).toHaveAttribute(
+      "href",
+      "blob:pdf-1",
+    );
+  });
+
+  it("follows a chart change after the quiet delay and revokes the old PDF", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    setValue(screen.getByLabelText("Paper"), "A3");
+    await wait(QUIET_MS - 1);
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    expect(frameUrl()).toBe("blob:pdf-1");
+    expect(screen.getByText("Making the PDF...")).toBeInTheDocument();
+
+    await wait(1);
+    await settle();
+
+    expect(pdfRequests(fetchMock).at(-1)?.get("paper")).toBe("A3");
+    expect(frameUrl()).toBe("blob:pdf-2");
+    expect(revoked).toContain("blob:pdf-1");
+  });
+
+  it("waits for a conversion, then asks once with the new settings", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    setValue(numberField(WIDTH), "55");
+    await wait(QUIET_MS - 1);
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    await wait(1);
+    await settle();
+
+    expect(pdfRequests(fetchMock)).toHaveLength(2);
+    expect(pdfRequests(fetchMock).at(-1)?.get("width")).toBe("55");
+  });
+
+  it("sends one follow-up for changes made while a PDF is being made", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ pdf: calls.handler });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+
+    setValue(screen.getByLabelText("Paper"), "A3");
+    await wait(QUIET_MS);
+    setValue(screen.getByLabelText("Paper"), "A5");
+    await wait(QUIET_MS);
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+
+    await calls.answer(0, pdfResponse());
+    expect(pdfRequests(fetchMock)).toHaveLength(2);
+    expect(pdfRequests(fetchMock).at(-1)?.get("paper")).toBe("A5");
+  });
+
+  it("asks again only when something changed while the pattern was shown", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Pattern" }));
+    showPdf();
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    expect(frameUrl()).toBe("blob:pdf-1");
+
+    fireEvent.click(screen.getByRole("radio", { name: "Pattern" }));
+    setValue(screen.getByLabelText("Paper"), "A3");
+    await wait(2000);
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+
+    showPdf();
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it("shows the API's message on a failure and keeps the PDF shown", async () => {
+    let answers = 0;
+    stubApi({
+      pdf: () => {
+        answers += 1;
+        return Promise.resolve(answers === 1 ? pdfResponse() : refused("pages_across", "too many"));
+      },
+    });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    setValue(screen.getByLabelText("Paper"), "A3");
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(screen.getByText("pages_across: too many")).toBeInTheDocument();
+    expect(frameUrl()).toBe("blob:pdf-1");
+  });
+
+  it("downloads the PDF shown without asking again, and asks once the choices changed", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    const click = stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    fireEvent.click(downloadButton());
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    expect(click).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Pattern" }));
+    setValue(screen.getByLabelText("Paper"), "A3");
+    fireEvent.click(downloadButton());
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it("waits to be asked for a pattern over the bound", async () => {
+    const big = {
+      ...PATTERN,
+      width: 501,
+      height: 500,
+      grid: Array.from({ length: 500 }, () => Array.from({ length: 501 }, () => 0)),
+    };
+    const fetchMock = stubApi({
+      patterns: () => Promise.resolve(json(200, big)),
+      pdf: () => Promise.resolve(pdfResponse()),
+    });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate preview" }));
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    expect(frameUrl()).toBe("blob:pdf-1");
+
+    setValue(screen.getByLabelText("Paper"), "A3");
+    await wait(2000);
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Generate preview" })).toBeInTheDocument();
+    expect(frameUrl()).toBe("blob:pdf-1");
+  });
+
+  it("revokes the PDF shown when another image is chosen and on unmount", async () => {
+    stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    const view = await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    chooseFile("other.png");
+    expect(revoked).toContain("blob:pdf-1");
+
+    await wait(QUIET_MS);
+    await settle();
+    showPdf();
+    await settle();
+    const shown = frameUrl();
+    view.unmount();
+    expect(revoked).toContain(shown);
+  });
+});

@@ -14,6 +14,7 @@ import {
 import type { KeyEntry, Pattern } from "./pattern";
 import { StitchedHeart, StitchRule } from "./motif";
 import { PatternPreview } from "./PatternPreview";
+import { PDF_AUTO_PREVIEW_MAX_CELLS, PdfView, type PdfNote } from "./PdfView";
 import { ThreadPicker } from "./ThreadPicker";
 
 /** The image and settings a preview was made from: the PDF is asked for with these. */
@@ -37,6 +38,31 @@ interface Preview {
 }
 
 type Download = { kind: "idle" } | { kind: "busy" } | { kind: "failed"; message: string };
+
+/** A PDF on screen: its bytes, their object URL, and what it was made from. */
+interface ShownPdf {
+  blob: Blob;
+  url: string;
+  source: Source;
+  chart: ChartOptions;
+}
+
+/** A PDF the view wants: the preview's source with the chart choices. */
+interface WantedPdf {
+  source: Source;
+  chart: ChartOptions;
+  /** The preview's cells, width x height: above a bound the view waits to be asked. */
+  cells: number;
+}
+
+function sameChart(a: ChartOptions, b: ChartOptions): boolean {
+  const keys = Object.keys(b) as (keyof ChartOptions)[];
+  return keys.every((key) => a[key] === b[key]);
+}
+
+function shows(shown: ShownPdf | null, wanted: Pick<WantedPdf, "source" | "chart">): boolean {
+  return shown !== null && sameSource(shown.source, wanted.source) && sameChart(shown.chart, wanted.chart);
+}
 
 type LimitsState =
   | { kind: "loading" }
@@ -191,6 +217,17 @@ function Converter({ limits }: { limits: Limits }) {
   const [download, setDownload] = useState<Download>({ kind: "idle" });
   /** The key entry whose thread the picker is replacing, if it is open. */
   const [picking, setPicking] = useState<KeyEntry | null>(null);
+  // The PDF view: whether it is shown, the PDF on it, and its request state.
+  const [pdfVisible, setPdfVisible] = useState(false);
+  const [shownPdf, setShownPdf] = useState<ShownPdf | null>(null);
+  const [pdfRequest, setPdfRequest] = useState<Download>({ kind: "idle" });
+  const shownRef = useRef<ShownPdf | null>(null);
+  const pdfTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pdfInFlight = useRef(false);
+  const pdfDue = useRef(false);
+  /** What the PDF requests read: the latest preview, choices and view state. */
+  const pdfLatest = useRef<{ preview: Preview | null; chart: ChartOptions; busy: boolean; visible: boolean } | null>(null);
+  const pdfSeen = useRef<{ preview: Preview | null; visible: boolean }>({ preview: null, visible: false });
   /** The replacements the latest response reported as finding nothing to replace. */
   const [inactive, setInactive] = useState<ReadonlySet<Replacement>>(new Set());
 
@@ -209,6 +246,12 @@ function Converter({ limits }: { limits: Limits }) {
       mounted.current = false;
       if (timer.current !== null) {
         clearTimeout(timer.current);
+      }
+      if (pdfTimer.current !== null) {
+        clearTimeout(pdfTimer.current);
+      }
+      if (shownRef.current !== null) {
+        URL.revokeObjectURL(shownRef.current.url);
       }
     };
   }, []);
@@ -309,8 +352,87 @@ function Converter({ limits }: { limits: Limits }) {
     setPicking(null);
   }
 
+  /** The PDF the view wants now, or null: hidden, a conversion pending, or no preview. */
+  function wantedPdf(): WantedPdf | null {
+    const now = pdfLatest.current;
+    if (now === null || !now.visible || now.busy || now.preview === null) {
+      return null;
+    }
+    const { width, height } = now.preview.pattern;
+    return { source: now.preview.source, chart: now.chart, cells: width * height };
+  }
+
+  function showPdf(blob: Blob, wanted: WantedPdf) {
+    const previous = shownRef.current;
+    const next = { blob, url: URL.createObjectURL(blob), source: wanted.source, chart: wanted.chart };
+    shownRef.current = next;
+    setShownPdf(next);
+    if (previous !== null) {
+      URL.revokeObjectURL(previous.url);
+    }
+  }
+
+  function clearPdf() {
+    if (shownRef.current !== null) {
+      URL.revokeObjectURL(shownRef.current.url);
+    }
+    shownRef.current = null;
+    setShownPdf(null);
+    setPdfRequest({ kind: "idle" });
+  }
+
+  /** Ask for the PDF the view wants, unless it is shown; one request at a time. */
+  async function requestPdf() {
+    const wanted = wantedPdf();
+    if (wanted === null || shows(shownRef.current, wanted)) {
+      return;
+    }
+    if (pdfInFlight.current) {
+      pdfDue.current = true;
+      return;
+    }
+    pdfInFlight.current = true;
+    setPdfRequest({ kind: "busy" });
+    const { source, chart: options } = wanted;
+    const result = await downloadPdf(
+      source.image,
+      source.settings,
+      options,
+      limits.max_upload_bytes,
+      source.replacements,
+    );
+    if (!mounted.current) {
+      return;
+    }
+    pdfInFlight.current = false;
+    const now = wantedPdf();
+    const current = now !== null && sameSource(now.source, source) && sameChart(now.chart, options);
+    if (!current) {
+      // A PDF for choices or a preview no longer shown is dropped.
+      setPdfRequest({ kind: "idle" });
+    } else if (result.ok) {
+      showPdf(result.pdf, wanted);
+      setPdfRequest({ kind: "idle" });
+    } else {
+      setPdfRequest({ kind: "failed", message: result.message });
+    }
+    if (pdfDue.current || !current) {
+      pdfDue.current = false;
+      const next = wantedPdf();
+      if (next !== null && !tooBig(next)) {
+        void requestPdf();
+      }
+    }
+  }
+
+  function tooBig(wanted: WantedPdf): boolean {
+    return wanted.cells > PDF_AUTO_PREVIEW_MAX_CELLS;
+  }
+
   function chooseImage(image: File | null) {
     change({ ...latest.current, image });
+    // The PDF on the view belongs to the image that was there.
+    clearPdf();
     // The preview, any error and any download belong to the image that was there.
     setPreview(null);
     setError(null);
@@ -325,6 +447,11 @@ function Converter({ limits }: { limits: Limits }) {
   }
 
   async function savePdf(source: Source) {
+    // The PDF on the view, when it is the one asked for: saved as it is, no request.
+    if (shows(shownRef.current, { source, chart }) && shownRef.current !== null) {
+      saveFile(shownRef.current.blob, PDF_NAME);
+      return;
+    }
     setDownload({ kind: "busy" });
     const result = await downloadPdf(
       source.image,
@@ -342,6 +469,46 @@ function Converter({ limits }: { limits: Limits }) {
       setDownload({ kind: "idle" });
     } else {
       setDownload({ kind: "failed", message: result.message });
+    }
+  }
+
+  // Keep the PDF view in step: ask at once when it is shown or a new preview lands,
+  // after the quiet delay for a change of the chart choices; never while hidden or busy.
+  useEffect(() => {
+    pdfLatest.current = { preview, chart, busy, visible: pdfVisible };
+    const seen = pdfSeen.current;
+    const atOnce = (pdfVisible && !seen.visible) || preview !== seen.preview;
+    pdfSeen.current = { preview, visible: pdfVisible };
+    if (pdfTimer.current !== null) {
+      clearTimeout(pdfTimer.current);
+      pdfTimer.current = null;
+    }
+    const wanted = wantedPdf();
+    if (wanted === null || shows(shownRef.current, wanted) || tooBig(wanted)) {
+      return;
+    }
+    if (atOnce) {
+      void requestPdf();
+    } else {
+      pdfTimer.current = setTimeout(() => {
+        pdfTimer.current = null;
+        void requestPdf();
+      }, QUIET_MS);
+    }
+    // requestPdf and its helpers read refs only; the effect follows these values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preview, chart, busy, pdfVisible]);
+
+  let pdfNote: PdfNote = { kind: "none" };
+  if (preview !== null) {
+    const current = shows(shownPdf, { source: preview.source, chart });
+    const big = preview.pattern.width * preview.pattern.height > PDF_AUTO_PREVIEW_MAX_CELLS;
+    if (pdfRequest.kind === "failed" && !busy) {
+      pdfNote = { kind: "failed", message: pdfRequest.message };
+    } else if (pdfRequest.kind === "busy" || (!current && (busy || !big))) {
+      pdfNote = { kind: "making" };
+    } else if (!current && big) {
+      pdfNote = { kind: "generate", onGenerate: () => void requestPdf() };
     }
   }
 
@@ -557,7 +724,12 @@ function Converter({ limits }: { limits: Limits }) {
           </p>
         )}
         {preview !== null ? (
-          <PatternPreview pattern={preview.pattern} onReplace={setPicking} />
+          <PatternPreview
+            pattern={preview.pattern}
+            onReplace={setPicking}
+            pdfView={<PdfView url={shownPdf?.url ?? null} note={pdfNote} />}
+            onShowChange={(view) => setPdfVisible(view === "pdf")}
+          />
         ) : (
           <div className="empty-state">
             <StitchedHeart size={56} />

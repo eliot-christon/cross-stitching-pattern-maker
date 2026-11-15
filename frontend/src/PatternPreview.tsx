@@ -1,5 +1,7 @@
+import type { ReactNode } from "react";
+
 import type { KeyEntry, Pattern } from "./pattern";
-import { PatternViewer } from "./PatternViewer";
+import { PatternViewer, type ViewerShows } from "./PatternViewer";
 
 /** The key's columns after the swatch, as their headers read. */
 const COLUMNS = ["Symbol", "Code", "Name", "Stitches", "Skeins"] as const;
@@ -8,13 +10,16 @@ export function PatternPreview(props: {
   pattern: Pattern;
   /** Called with a key entry the user chose to replace, by click or Enter. */
   onReplace?: (entry: KeyEntry) => void;
+  /** The PDF view the viewer offers behind its Pattern / PDF switch. */
+  pdfView?: ReactNode;
+  onShowChange?: (shows: ViewerShows) => void;
 }) {
-  const { pattern, onReplace } = props;
+  const { pattern, onReplace, pdfView, onShowChange } = props;
   const { width, height, finished_size: size } = pattern;
 
   return (
     <section className="preview">
-      <PatternViewer pattern={pattern} />
+      <PatternViewer pattern={pattern} pdfView={pdfView} onShowChange={onShowChange} />
 
       <dl className="summary">
         <div>
