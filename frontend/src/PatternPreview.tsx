@@ -14,13 +14,20 @@ export function PatternPreview(props: {
   /** The PDF view the viewer offers behind its Pattern / PDF switch. */
   pdfView?: ReactNode;
   onShowChange?: (shows: ViewerShows) => void;
+  /** The fabric's colour, for bare cells in the viewer. */
+  fabric?: string;
 }) {
-  const { pattern, onReplace, pdfView, onShowChange } = props;
+  const { pattern, onReplace, pdfView, onShowChange, fabric } = props;
   const { width, height, finished_size: size } = pattern;
 
   return (
     <section className="preview">
-      <PatternViewer pattern={pattern} pdfView={pdfView} onShowChange={onShowChange} />
+      <PatternViewer
+        pattern={pattern}
+        pdfView={pdfView}
+        onShowChange={onShowChange}
+        fabric={fabric}
+      />
 
       <dl className="summary">
         <div>

@@ -926,28 +926,29 @@ describe("UploadForm errors and image changes", () => {
   });
 });
 
+function pdfResponse(): Response {
+  return new Response("%PDF-1.4 chart", {
+    status: 200,
+    headers: { "Content-Type": "application/pdf" },
+  });
+}
+
+/** Stub object URLs and link clicks, so a PDF can be shown or saved in jsdom. */
+function stubSave() {
+  // jsdom has no object URLs: a subclass stands in, leaving the real URL untouched.
+  const createObjectURL = vi.fn(() => "blob:chart");
+  vi.stubGlobal(
+    "URL",
+    class extends URL {
+      static override createObjectURL = createObjectURL;
+      static override revokeObjectURL = vi.fn();
+    },
+  );
+  const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  return { createObjectURL, click };
+}
+
 describe("UploadForm PDF download", () => {
-  function pdfResponse(): Response {
-    return new Response("%PDF-1.4 chart", {
-      status: 200,
-      headers: { "Content-Type": "application/pdf" },
-    });
-  }
-
-  function stubSave() {
-    // jsdom has no object URLs: a subclass stands in, leaving the real URL untouched.
-    const createObjectURL = vi.fn(() => "blob:chart");
-    vi.stubGlobal(
-      "URL",
-      class extends URL {
-        static override createObjectURL = createObjectURL;
-        static override revokeObjectURL = vi.fn();
-      },
-    );
-    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    return { createObjectURL, click };
-  }
-
   /** Choose an image at `width` and let its conversion (answered at once) show. */
   async function convert(width = "40") {
     chooseFile();
@@ -1379,23 +1380,6 @@ describe("thread replacements", () => {
 });
 
 describe("PDF chart layout", () => {
-  function pdfResponse(): Response {
-    return new Response("%PDF-1.4 chart", {
-      status: 200,
-      headers: { "Content-Type": "application/pdf" },
-    });
-  }
-
-  function stubSave() {
-    vi.stubGlobal(
-      "URL",
-      class extends URL {
-        static override createObjectURL = vi.fn(() => "blob:chart");
-        static override revokeObjectURL = vi.fn();
-      },
-    );
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-  }
 
   async function preview() {
     chooseFile();
@@ -1481,13 +1465,6 @@ describe("PDF chart layout", () => {
 describe("PDF view", () => {
   let made = 0;
   let revoked: string[] = [];
-
-  function pdfResponse(): Response {
-    return new Response("%PDF-1.4 chart", {
-      status: 200,
-      headers: { "Content-Type": "application/pdf" },
-    });
-  }
 
   /** Object URLs counted (blob:pdf-1, blob:pdf-2, ...) and their revocations recorded. */
   function stubUrls() {
@@ -1814,5 +1791,27 @@ describe("pixel art", () => {
     await settle();
 
     expect(sent(fetchMock, "max_colours")).toEqual(["100"]);
+  });
+});
+
+describe("fabric colour", () => {
+  it("sends the fabric chosen with the next PDF request, white until then", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    chooseFile();
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    const fabric = screen.getByRole("group", { name: "Fabric colour" });
+    expect(within(fabric).getByRole("radio", { name: "White" })).toBeChecked();
+    fireEvent.click(within(fabric).getByRole("radio", { name: "Black" }));
+    fireEvent.click(downloadButton());
+    await settle();
+
+    expect(posted(fetchMock, "/api/patterns/pdf").map((body) => body.get("fabric_colour"))).toEqual([
+      "#1e1e1e",
+    ]);
   });
 });

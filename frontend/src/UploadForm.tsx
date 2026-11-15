@@ -14,6 +14,8 @@ import {
   type SettingLimits,
   type Settings,
 } from "./api";
+import { SwatchChoice } from "./controls";
+import { DEFAULT_FABRIC, FABRICS } from "./fabric";
 import type { KeyEntry, Pattern } from "./pattern";
 import { StitchedHeart, StitchRule } from "./motif";
 import { PatternPreview } from "./PatternPreview";
@@ -222,6 +224,7 @@ function Converter({ limits }: { limits: Limits }) {
     pagesDown: String(ranges.pages_down.default),
     overlap: String(ranges.overlap.default),
     centreLines: false,
+    fabricColour: DEFAULT_FABRIC,
   }));
   const [download, setDownload] = useState<Download>({ kind: "idle" });
   /** The key entry whose thread the picker is replacing, if it is open. */
@@ -611,6 +614,12 @@ function Converter({ limits }: { limits: Limits }) {
               onChange={(event) => changeSetting("fabricCount", event.target.value)}
             />
           </label>
+          <SwatchChoice
+            label="Fabric colour"
+            options={FABRICS}
+            value={chart.fabricColour}
+            onChange={(fabricColour) => setChart({ ...chart, fabricColour })}
+          />
           <SettingField
             label="Merge similar threads (colour distance)"
             limits={ranges.merge_distance}
@@ -791,6 +800,7 @@ function Converter({ limits }: { limits: Limits }) {
             onReplace={setPicking}
             pdfView={<PdfView url={shownPdf?.url ?? null} note={pdfNote} />}
             onShowChange={(view) => setPdfVisible(view === "pdf")}
+            fabric={chart.fabricColour}
           />
         ) : (
           <div className="empty-state">

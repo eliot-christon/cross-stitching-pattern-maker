@@ -95,6 +95,8 @@ export interface ChartOptions {
   /** Rows and columns neighbouring pages repeat, as typed. */
   overlap: string;
   centreLines: boolean;
+  /** The fabric's colour, `#rrggbb`: bare cells in the PDF's thumbnails. */
+  fabricColour: string;
 }
 
 /** The form fields of `POST /patterns/pdf` for these options. */
@@ -108,6 +110,7 @@ function chartFields(options: ChartOptions): Record<string, string> {
     pages_down: options.pagesDown,
     overlap: options.overlap,
     centre_lines: options.centreLines ? "true" : "false",
+    fabric_colour: options.fabricColour,
   };
 }
 
