@@ -26,6 +26,7 @@ from cross_stitch.export import (
     MAX_OVERLAP,
     MAX_PAGES,
     OVERLAP,
+    LayoutSettings,
     Orientation,
     Paper,
     Split,
@@ -469,11 +470,8 @@ def create_pattern(
     return _to_json(converted.cleaned, converted.replaced, with_converted=converted.cleanup_on)
 
 
-@app.post("/patterns/pdf", response_class=Response)
 # Each parameter is a form field FastAPI reads; grouping them would hide them from /docs.
-def create_pattern_pdf(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    converted: Annotated[_Converted, Depends(_converted)],
-    variant: Annotated[Variant, Form(description="Colour or black and white")] = "colour",
+def _layout(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     paper: Annotated[Paper, Form(description="Paper size")] = "A4",
     orientation: Annotated[Orientation, Form(description="Page orientation")] = "portrait",
     split: Annotated[
@@ -489,6 +487,23 @@ def create_pattern_pdf(  # pylint: disable=too-many-arguments,too-many-positiona
         int,
         Form(ge=_OVERLAP.min, le=_OVERLAP.max, description="Columns or rows pages repeat"),
     ] = _OVERLAP.default,
+) -> LayoutSettings:
+    """The chart layout settings of `POST /patterns/pdf`, as `render_pdf` takes them."""
+    return LayoutSettings(
+        paper=paper,
+        orientation=orientation,
+        split=split,
+        pages_across=pages_across,
+        pages_down=pages_down,
+        overlap=overlap,
+    )
+
+
+@app.post("/patterns/pdf", response_class=Response)
+def create_pattern_pdf(
+    converted: Annotated[_Converted, Depends(_converted)],
+    layout: Annotated[LayoutSettings, Depends(_layout)],
+    variant: Annotated[Variant, Form(description="Colour or black and white")] = "colour",
     centre_lines: Annotated[
         bool, Form(description="Draw the centre column and row through the chart")
     ] = False,
@@ -501,15 +516,7 @@ def create_pattern_pdf(  # pylint: disable=too-many-arguments,too-many-positiona
     """
     try:
         pdf = render_pdf(
-            converted.replaced.pattern,
-            variant=variant,
-            paper=paper,
-            orientation=orientation,
-            split=split,
-            pages_across=pages_across,
-            pages_down=pages_down,
-            overlap=overlap,
-            centre_lines=centre_lines,
+            converted.replaced.pattern, variant=variant, centre_lines=centre_lines, **layout
         )
     except ValueError as error:
         raise HTTPException(422, str(error)) from None

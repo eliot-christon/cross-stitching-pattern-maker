@@ -21,7 +21,7 @@ import math
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
-from typing import Literal, get_args
+from typing import Literal, TypedDict, Unpack, get_args
 
 import numpy as np
 import numpy.typing as npt
@@ -101,15 +101,15 @@ def chart_capacity(paper: Paper, orientation: Orientation) -> tuple[int, int]:
     floored, so a sheet that holds a whole number of cells is not short of one by a float
     error (A4 portrait is exactly 60 columns).
     """
-    area_width, area_height = _chart_area(paper, orientation)
+    area_width, area_height = _chart_area(_page_size(paper, orientation))
     columns = math.floor(round(area_width / _CELL, 6))
     rows = math.floor(round(area_height / _CELL, 6))
     return columns, rows
 
 
-def _chart_area(paper: Paper, orientation: Orientation) -> tuple[float, float]:
-    """Width and height, in points, a chart page gives its cells."""
-    width, height = _page_size(paper, orientation)
+def _chart_area(page_size: tuple[float, float]) -> tuple[float, float]:
+    """Width and height, in points, a chart page of this size gives its cells."""
+    width, height = page_size
     return width - 2 * _MARGIN - 2 * _GUTTER, height - 2 * _MARGIN - _HEADER - 2 * _GUTTER
 
 
@@ -131,11 +131,26 @@ class Band:
 
 @dataclass(frozen=True)
 class ChartLayout:
-    """How a chart is cut into pages: the cell side and the column and row bands."""
+    """How a chart is cut into pages: the cell side, the column and row bands, and the sheet
+    they are printed on."""
 
     cell_mm: float
     columns: tuple[Band, ...]
     rows: tuple[Band, ...]
+    page_size: tuple[float, float]
+    """Width and height of the sheet in points, as oriented."""
+
+
+class LayoutSettings(TypedDict, total=False):
+    """The keyword arguments of `chart_layout` after the pattern's size, which `render_pdf`
+    takes and passes on as they are."""
+
+    paper: Paper
+    orientation: Orientation
+    split: Split
+    pages_across: int
+    pages_down: int
+    overlap: int
 
 
 def chart_layout(  # pylint: disable=too-many-arguments
@@ -162,6 +177,7 @@ def chart_layout(  # pylint: disable=too-many-arguments
     split that needs a cell under `MIN_CELL_MM` (the message names the fewest pages that
     would do).
     """
+    page_size = _page_size(paper, orientation)
     if split not in SPLITS:
         raise ValueError(f"unknown split {split!r}; expected one of {SPLITS}")
     if not 0 <= overlap <= MAX_OVERLAP:
@@ -169,23 +185,24 @@ def chart_layout(  # pylint: disable=too-many-arguments
     if split == "cells":
         columns, rows = chart_capacity(paper, orientation)
         return ChartLayout(
-            CELL_MM, tuple(_bands(width, columns, overlap)), tuple(_bands(height, rows, overlap))
+            CELL_MM,
+            tuple(_bands(width, columns, overlap)),
+            tuple(_bands(height, rows, overlap)),
+            page_size,
         )
     for name, pages in (("pages_across", pages_across), ("pages_down", pages_down)):
         if not 1 <= pages <= MAX_PAGES:
             raise ValueError(f"{name} must be 1-{MAX_PAGES}, got {pages}")
-    return _pages_layout(
-        (width, height), (pages_across, pages_down), overlap, _chart_area(paper, orientation)
-    )
+    return _pages_layout((width, height), (pages_across, pages_down), overlap, page_size)
 
 
 def _pages_layout(
-    size: tuple[int, int], pages: tuple[int, int], overlap: int, area: tuple[float, float]
+    size: tuple[int, int], pages: tuple[int, int], overlap: int, page_size: tuple[float, float]
 ) -> ChartLayout:
     """The `"pages"` split of `chart_layout`, its arguments checked."""
     width, height = size
     pages_across, pages_down = pages
-    area_width, area_height = area
+    area_width, area_height = _chart_area(page_size)
     cell_mm = min(
         _fitting_cell_mm(width, pages_across, overlap, area_width),
         _fitting_cell_mm(height, pages_down, overlap, area_height),
@@ -204,6 +221,7 @@ def _pages_layout(
         cell_mm,
         tuple(_equal_bands(width, pages_across, overlap)),
         tuple(_equal_bands(height, pages_down, overlap)),
+        page_size,
     )
 
 
@@ -238,36 +256,23 @@ def _fewest_pages(length: int, overlap: int, area: float) -> int:
 
 
 # The layout settings are keyword-only and mirror the route's form fields one for one.
-def render_pdf(  # pylint: disable=too-many-arguments
+def render_pdf(
     pattern: Pattern,
     *,
     variant: Variant = "colour",
-    paper: Paper = "A4",
-    orientation: Orientation = "portrait",
-    split: Split = "cells",
-    pages_across: int = 2,
-    pages_down: int = 2,
-    overlap: int = OVERLAP,
     centre_lines: bool = False,
+    **settings: Unpack[LayoutSettings],
 ) -> bytes:
     """The pattern as a PDF chart: cover page(s), then the chart pages.
 
-    The layout settings are those of `chart_layout`; `centre_lines` draws the centre
-    column and row through the chart (red in colour, dashed black in black and white).
+    The layout `settings` are those of `chart_layout`, with its defaults; `centre_lines`
+    draws the centre column and row through the chart (red in colour, dashed black in
+    black and white).
     """
     if variant not in VARIANTS:
         raise ValueError(f"unknown variant {variant!r}; expected one of {VARIANTS}")
-    page_size = _page_size(paper, orientation)
-    layout = chart_layout(
-        pattern.width,
-        pattern.height,
-        paper=paper,
-        orientation=orientation,
-        split=split,
-        pages_across=pages_across,
-        pages_down=pages_down,
-        overlap=overlap,
-    )
+    layout = chart_layout(pattern.width, pattern.height, **settings)
+    page_size = layout.page_size
     _register_font()
     buffer = io.BytesIO()
     canvas = Canvas(buffer, pagesize=page_size, invariant=True, pageCompression=True)
