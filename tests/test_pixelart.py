@@ -168,3 +168,11 @@ def test_a_half_transparent_art_pixel_keeps_its_colour_and_alpha() -> None:
     image = _image(art).resize((COLUMNS * 6, ROWS * 6), Image.Resampling.NEAREST)
 
     assert np.array_equal(np.asarray(unscale_pixel_art(image, _found(image))), art)
+
+
+def test_a_colour_on_fewer_than_three_art_pixels_is_a_leftover_not_counted() -> None:
+    art = _art().copy()
+    art[0, 0] = (240, 200, 40, 255)  # one yellow art pixel: smoothing left it there
+    assert pixel_art_colours(_image(art)) == len(PALETTE)
+    art[0, 1] = art[0, 2] = (240, 200, 40, 255)  # on three: the art uses it
+    assert pixel_art_colours(_image(art)) == len(PALETTE) + 1

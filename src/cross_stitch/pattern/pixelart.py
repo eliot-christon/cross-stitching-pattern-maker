@@ -63,6 +63,8 @@ MAX_NATIVE_SIZE = 1000
 MAX_NATIVE_COLOURS = 256
 MIN_NATIVE_FLAT = 0.5
 """Share of neighbouring pixel pairs of the same colour in pixel art at its own size."""
+MIN_COLOUR_PIXELS = 3
+"""Fewest art pixels a colour covers to count as one of the art's colours."""
 SAME_COLOUR = 5.0
 """CIEDE2000 under which two colours of a pixel art count as one (compression noise)."""
 
@@ -127,18 +129,27 @@ def unscale_pixel_art(image: Image.Image, grid: PixelGrid) -> Image.Image:
 
 def pixel_art_colours(image: Image.Image) -> int:
     """The colours of the stitched (mostly opaque) pixels of an unscaled pixel art, as
-    many as a stitcher would tell apart: taken from the most to the least frequent, a
-    colour within `SAME_COLOUR` (CIEDE2000) of one already counted is not counted again."""
+    many as a stitcher would tell apart and the art really uses: taken from the most to
+    the least frequent, a colour within `SAME_COLOUR` (CIEDE2000) of one already counted
+    joins it, and a colour (with those joining it) on fewer than `MIN_COLOUR_PIXELS` art
+    pixels is a leftover of smoothing, not counted. At least 1 when anything is stitched."""
     rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8).reshape(-1, 4)
     opaque = rgba[rgba[:, 3] >= OPAQUE_THRESHOLD][:, :3]
+    if len(opaque) == 0:
+        return 0
     colours, counts = np.unique(opaque, axis=0, return_counts=True)
     order = np.argsort(-counts, kind="stable")
     lab = srgb_to_lab(colours[order])
     leaders = lab[:0]
-    for colour in lab:
-        if not np.any(delta_e_2000(colour, leaders) < SAME_COLOUR):
+    pixels: list[int] = []
+    for colour, count in zip(lab, counts[order], strict=True):
+        near = np.flatnonzero(delta_e_2000(colour, leaders) < SAME_COLOUR)
+        if len(near):
+            pixels[int(near[0])] += int(count)
+        else:
             leaders = np.vstack([leaders, colour])
-    return len(leaders)
+            pixels.append(int(count))
+    return max(1, sum(1 for total in pixels if total >= MIN_COLOUR_PIXELS))
 
 
 def _premultiplied(rgba: ByteArray) -> FloatArray:
