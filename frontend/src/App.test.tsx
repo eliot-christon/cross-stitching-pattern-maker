@@ -44,10 +44,15 @@ function json(body: unknown): Response {
   });
 }
 
-/** fetch answering `/api/limits` with LIMITS and any conversion with PATTERN. */
+/** fetch answering `/api/limits` with LIMITS, an inspection with no pixel art and any
+ * conversion with PATTERN. */
 function stubLimits() {
+  const answers: Record<string, unknown> = {
+    "/api/limits": LIMITS,
+    "/api/images/inspect": { pixel_art: null },
+  };
   const fetchMock = vi.fn((url: string) =>
-    Promise.resolve(json(url === "/api/limits" ? LIMITS : PATTERN)),
+    Promise.resolve(json(answers[url] ?? PATTERN)),
   );
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;

@@ -105,13 +105,17 @@ type Handler = (init?: RequestInit) => Promise<Response>;
  * handlers (a conversion of PATTERN by default).
  */
 function stubApi(
-  handlers: { patterns?: Handler; pdf?: Handler } = {},
+  handlers: { patterns?: Handler; pdf?: Handler; inspect?: Handler } = {},
 ): ReturnType<typeof vi.fn<(url: string, init?: RequestInit) => Promise<Response>>> {
   const patterns = handlers.patterns ?? (() => Promise.resolve(json(200, PATTERN)));
   const pdf = handlers.pdf ?? (() => Promise.reject(new Error("no PDF expected")));
+  const inspect = handlers.inspect ?? (() => Promise.resolve(json(200, { pixel_art: null })));
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     if (url === "/api/limits") {
       return Promise.resolve(json(200, LIMITS));
+    }
+    if (url === "/api/images/inspect") {
+      return inspect(init);
     }
     return url === "/api/patterns" ? patterns(init) : pdf(init);
   });
@@ -1729,5 +1733,86 @@ describe("PDF view", () => {
     const shown = frameUrl();
     view.unmount();
     expect(revoked).toContain(shown);
+  });
+});
+
+describe("pixel art", () => {
+  const ART = { pixel_art: { width: 64, height: 60, colours: 6 } };
+
+  function pixelArtSwitch(): HTMLElement | null {
+    return screen.queryByRole("checkbox", { name: "Pixel art" });
+  }
+
+  it("converts pixel art once, at one stitch per art pixel and its colours", async () => {
+    const fetchMock = stubApi({ inspect: () => Promise.resolve(json(200, ART)) });
+    await renderLive();
+
+    chooseFile("sprite.png");
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "width")).toEqual(["64"]);
+    expect(sent(fetchMock, "max_colours")).toEqual(["6"]);
+    expect(sent(fetchMock, "pixel_art")).toEqual(["true"]);
+    expect(pixelArtSwitch()).toBeChecked();
+    expect(screen.getByText(/64 x 60 pixels, 6 colours: one stitch per pixel/)).toBeInTheDocument();
+  });
+
+  it("converts the image as a picture once the switch is off", async () => {
+    const fetchMock = stubApi({ inspect: () => Promise.resolve(json(200, ART)) });
+    await renderLive();
+    chooseFile("sprite.png");
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(pixelArtSwitch() as HTMLElement);
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "pixel_art")).toEqual(["true", "false"]);
+    expect(sent(fetchMock, "width")).toEqual(["64", "64"]);
+  });
+
+  it("keeps the settings and shows no switch for an image that is not pixel art", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+
+    chooseFile();
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "width")).toEqual(["100"]);
+    expect(sent(fetchMock, "max_colours")).toEqual(["7"]);
+    expect(sent(fetchMock, "pixel_art")).toEqual(["false"]);
+    expect(pixelArtSwitch()).not.toBeInTheDocument();
+  });
+
+  it("converts as a picture when the inspection fails", async () => {
+    const fetchMock = stubApi({ inspect: () => Promise.reject(new Error("offline")) });
+    await renderLive();
+
+    chooseFile();
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "pixel_art")).toEqual(["false"]);
+    expect(pixelArtSwitch()).not.toBeInTheDocument();
+  });
+
+  it("caps the colours found at the colour limit", async () => {
+    const many = { pixel_art: { width: 40, height: 40, colours: 250 } };
+    const fetchMock = stubApi({ inspect: () => Promise.resolve(json(200, many)) });
+    await renderLive();
+
+    chooseFile("sprite.png");
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "max_colours")).toEqual(["100"]);
   });
 });

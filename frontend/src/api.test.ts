@@ -9,6 +9,7 @@ import {
   getLimits,
   getNearestThreads,
   getThreads,
+  inspectImage,
   type Limits,
 } from "./api";
 import type { Pattern } from "./pattern";
@@ -20,6 +21,7 @@ const SETTINGS = {
   mergeDistance: "2.5",
   minStitches: "10",
   confettiSize: "1",
+  pixelArt: false,
 };
 
 /** An upload limit as the API reports it today; the size checks take it as an argument. */
@@ -424,6 +426,7 @@ describe("replacements on the wire", () => {
     mergeDistance: "0",
     minStitches: "0",
     confettiSize: "0",
+    pixelArt: false,
   };
   const black = { code: "310", name: "Black", rgb: [0, 0, 0] as [number, number, number] };
   const winter = { code: "3865", name: "Winter White", rgb: [249, 247, 241] as [number, number, number] };
@@ -485,6 +488,7 @@ describe("chart layout on the wire", () => {
     mergeDistance: "0",
     minStitches: "0",
     confettiSize: "0",
+    pixelArt: false,
   };
   const layoutFields = ["split", "pages_across", "pages_down", "overlap", "centre_lines"];
 
@@ -521,5 +525,42 @@ describe("chart layout on the wire", () => {
     expect(layoutFields.map((name) => pdfBody?.get(name))).toEqual(["pages", "3", "2", "0", "true"]);
     expect(pdfBody?.get("variant")).toBe("colour");
     expect(layoutFields.map((name) => conversion?.get(name))).toEqual([null, null, null, null, null]);
+  });
+});
+
+describe("inspectImage", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the image alone and gives the pixel art found", async () => {
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      Promise.resolve(new Response(JSON.stringify({ pixel_art: { width: 64, height: 60, colours: 6 } }))),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const image = new File(["x"], "a.png", { type: "image/png" });
+
+    const result = await inspectImage(image, 1000);
+
+    expect(result).toEqual({ ok: true, pixelArt: { width: 64, height: 60, colours: 6 } });
+    const call = fetchMock.mock.calls[0];
+    expect(call?.[0]).toBe("/api/images/inspect");
+    const body = call?.[1]?.body as FormData;
+    expect([...body.keys()]).toEqual(["image"]);
+  });
+
+  it("gives null for an image that is not pixel art, and the API's message on failure", async () => {
+    const answers = [
+      new Response(JSON.stringify({ pixel_art: null })),
+      new Response(JSON.stringify({ detail: "the upload is not a decodable image" }), { status: 400 }),
+    ];
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(answers.shift() as Response)));
+    const image = new File(["x"], "a.png", { type: "image/png" });
+
+    expect(await inspectImage(image, 1000)).toEqual({ ok: true, pixelArt: null });
+    expect(await inspectImage(image, 1000)).toEqual({
+      ok: false,
+      message: "the upload is not a decodable image",
+    });
   });
 });
