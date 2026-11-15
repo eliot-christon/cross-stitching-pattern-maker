@@ -10,6 +10,7 @@ import {
   type Settings,
 } from "./api";
 import type { Pattern } from "./pattern";
+import { StitchedHeart, StitchRule } from "./motif";
 import { PatternPreview } from "./PatternPreview";
 
 /** The image and settings a preview was made from: the PDF is asked for with these. */
@@ -77,24 +78,28 @@ function SettingField(props: {
   const { label, limits, value, onChange } = props;
   const labelId = useId();
   return (
-    <div role="group" aria-labelledby={labelId}>
-      <span id={labelId}>{label}</span>
-      <input
-        type="range"
-        aria-labelledby={labelId}
-        min={limits.min}
-        max={limits.max}
-        step={limits.step}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
-      <input
-        type="number"
-        aria-labelledby={labelId}
-        step="any"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
+    <div role="group" aria-labelledby={labelId} className="field">
+      <span id={labelId} className="field-label">
+        {label}
+      </span>
+      <div className="field-row">
+        <input
+          type="range"
+          aria-labelledby={labelId}
+          min={limits.min}
+          max={limits.max}
+          step={limits.step}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <input
+          type="number"
+          aria-labelledby={labelId}
+          step="any"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      </div>
     </div>
   );
 }
@@ -120,10 +125,18 @@ export function UploadForm() {
   }, []);
 
   if (limits.kind === "loading") {
-    return <p role="status">Loading the settings...</p>;
+    return (
+      <p role="status" className="status">
+        Loading the settings...
+      </p>
+    );
   }
   if (limits.kind === "failed") {
-    return <p role="alert">{limits.message}</p>;
+    return (
+      <p role="alert" className="alert">
+        {limits.message}
+      </p>
+    );
   }
   return <Converter limits={limits.limits} />;
 }
@@ -286,117 +299,149 @@ function Converter({ limits }: { limits: Limits }) {
 
   const { settings } = inputs;
   return (
-    <>
-      {/* noValidate: the API checks the settings and its message is shown, not the browser's. */}
-      <form noValidate onSubmit={(event) => event.preventDefault()}>
-        <label>
-          Image
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(event) => chooseImage(event.target.files?.[0] ?? null)}
+    <div className="layout">
+      <aside className="panel" aria-label="Settings">
+        <StitchRule />
+        <h2>Settings</h2>
+        {/* noValidate: the API checks the settings and its message is shown, not the browser's. */}
+        <form className="form" noValidate onSubmit={(event) => event.preventDefault()}>
+          <label className="field">
+            <span className="field-label">Image</span>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(event) => chooseImage(event.target.files?.[0] ?? null)}
+            />
+          </label>
+          <SettingField
+            label="Width (stitches)"
+            limits={ranges.width}
+            value={settings.width}
+            onChange={(value) => changeSetting("width", value)}
           />
-        </label>
-        <SettingField
-          label="Width (stitches)"
-          limits={ranges.width}
-          value={settings.width}
-          onChange={(value) => changeSetting("width", value)}
-        />
-        <SettingField
-          label="Max colours"
-          limits={ranges.max_colours}
-          value={settings.maxColours}
-          onChange={(value) => changeSetting("maxColours", value)}
-        />
-        <label>
-          Fabric count
-          <input
-            type="number"
-            step="any"
-            value={settings.fabricCount}
-            onChange={(event) => changeSetting("fabricCount", event.target.value)}
+          <SettingField
+            label="Max colours"
+            limits={ranges.max_colours}
+            value={settings.maxColours}
+            onChange={(value) => changeSetting("maxColours", value)}
           />
-        </label>
-        <SettingField
-          label="Merge similar threads (colour distance)"
-          limits={ranges.merge_distance}
-          value={settings.mergeDistance}
-          onChange={(value) => changeSetting("mergeDistance", value)}
-        />
-        <SettingField
-          label="Minimum stitches per thread"
-          limits={ranges.min_stitches}
-          value={settings.minStitches}
-          onChange={(value) => changeSetting("minStitches", value)}
-        />
-        <SettingField
-          label="Largest confetti cluster (stitches)"
-          limits={ranges.confetti_size}
-          value={settings.confettiSize}
-          onChange={(value) => changeSetting("confettiSize", value)}
-        />
-      </form>
+          <label className="field">
+            <span className="field-label">Fabric count</span>
+            <input
+              type="number"
+              step="any"
+              value={settings.fabricCount}
+              onChange={(event) => changeSetting("fabricCount", event.target.value)}
+            />
+          </label>
+          <SettingField
+            label="Merge similar threads (colour distance)"
+            limits={ranges.merge_distance}
+            value={settings.mergeDistance}
+            onChange={(value) => changeSetting("mergeDistance", value)}
+          />
+          <SettingField
+            label="Minimum stitches per thread"
+            limits={ranges.min_stitches}
+            value={settings.minStitches}
+            onChange={(value) => changeSetting("minStitches", value)}
+          />
+          <SettingField
+            label="Largest confetti cluster (stitches)"
+            limits={ranges.confetti_size}
+            value={settings.confettiSize}
+            onChange={(value) => changeSetting("confettiSize", value)}
+          />
+        </form>
 
-      {busy && <p role="status">Converting the image. This can take a few seconds.</p>}
-      {error !== null && <p role="alert">{error}</p>}
-      {preview !== null && (
-        <>
-          <PatternPreview pattern={preview.pattern} />
-          <section aria-label="PDF chart">
-            <label>
-              Chart
-              <select
-                value={chart.variant}
-                onChange={(event) =>
-                  setChart({ ...chart, variant: event.target.value as ChartOptions["variant"] })
-                }
-              >
-                <option value="colour">Colour</option>
-                <option value="bw">Black and white</option>
-              </select>
-            </label>
-            <label>
-              Paper
-              <select
-                value={chart.paper}
-                onChange={(event) =>
-                  setChart({ ...chart, paper: event.target.value as ChartOptions["paper"] })
-                }
-              >
-                {PAPERS.map((paper) => (
-                  <option key={paper} value={paper}>
-                    {paper}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Orientation
-              <select
-                value={chart.orientation}
-                onChange={(event) =>
-                  setChart({
-                    ...chart,
-                    orientation: event.target.value as ChartOptions["orientation"],
-                  })
-                }
-              >
-                <option value="portrait">Portrait</option>
-                <option value="landscape">Landscape</option>
-              </select>
-            </label>
+        {preview !== null && (
+          <section aria-label="PDF chart" className="panel-section">
+            <h2>PDF chart</h2>
+            <div className="choices">
+              <label className="field">
+                <span className="field-label">Chart</span>
+                <select
+                  value={chart.variant}
+                  onChange={(event) =>
+                    setChart({ ...chart, variant: event.target.value as ChartOptions["variant"] })
+                  }
+                >
+                  <option value="colour">Colour</option>
+                  <option value="bw">Black and white</option>
+                </select>
+              </label>
+              <label className="field">
+                <span className="field-label">Paper</span>
+                <select
+                  value={chart.paper}
+                  onChange={(event) =>
+                    setChart({ ...chart, paper: event.target.value as ChartOptions["paper"] })
+                  }
+                >
+                  {PAPERS.map((paper) => (
+                    <option key={paper} value={paper}>
+                      {paper}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span className="field-label">Orientation</span>
+                <select
+                  value={chart.orientation}
+                  onChange={(event) =>
+                    setChart({
+                      ...chart,
+                      orientation: event.target.value as ChartOptions["orientation"],
+                    })
+                  }
+                >
+                  <option value="portrait">Portrait</option>
+                  <option value="landscape">Landscape</option>
+                </select>
+              </label>
+            </div>
             <button
               type="button"
+              className="button button-primary"
               disabled={download.kind === "busy" || busy}
               onClick={() => void savePdf(preview.source)}
             >
               {download.kind === "busy" ? "Preparing PDF..." : "Download PDF"}
             </button>
-            {download.kind === "failed" && <p role="alert">{download.message}</p>}
+            {download.kind === "failed" && (
+              <p role="alert" className="alert">
+                {download.message}
+              </p>
+            )}
           </section>
-        </>
-      )}
-    </>
+        )}
+      </aside>
+
+      <section className="viewer-area" aria-label="Pattern">
+        {busy && (
+          <p role="status" className="status">
+            Converting the image. This can take a few seconds.
+          </p>
+        )}
+        {error !== null && (
+          <p role="alert" className="alert">
+            {error}
+          </p>
+        )}
+        {preview !== null ? (
+          <PatternPreview pattern={preview.pattern} />
+        ) : (
+          <div className="empty-state">
+            <StitchedHeart size={56} />
+            <p>
+              {inputs.image === null
+                ? "Choose an image and its pattern appears here."
+                : "The pattern appears here once the image is converted."}
+            </p>
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
