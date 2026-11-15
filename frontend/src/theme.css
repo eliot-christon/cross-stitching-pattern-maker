@@ -1,0 +1,365 @@
+/* Tokens and base styles: the values and rules of frontend/STYLE.md. */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #f5efe3;
+  --surface: #fffbf3;
+  --sunk: #ece4d4;
+  --text: #2e2922;
+  --muted: #675e52;
+  --border: #ddd2bf;
+  --stitch: #b9ab92;
+  --accent: #4d6a4f;
+  --on-accent: #fffbf3;
+  --danger: #9a3b2c;
+  --danger-soft: #f6e3dc;
+  --focus: #4d6a4f;
+
+  --font-text: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-heading: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia,
+    serif;
+  --text-xs: 0.8125rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.75rem;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  --shadow-sm: 0 1px 2px rgb(70 52 30 / 0.08);
+  --shadow-md: 0 1px 2px rgb(70 52 30 / 0.06), 0 6px 20px rgb(70 52 30 / 0.08);
+
+  /* One cross stitch in an 8 px tile, used as a mask so --stitch colours it. */
+  --stitch-x: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M2 2l4 4M6 2l-4 4' stroke='black' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1d1a16;
+    --surface: #28241f;
+    --sunk: #161411;
+    --text: #eee7da;
+    --muted: #b5ab9a;
+    --border: #3e3830;
+    --stitch: #5a5246;
+    --accent: #a3bf98;
+    --on-accent: #1d1a16;
+    --danger: #eb9a86;
+    --danger-soft: #3a2621;
+    --focus: #a3bf98;
+
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-md: 0 1px 2px rgb(0 0 0 / 0.3), 0 6px 20px rgb(0 0 0 / 0.25);
+  }
+}
+
+/* Base */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-text);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-heading);
+  line-height: 1.2;
+  font-weight: 600;
+  margin: 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* The motif */
+
+.stitch-rule {
+  height: 8px;
+  background-color: var(--stitch);
+  -webkit-mask: var(--stitch-x) left center / 8px 8px round no-repeat;
+  mask: var(--stitch-x) left center / 8px 8px round no-repeat;
+}
+
+/* Shell */
+
+.app {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: var(--space-4);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0 var(--space-3);
+}
+
+.app-header h1 {
+  font-size: var(--text-lg);
+}
+
+.app-header .tagline {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.logo {
+  flex: none;
+  color: var(--accent);
+}
+
+.app > .stitch-rule {
+  margin-bottom: var(--space-4);
+}
+
+.layout {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+@media (min-width: 800px) {
+  .app {
+    padding: var(--space-5) var(--space-6);
+  }
+
+  .app-header h1 {
+    font-size: var(--text-xl);
+  }
+
+  .layout {
+    grid-template-columns: 340px minmax(0, 1fr);
+    gap: var(--space-5);
+  }
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-4) var(--space-4) var(--space-5);
+  min-width: 0;
+}
+
+.panel > .stitch-rule {
+  margin: 0 0 var(--space-4);
+}
+
+.panel h2 {
+  font-size: var(--text-lg);
+  margin-bottom: var(--space-2);
+}
+
+.panel-section + .panel-section {
+  margin-top: var(--space-5);
+}
+
+.viewer-area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* Empty viewer: a frame of crosses around a short invitation. */
+
+.empty-state {
+  position: relative;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--space-3);
+  min-height: 320px;
+  padding: var(--space-7) var(--space-5);
+  border-radius: var(--radius-lg);
+  background: var(--sunk);
+  color: var(--muted);
+  text-align: center;
+}
+
+.empty-state::before {
+  content: "";
+  position: absolute;
+  inset: var(--space-3);
+  background-color: var(--stitch);
+  -webkit-mask:
+    var(--stitch-x) top left / 8px 8px round no-repeat,
+    var(--stitch-x) bottom left / 8px 8px round no-repeat,
+    var(--stitch-x) top left / 8px 8px no-repeat round,
+    var(--stitch-x) top right / 8px 8px no-repeat round;
+  mask:
+    var(--stitch-x) top left / 8px 8px round no-repeat,
+    var(--stitch-x) bottom left / 8px 8px round no-repeat,
+    var(--stitch-x) top left / 8px 8px no-repeat round,
+    var(--stitch-x) top right / 8px 8px no-repeat round;
+  pointer-events: none;
+}
+
+.empty-state p {
+  margin: 0;
+  max-width: 32ch;
+}
+
+.empty-state .logo {
+  color: var(--stitch);
+}
+
+/* Form controls */
+
+.form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.field {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.field-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.field-row input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.field-row input[type="number"] {
+  width: 5.5rem;
+  flex: none;
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+}
+
+input[type="number"],
+input[type="file"],
+select {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: var(--sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}
+
+input[type="file"] {
+  width: 100%;
+  padding: var(--space-2);
+}
+
+input[type="file"]::file-selector-button {
+  font: inherit;
+  margin-right: var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.choices .field select {
+  width: 100%;
+}
+
+.button {
+  font: inherit;
+  font-weight: 600;
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+
+.button-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.panel .button-primary {
+  width: 100%;
+  margin-top: var(--space-3);
+}
+
+/* Messages */
+
+.status {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.alert {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.panel .alert {
+  margin-top: var(--space-3);
+}
