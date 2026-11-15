@@ -42,6 +42,7 @@ from cross_stitch.pattern import (
     Pattern,
     Replaced,
     clean_pattern,
+    colours_with_headroom,
     convert_image,
     isolated_stitches,
     replace_threads,
@@ -318,8 +319,13 @@ class _Cleanup:
         """Whether any setting is non-zero; all at 0 leave the pattern as converted."""
         return bool(self.merge_distance or self.min_stitches or self.confetti_size)
 
-    def __call__(self, pattern: Pattern) -> CleanedPattern:
-        return clean_pattern(pattern, **asdict(self))
+    def colours_to_convert(self, max_colours: int) -> int:
+        """Threads to convert with: more than asked when cleanup will remove some, since
+        `clean_pattern` caps the result at `max_colours` anyway."""
+        return colours_with_headroom(max_colours) if self.on else max_colours
+
+    def __call__(self, pattern: Pattern, max_colours: int) -> CleanedPattern:
+        return clean_pattern(pattern, **asdict(self), max_colours=max_colours)
 
 
 @dataclass(frozen=True)
@@ -392,7 +398,12 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
     width: Annotated[int, Form(ge=_WIDTH.min, le=_WIDTH.max, description="Width in stitches")],
     max_colours: Annotated[
         int,
-        Form(ge=_MAX_COLOURS.min, le=_MAX_COLOURS.max, description="Most threads used"),
+        Form(
+            ge=_MAX_COLOURS.min,
+            le=_MAX_COLOURS.max,
+            description="Threads of the pattern, after cleanup (fewer only if the image "
+            "or the cleanup leaves fewer)",
+        ),
     ],
     cleanup: Annotated[_Cleanup, Depends(_cleanup)],
     fabric_count: Annotated[
@@ -420,9 +431,12 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
             f"height would be {height} stitches at width {width}; at most {MAX_HEIGHT}",
         )
     pattern = convert_image(
-        decoded, width=width, max_colours=max_colours, fabric_count=fabric_count
+        decoded,
+        width=width,
+        max_colours=cleanup.colours_to_convert(max_colours),
+        fabric_count=fabric_count,
     )
-    cleaned = cleanup(pattern)
+    cleaned = cleanup(pattern, max_colours)
     return _Converted(
         cleaned=cleaned,
         cleanup_on=cleanup.on,

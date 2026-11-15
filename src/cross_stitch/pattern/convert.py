@@ -20,15 +20,25 @@ Steps, all deterministic for a given image and settings:
    takes the centroid nearest to its own colour. No dithering.
 4. **Snap** each centroid to its nearest DMC thread (CIEDE2000); centroids that land on
    the same thread merge into one key entry (`build_pattern`).
+5. **Count**: snapping merges centroids that land on one thread, so k-means asks for
+   `_OVERSHOOT` more clusters than `max_colours`; while the snapped threads are still
+   fewer than `max_colours` and k-means has bins left to split, it runs again with twice
+   as many more clusters as threads are missing (at most `_MAX_ATTEMPTS` runs and
+   `_MAX_CLUSTERS_FACTOR` times `max_colours`). The closest of the threads found then
+   merge (`limit_threads`) until `max_colours` remain. So the key has `max_colours`
+   threads whenever the image has enough distinct colours.
 """
+
+import math
 
 import numpy as np
 import numpy.typing as npt
 from PIL import Image
 
 from cross_stitch.colour import srgb_to_lab
+from cross_stitch.pattern.cleanup import limit_threads
 from cross_stitch.pattern.model import EMPTY, Pattern, build_pattern, check_fabric_count
-from cross_stitch.threads import nearest_dmc_lab
+from cross_stitch.threads import Thread, nearest_dmc_lab
 
 __all__ = ["OPAQUE_THRESHOLD", "convert_image", "stitch_height"]
 
@@ -40,6 +50,9 @@ _MAX_ITERATIONS = 30
 _TOLERANCE = 0.05
 _CHUNK = 8192
 _BIN_SHIFT = 3  # 8-bit channels -> 5-bit bins
+_OVERSHOOT = 1.25
+_MAX_ATTEMPTS = 3
+_MAX_CLUSTERS_FACTOR = 4
 
 FloatArray = npt.NDArray[np.float64]
 IndexArray = npt.NDArray[np.intp]
@@ -56,10 +69,10 @@ def convert_image(
 ) -> Pattern:
     """Convert a decoded image into a DMC pattern `width` stitches wide.
 
-    Uses at most `max_colours` threads (fewer when centroids share a thread or the image
-    has fewer colours). `fabric_count` is in stitches per inch. Raises `ValueError` if
-    `width` < 1, `max_colours` < 1, `fabric_count` is not a positive number, or the image
-    has no pixels.
+    Uses `max_colours` threads, fewer only when the image has fewer distinct colours (or
+    they snap to fewer DMC threads). `fabric_count` is in stitches per inch. Raises
+    `ValueError` if `width` < 1, `max_colours` < 1, `fabric_count` is not a positive number,
+    or the image has no pixels.
     """
     if width < 1:
         raise ValueError(f"width must be at least 1 stitch, got {width}")
@@ -81,28 +94,52 @@ def convert_image(
     if len(colours) == 0:
         return build_pattern(grid, [], fabric_count)
 
+    labels, threads = _match_colours(colours, counts.astype(np.float64), max_colours)
+    grid[stitched] = labels[inverse.reshape(-1)]
+    return limit_threads(build_pattern(grid, threads, fabric_count), max_colours)
+
+
+def _match_colours(
+    colours: npt.NDArray[np.uint8], counts: FloatArray, max_colours: int
+) -> tuple[IndexArray, tuple[Thread, ...]]:
+    """For the distinct `colours` (with their cell counts): each one's index into the
+    threads, and the threads (steps 3 to 5 of the module docstring)."""
     lab = srgb_to_lab(colours)
     if len(colours) <= max_colours:
-        centroids, labels = lab, np.arange(len(colours), dtype=np.intp)
-    else:
-        centroids = _quantise(colours, lab, counts.astype(np.float64), max_colours)
-        labels = _nearest_centroid(lab, centroids)
-    grid[stitched] = labels[inverse.reshape(-1)]
-    return build_pattern(grid, nearest_dmc_lab(centroids), fabric_count)
+        return np.arange(len(colours), dtype=np.intp), nearest_dmc_lab(lab)
+    centroids, threads = _palette(colours, lab, counts, max_colours)
+    return _nearest_centroid(lab, centroids), threads
 
 
-def _quantise(
-    colours: npt.NDArray[np.uint8], lab: FloatArray, counts: FloatArray, k: int
-) -> FloatArray:
-    """At most `k` Lab centroids for the distinct `colours` (with their Lab and counts)."""
+def _palette(
+    colours: npt.NDArray[np.uint8], lab: FloatArray, counts: FloatArray, wanted: int
+) -> tuple[FloatArray, tuple[Thread, ...]]:
+    """Lab centroids for the distinct `colours` (with their Lab and counts) and the DMC
+    thread of each, from as many k-means clusters as it takes for `wanted` distinct
+    threads (see step 5 of the module docstring)."""
+    means, mass = _bins(colours, lab, counts)
+    clusters = math.ceil(wanted * _OVERSHOOT)
+    for _ in range(_MAX_ATTEMPTS):
+        centroids = means if len(means) <= clusters else _kmeans(means, mass, clusters)
+        threads = nearest_dmc_lab(centroids)
+        missing = wanted - len(set(threads))
+        exhausted = len(means) <= clusters or clusters >= _MAX_CLUSTERS_FACTOR * wanted
+        if missing <= 0 or exhausted:
+            break
+        clusters = min(clusters + 2 * missing, _MAX_CLUSTERS_FACTOR * wanted)
+    return centroids, threads
+
+
+def _bins(
+    colours: npt.NDArray[np.uint8], lab: FloatArray, counts: FloatArray
+) -> tuple[FloatArray, FloatArray]:
+    """The distinct `colours` grouped into 5-bit bins: each bin's cell-weighted mean Lab
+    colour and its cell count."""
     bins = colours.astype(np.intp) >> _BIN_SHIFT
     bin_ids = (bins[:, 0] << 10) | (bins[:, 1] << 5) | bins[:, 2]
     unique_bins, bin_index = np.unique(bin_ids, return_inverse=True)
     mass, sums = _weighted_sums(bin_index, counts, lab, len(unique_bins))
-    means = sums / mass[:, np.newaxis]
-    if len(unique_bins) <= k:
-        return means
-    return _kmeans(means, mass, k)
+    return sums / mass[:, np.newaxis], mass
 
 
 def _weighted_sums(

@@ -1,8 +1,11 @@
 """Image -> cross-stitch pattern: the stitch grid, its DMC key, counts and sizes."""
 
 from cross_stitch.pattern.cleanup import (
+    CLEANUP_HEADROOM,
     CleanedPattern,
     clean_pattern,
+    colours_with_headroom,
+    limit_threads,
     merge_similar_threads,
     prune_rare_threads,
 )
@@ -19,6 +22,7 @@ from cross_stitch.pattern.model import (
 from cross_stitch.pattern.replace import Replaced, replace_threads
 
 __all__ = [
+    "CLEANUP_HEADROOM",
     "EMPTY",
     "OPAQUE_THRESHOLD",
     "CleanedPattern",
@@ -27,8 +31,10 @@ __all__ = [
     "Replaced",
     "build_pattern",
     "clean_pattern",
+    "colours_with_headroom",
     "convert_image",
     "isolated_stitches",
+    "limit_threads",
     "merge_similar_threads",
     "prune_rare_threads",
     "remove_confetti",

@@ -73,7 +73,7 @@ const LIMITS: Limits = {
 };
 
 const WIDTH = "Width (stitches)";
-const COLOURS = "Max colours";
+const COLOURS = "Colours";
 const MERGE = "Merge similar threads (colour distance)";
 const MIN_STITCHES = "Minimum stitches per thread";
 const CONFETTI = "Largest confetti cluster (stitches)";
