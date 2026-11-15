@@ -117,6 +117,16 @@ describe("ThreadPicker", () => {
     expect(choiceCodes("All threads")).not.toContain("310");
   });
 
+  it("offers to remove the thread, handing back null for bare fabric", async () => {
+    stubApi(WHITES, () => json(200, NEAREST));
+    const onPick = vi.fn();
+    render(<ThreadPicker from={BLACK} onPick={onPick} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Remove/ }));
+    expect(onPick).toHaveBeenCalledTimes(1);
+    expect(onPick).toHaveBeenCalledWith(null);
+  });
+
   it("hands the chosen thread back once, and closes on Escape", async () => {
     stubApi(WHITES, () => json(200, NEAREST));
     const onPick = vi.fn();

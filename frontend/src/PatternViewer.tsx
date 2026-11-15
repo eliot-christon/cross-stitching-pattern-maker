@@ -1,8 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { centreLines, tenCellLines } from "./chartAids";
+import { Segmented, Switch } from "./controls";
+import { DEFAULT_FABRIC } from "./fabric";
 import { gridPixels } from "./grid";
 import type { Pattern } from "./pattern";
+import { rgbCss } from "./swatch";
 import { visibleCells, visibleSymbols, type View } from "./symbolView";
 import {
   fitViewport,
@@ -34,10 +37,6 @@ const SYMBOL_CELL = "#ffffff";
 const SYMBOL_INK = "#000000";
 const BARE_CELL = "#e2e2e2";
 const CELL_LINE = "#c8c8c8";
-// Bare fabric shows as a checkerboard under the colours, so it never reads as a thread.
-const CHECKER_LIGHT = "#f4f1ea";
-const CHECKER_DARK = "#d9d3c7";
-const CHECKER_PX = 4;
 // The chart aids: 10-cell lines as the PDF's bold lines, centre lines in red.
 const TEN_LINE = "rgba(20, 16, 12, 0.6)";
 const TEN_LINE_WIDTH = 1.5;
@@ -64,22 +63,6 @@ function colourSource(cells: Cells): HTMLCanvasElement | null {
   return canvas;
 }
 
-function checkerFill(context: CanvasRenderingContext2D): CanvasPattern | string {
-  const tile = document.createElement("canvas");
-  tile.width = CHECKER_PX * 2;
-  tile.height = CHECKER_PX * 2;
-  const tileContext = tile.getContext("2d");
-  if (!tileContext) {
-    return CHECKER_LIGHT;
-  }
-  tileContext.fillStyle = CHECKER_LIGHT;
-  tileContext.fillRect(0, 0, tile.width, tile.height);
-  tileContext.fillStyle = CHECKER_DARK;
-  tileContext.fillRect(0, 0, CHECKER_PX, CHECKER_PX);
-  tileContext.fillRect(CHECKER_PX, CHECKER_PX, CHECKER_PX, CHECKER_PX);
-  return context.createPattern(tile, "repeat") ?? CHECKER_LIGHT;
-}
-
 /** The window's rectangle in viewer px. */
 function windowRect(vp: Viewport, view: View) {
   return {
@@ -90,14 +73,16 @@ function windowRect(vp: Viewport, view: View) {
   };
 }
 
+/** The cells in view as colours, bare fabric in the `fabric` colour under them. */
 function paintColours(
   context: CanvasRenderingContext2D,
   vp: Viewport,
   view: View,
   source: HTMLCanvasElement | null,
+  fabric: string,
 ) {
   const rect = windowRect(vp, view);
-  context.fillStyle = checkerFill(context);
+  context.fillStyle = fabric;
   context.fillRect(rect.x, rect.y, rect.width, rect.height);
   if (source === null) {
     return;
@@ -147,12 +132,14 @@ function paintSymbols(
   }
 }
 
-/** Each cell in view filled with its thread's colour, its symbol in the entry's ink. */
+/** Each cell in view filled with its thread's colour, its symbol in the entry's ink; bare
+ * fabric in the `fabric` colour. */
 function paintSymbolsOnColours(
   context: CanvasRenderingContext2D,
   vp: Viewport,
   view: View,
   cells: Cells,
+  fabric: string,
 ) {
   const { scale } = vp;
   context.font = symbolFont(scale);
@@ -164,11 +151,11 @@ function paintSymbolsOnColours(
     const x = vp.x + column * scale;
     const y = vp.y + row * scale;
     if (entry === null) {
-      context.fillStyle = BARE_CELL;
+      context.fillStyle = fabric;
       context.fillRect(x, y, scale, scale);
       continue;
     }
-    context.fillStyle = `rgb(${entry.rgb.join(" ")})`;
+    context.fillStyle = rgbCss(entry.rgb);
     context.fillRect(x, y, scale, scale);
     context.strokeRect(x + 0.5, y + 0.5, scale - 1, scale - 1);
     context.fillStyle = INK[entry.symbol_ink];
@@ -265,32 +252,6 @@ function useBoxSize(ref: React.RefObject<HTMLElement | null>): Size {
   return size;
 }
 
-function Segmented<T extends string>(props: {
-  legend: string;
-  name: string;
-  options: { value: T; label: string }[];
-  value: T;
-  onChange: (value: T) => void;
-}) {
-  const { legend, name, options, value, onChange } = props;
-  return (
-    <fieldset className="segmented">
-      <legend className="visually-hidden">{legend}</legend>
-      {options.map((option) => (
-        <label key={option.value}>
-          <input
-            type="radio"
-            name={name}
-            checked={value === option.value}
-            onChange={() => onChange(option.value)}
-          />
-          <span>{option.label}</span>
-        </label>
-      ))}
-    </fieldset>
-  );
-}
-
 /**
  * The pattern on one canvas, zoomable and pannable: Colours or Symbols, and, when the
  * response has the pattern before cleanup, Before / After in Colours.
@@ -302,8 +263,10 @@ export function PatternViewer(props: {
   /** The PDF view, behind a Pattern / PDF switch; none, no switch. */
   pdfView?: ReactNode;
   onShowChange?: (shows: ViewerShows) => void;
+  /** The fabric's colour, which bare cells show in Colours and Symbols on colours. */
+  fabric?: string;
 }) {
-  const { pattern, pdfView, onShowChange } = props;
+  const { pattern, pdfView, onShowChange, fabric = DEFAULT_FABRIC } = props;
   const [shows, setShows] = useState<ViewerShows>("pattern");
   const pdf = pdfView !== undefined && shows === "pdf";
   const [mode, setMode] = useState<ViewMode>("colours");
@@ -379,12 +342,12 @@ export function PatternViewer(props: {
     if (mode === "symbols" && readable) {
       paintSymbols(context, vp, view, pattern);
     } else if (mode === "symbols-on-colours" && readable) {
-      paintSymbolsOnColours(context, vp, view, pattern);
+      paintSymbolsOnColours(context, vp, view, pattern, fabric);
     } else {
-      paintColours(context, vp, view, source);
+      paintColours(context, vp, view, source, fabric);
     }
     paintAids(context, vp, view, dims, centreLinesOn);
-  }, [vp, dims, size, mode, readable, pattern, source, centreLinesOn]);
+  }, [vp, dims, size, mode, readable, pattern, source, centreLinesOn, fabric]);
 
   // The wheel zooms about the pointer. A native listener, because React's is passive and
   // the page must not scroll while the wheel zooms.
@@ -483,7 +446,6 @@ export function PatternViewer(props: {
         {pdfView !== undefined && (
           <Segmented
             legend="Show"
-            name="viewer-shows"
             options={[
               { value: "pattern", label: "Pattern" },
               { value: "pdf", label: "PDF" },
@@ -498,7 +460,6 @@ export function PatternViewer(props: {
         <div className="viewer-controls" hidden={pdf}>
         <Segmented
           legend="View"
-          name="viewer-mode"
           options={[
             { value: "colours", label: "Colours" },
             { value: "symbols", label: "Symbols" },
@@ -510,7 +471,6 @@ export function PatternViewer(props: {
         {before !== null && mode === "colours" && (
           <Segmented
             legend="Cleanup"
-            name="viewer-cleanup"
             options={[
               { value: "before", label: "Before cleanup" },
               { value: "after", label: "After cleanup" },
@@ -519,14 +479,7 @@ export function PatternViewer(props: {
             onChange={(value) => setShowBefore(value === "before")}
           />
         )}
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={centreLinesOn}
-            onChange={(event) => setCentreLinesOn(event.target.checked)}
-          />
-          <span>Centre lines</span>
-        </label>
+        <Switch label="Centre lines" checked={centreLinesOn} onChange={setCentreLinesOn} />
         <div className="viewer-zoom">
           <button
             type="button"

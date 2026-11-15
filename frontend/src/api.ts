@@ -48,15 +48,38 @@ export interface Settings {
   minStitches: string;
   /** Merge clusters of one thread up to this many cells into their surroundings; "0" is off. */
   confettiSize: string;
+  /** Reduce the image to one pixel per art pixel before converting it. */
+  pixelArt: boolean;
 }
+
+/** The image inspection endpoint: is the image pixel art, and of what size. */
+export const INSPECT_URL = "/api/images/inspect";
+
+/** An image's art pixels, as `POST /images/inspect` finds them. */
+export interface PixelArt {
+  width: number;
+  height: number;
+  colours: number;
+}
+
+export type InspectResult = { ok: true; pixelArt: PixelArt | null } | { ok: false; message: string };
 
 /** The PDF chart endpoint: the same inputs as `PATTERNS_URL` plus the chart options. */
 export const PATTERN_PDF_URL = "/api/patterns/pdf";
 
-/** One thread swap, applied by the API after cleanup; a list applies in order. */
+/** One thread swap, applied by the API after cleanup; a list applies in order. A `to` of
+ * `null` removes the thread: its cells become bare fabric. */
 export interface Replacement {
   from: DmcThread;
-  to: DmcThread;
+  to: DmcThread | null;
+}
+
+/** The `TO` of a `replace` field that removes a thread, as the API spells it. */
+export const FABRIC = "fabric";
+
+/** A replacement as the API's `replace` field spells it: `FROM:TO`. */
+export function replacementField({ from, to }: Replacement): string {
+  return `${from.code}:${to === null ? FABRIC : to.code}`;
 }
 
 /** The chart options `POST /patterns/pdf` accepts, as its form fields spell them. */
@@ -72,6 +95,8 @@ export interface ChartOptions {
   /** Rows and columns neighbouring pages repeat, as typed. */
   overlap: string;
   centreLines: boolean;
+  /** The fabric's colour, `#rrggbb`: bare cells in the PDF's thumbnails. */
+  fabricColour: string;
 }
 
 /** The form fields of `POST /patterns/pdf` for these options. */
@@ -85,6 +110,7 @@ function chartFields(options: ChartOptions): Record<string, string> {
     pages_down: options.pagesDown,
     overlap: options.overlap,
     centre_lines: options.centreLines ? "true" : "false",
+    fabric_colour: options.fabricColour,
   };
 }
 
@@ -121,10 +147,31 @@ export async function getLimits(): Promise<LimitsResult> {
 }
 
 /**
- * Post the image and settings (and any extra fields), after the client-side size check
- * against `maxUploadBytes`, the API's reported limit.
+ * Post the image with `fill`'s fields, after the client-side size check against
+ * `maxUploadBytes`, the API's reported limit.
  */
-async function post(
+async function sendForm(
+  url: string,
+  image: File,
+  maxUploadBytes: number,
+  fill: (body: FormData) => void = () => {},
+): Promise<Sent> {
+  if (image.size > maxUploadBytes) {
+    const limit = formatBytes(maxUploadBytes);
+    return { ok: false, message: `The image is larger than ${limit}, the most the server accepts.` };
+  }
+  const body = new FormData();
+  body.append("image", image);
+  fill(body);
+  try {
+    return { ok: true, response: await fetch(url, { method: "POST", body }) };
+  } catch {
+    return { ok: false, message: UNREACHABLE };
+  }
+}
+
+/** Post the image and settings (and any extra fields) to a pattern route. */
+function post(
   url: string,
   image: File,
   settings: Settings,
@@ -132,32 +179,42 @@ async function post(
   replacements: readonly Replacement[],
   extra: Record<string, string> = {},
 ): Promise<Sent> {
-  if (image.size > maxUploadBytes) {
-    const limit = formatBytes(maxUploadBytes);
-    return { ok: false, message: `The image is larger than ${limit}, the most the server accepts.` };
-  }
+  return sendForm(url, image, maxUploadBytes, (body) => appendSettings(body, settings, replacements, extra));
+}
 
-  const body = new FormData();
-  body.append("image", image);
+function appendSettings(
+  body: FormData,
+  settings: Settings,
+  replacements: readonly Replacement[],
+  extra: Record<string, string>,
+) {
   body.append("width", settings.width);
   body.append("max_colours", settings.maxColours);
   body.append("fabric_count", settings.fabricCount);
   body.append("merge_distance", settings.mergeDistance);
   body.append("min_stitches", settings.minStitches);
   body.append("confetti_size", settings.confettiSize);
+  body.append("pixel_art", settings.pixelArt ? "true" : "false");
   // Repeated `replace` fields, in order: the API applies them in sequence.
-  for (const { from, to } of replacements) {
-    body.append("replace", `${from.code}:${to.code}`);
+  for (const pair of replacements) {
+    body.append("replace", replacementField(pair));
   }
   for (const [name, value] of Object.entries(extra)) {
     body.append(name, value);
   }
+}
 
-  try {
-    return { ok: true, response: await fetch(url, { method: "POST", body }) };
-  } catch {
-    return { ok: false, message: UNREACHABLE };
+/** Whether the image is pixel art, and its size in art pixels and colours. */
+export async function inspectImage(image: File, maxUploadBytes: number): Promise<InspectResult> {
+  const sent = await sendForm(INSPECT_URL, image, maxUploadBytes);
+  if (!sent.ok) {
+    return sent;
   }
+  const payload = await readJson(sent.response);
+  if (sent.response.ok && typeof payload === "object" && payload !== null) {
+    return { ok: true, pixelArt: (payload as { pixel_art?: PixelArt | null }).pixel_art ?? null };
+  }
+  return { ok: false, message: errorMessage(sent.response.status, payload, "Inspecting the image failed") };
 }
 
 /** The JSON body of a response, or `undefined` when it has none. */
@@ -291,4 +348,64 @@ export function getNearestThreads(code: string): Promise<ThreadsResult<NearThrea
     `${THREADS_URL}/${encodeURIComponent(code)}/nearest`,
     "Loading the nearest threads failed",
   );
+}
+
+/** How the PDF would cut a pattern into pages: `POST /chart/layout`. */
+export const CHART_LAYOUT_URL = "/api/chart/layout";
+
+/** A run of columns or rows on one chart page. */
+export interface Band {
+  start: number;
+  end: number;
+  repeated: number;
+}
+
+/** The pages of a chart: the cell, the bands, and each section's name by row. */
+export interface ChartLayout {
+  cell_mm: number;
+  columns: Band[];
+  rows: Band[];
+  sections: string[][];
+}
+
+/** One pages split: its cell (`null` where the PDF refuses it) and its biggest page. */
+export interface PageOption {
+  cell_mm: number | null;
+  columns: number;
+  rows: number;
+}
+
+/** The `POST /chart/layout` body, written by hand to match `ChartLayoutOut`. */
+export interface ChartLayoutReport {
+  layout: ChartLayout | null;
+  message: string | null;
+  /** Every pages split, `pages[down - 1][across - 1]`. */
+  pages: PageOption[][];
+}
+
+export type ChartLayoutResult = { ok: true; report: ChartLayoutReport } | { ok: false; message: string };
+
+/** How the PDF with `options` would cut a `width` x `height` pattern, and every split. */
+export async function getChartLayout(
+  width: number,
+  height: number,
+  options: ChartOptions,
+): Promise<ChartLayoutResult> {
+  const body = new FormData();
+  body.append("width", String(width));
+  body.append("height", String(height));
+  for (const [name, value] of Object.entries(chartFields(options))) {
+    body.append(name, value);
+  }
+  let response: Response;
+  try {
+    response = await fetch(CHART_LAYOUT_URL, { method: "POST", body });
+  } catch {
+    return { ok: false, message: UNREACHABLE };
+  }
+  const payload = await readJson(response);
+  if (response.ok && typeof payload === "object" && payload !== null) {
+    return { ok: true, report: payload as ChartLayoutReport };
+  }
+  return { ok: false, message: errorMessage(response.status, payload, "Loading the chart layout failed") };
 }

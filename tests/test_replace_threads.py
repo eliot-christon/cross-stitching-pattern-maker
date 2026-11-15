@@ -209,3 +209,56 @@ def test_the_same_input_twice_gives_the_same_pattern() -> None:
     assert_equal_patterns(
         replace_threads(pattern, pairs).pattern, replace_threads(pattern, pairs).pattern
     )
+
+
+# --------------------------------------------------------------------------- removal
+
+
+def test_removing_a_thread_leaves_its_cells_bare_and_the_rest_as_they_were() -> None:
+    pattern = drawn(THREE, THREE_LEGEND)
+    result = replace_threads(pattern, [(dmc_thread("321"), None)])
+
+    expected = drawn(["AABBBBB", "......."], {"A": "310", "B": "Blanc"})
+    assert_equal_patterns(result.pattern, expected)
+    assert result.pattern.total_stitches == pattern.total_stitches - 4
+    assert not result.ignored
+
+
+def test_a_removed_thread_is_no_longer_there_for_a_later_pair() -> None:
+    pattern = drawn(THREE, THREE_LEGEND)
+    pairs = [(dmc_thread("321"), None), (dmc_thread("321"), dmc_thread("797"))]
+
+    result = replace_threads(pattern, pairs)
+
+    assert result.ignored == (1,)
+    assert counted(result.pattern) == [("Blanc", 5), ("310", 2)]
+
+
+def test_a_thread_moved_onto_a_removed_one_is_removed_with_it_only_if_it_comes_first() -> None:
+    pattern = drawn(SEQ, SEQ_LEGEND)
+    merged_then_removed = [(dmc_thread("310"), dmc_thread("321")), (dmc_thread("321"), None)]
+    removed_then_moved = [(dmc_thread("321"), None), (dmc_thread("310"), dmc_thread("321"))]
+
+    assert counted(replace_threads(pattern, merged_then_removed).pattern) == [("Blanc", 2)]
+    assert counted(replace_threads(pattern, removed_then_moved).pattern) == [
+        ("321", 4),
+        ("Blanc", 2),
+    ]
+
+
+def test_removing_every_thread_leaves_bare_fabric_and_an_empty_key() -> None:
+    pattern = drawn(TWO, TWO_LEGEND)
+    result = replace_threads(pattern, [(dmc_thread("310"), None), (dmc_thread("Blanc"), None)])
+
+    assert not result.pattern.key
+    assert np.all(result.pattern.grid == EMPTY)
+    assert result.pattern.grid.shape == pattern.grid.shape
+
+
+def test_a_removal_keeps_the_skeins_derived_from_the_counts() -> None:
+    pattern = speckled(SHADES[:6], (20, 30), seed=4)
+    result = replace_threads(pattern, [(pattern.key[0].thread, None)]).pattern
+
+    for entry in result.key:
+        assert entry.skeins == skeins_needed(entry.stitches, FABRIC_COUNT)
+    assert pattern.key[0].thread not in [entry.thread for entry in result.key]

@@ -1,20 +1,37 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   convertImage,
   downloadPdf,
+  getChartLayout,
   getLimits,
+  inspectImage,
+  replacementField,
+  type ChartLayoutReport,
   type ChartOptions,
   type DmcThread,
   type Limits,
+  type PixelArt,
   type Replacement,
-  type SettingLimits,
   type Settings,
 } from "./api";
+import {
+  ChipChoice,
+  DropZone,
+  Segmented,
+  SheetIcon,
+  SliderField,
+  Stepper,
+  SwatchChoice,
+  Switch,
+} from "./controls";
+import { DEFAULT_FABRIC, FABRICS } from "./fabric";
 import type { KeyEntry, Pattern } from "./pattern";
 import { StitchedHeart, StitchRule } from "./motif";
+import { PagePicker, SectionPreview } from "./PagePicker";
 import { PatternPreview } from "./PatternPreview";
 import { PDF_AUTO_PREVIEW_MAX_CELLS, PdfView, type PdfNote } from "./PdfView";
+import { FabricSwatch, Swatch } from "./swatch";
 import { ThreadPicker } from "./ThreadPicker";
 
 /** The image and settings a preview was made from: the PDF is asked for with these. */
@@ -70,6 +87,16 @@ type LimitsState =
   | { kind: "failed"; message: string };
 
 const PAPERS: ChartOptions["paper"][] = ["A2", "A3", "A4", "A5"];
+/** Sheet icons, narrow side x long side in px: each paper half the one before, as A sizes
+ * are, drawn a little less unequal so A5 stays visible. */
+const SHEET_PX: Record<ChartOptions["paper"], [number, number]> = {
+  A2: [18, 25],
+  A3: [14, 20],
+  A4: [11, 16],
+  A5: [9, 12],
+};
+/** Fabric counts offered as chips: the common Aida and evenweave counts. */
+const FABRIC_COUNTS = [11, 14, 16, 18, 22, 28] as const;
 const PDF_NAME = "pattern.pdf";
 /** How long the inputs must stay unchanged before a conversion is sent. */
 const QUIET_MS = 500;
@@ -82,10 +109,10 @@ function sameSource(a: Source | null, b: Source): boolean {
   return (
     keys.every((key) => a.settings[key] === b.settings[key]) &&
     a.replacements.length === b.replacements.length &&
-    a.replacements.every(
-      (pair, i) =>
-        pair.from.code === b.replacements[i]?.from.code && pair.to.code === b.replacements[i]?.to.code,
-    )
+    a.replacements.every((pair, i) => {
+      const other = b.replacements[i];
+      return other !== undefined && replacementField(pair) === replacementField(other);
+    })
   );
 }
 
@@ -100,46 +127,6 @@ function saveFile(file: Blob, name: string) {
   link.remove();
   // Revoked a moment later: some browsers start the download after `click` returns.
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-/**
- * A setting as a slider and a number field, both named by `label` and showing `value`;
- * either one edits it. The slider's range comes from the API; the number field takes any
- * text, posted as typed (the API's 422 says what is wrong).
- */
-function SettingField(props: {
-  label: string;
-  limits: SettingLimits;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const { label, limits, value, onChange } = props;
-  const labelId = useId();
-  return (
-    <div role="group" aria-labelledby={labelId} className="field">
-      <span id={labelId} className="field-label">
-        {label}
-      </span>
-      <div className="field-row">
-        <input
-          type="range"
-          aria-labelledby={labelId}
-          min={limits.min}
-          max={limits.max}
-          step={limits.step}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        />
-        <input
-          type="number"
-          aria-labelledby={labelId}
-          step="any"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        />
-      </div>
-    </div>
-  );
 }
 
 /** The form, once the API has said what its settings accept. */
@@ -196,9 +183,14 @@ function Converter({ limits }: { limits: Limits }) {
       mergeDistance: String(ranges.merge_distance.default),
       minStitches: String(ranges.min_stitches.default),
       confettiSize: String(ranges.confetti_size.default),
+      pixelArt: false,
     },
     replacements: [],
   }));
+  /** The chosen image's art pixels, when the API found it to be pixel art. */
+  const [pixelArt, setPixelArt] = useState<PixelArt | null>(null);
+  /** The chosen image is being inspected: nothing converts until it is done. */
+  const inspecting = useRef(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** A change is waiting: the quiet delay is counting, or it expired while one ran. */
@@ -213,6 +205,7 @@ function Converter({ limits }: { limits: Limits }) {
     pagesDown: String(ranges.pages_down.default),
     overlap: String(ranges.overlap.default),
     centreLines: false,
+    fabricColour: DEFAULT_FABRIC,
   }));
   const [download, setDownload] = useState<Download>({ kind: "idle" });
   /** The key entry whose thread the picker is replacing, if it is open. */
@@ -228,6 +221,8 @@ function Converter({ limits }: { limits: Limits }) {
   /** What the PDF requests read: the latest preview, choices and view state. */
   const pdfLatest = useRef<{ preview: Preview | null; chart: ChartOptions; busy: boolean; visible: boolean } | null>(null);
   const pdfSeen = useRef<{ preview: Preview | null; visible: boolean }>({ preview: null, visible: false });
+  /** How the PDF would cut the preview with the chart choices, from the API. */
+  const [layoutReport, setLayoutReport] = useState<ChartLayoutReport | null>(null);
   /** The replacements the latest response reported as finding nothing to replace. */
   const [inactive, setInactive] = useState<ReadonlySet<Replacement>>(new Set());
 
@@ -282,6 +277,10 @@ function Converter({ limits }: { limits: Limits }) {
 
   /** Send the inputs as they stand, unless there is no image or they were the last sent. */
   function sendIfChanged() {
+    if (inspecting.current) {
+      // The inspection schedules a conversion with what it finds.
+      return;
+    }
     due.current = false;
     setPending(false);
     const { image, settings, replacements } = latest.current;
@@ -334,9 +333,39 @@ function Converter({ limits }: { limits: Limits }) {
     setInputs(next);
   }
 
-  function changeSetting(key: keyof Settings, value: string) {
-    change({ ...latest.current, settings: { ...latest.current.settings, [key]: value } });
+  function changeSettings(patch: Partial<Settings>) {
+    change({ ...latest.current, settings: { ...latest.current.settings, ...patch } });
     schedule();
+  }
+
+  function changeSetting(key: Exclude<keyof Settings, "pixelArt">, value: string) {
+    changeSettings({ [key]: value });
+  }
+
+  /**
+   * Ask the API whether `image` is pixel art before it is converted: if so, one stitch per
+   * art pixel (its width, its colours, within the limits) with pixel art on; if not, or
+   * if the inspection fails, a picture with the settings as they were.
+   */
+  async function inspect(image: File) {
+    inspecting.current = true;
+    setPending(true);
+    const result = await inspectImage(image, limits.max_upload_bytes);
+    if (!mounted.current || latest.current.image !== image) {
+      return;
+    }
+    inspecting.current = false;
+    const art = result.ok ? result.pixelArt : null;
+    setPixelArt(art);
+    changeSettings(
+      art === null
+        ? { pixelArt: false }
+        : {
+            pixelArt: true,
+            width: String(Math.min(art.width, ranges.width.max)),
+            maxColours: String(Math.max(ranges.max_colours.min, Math.min(art.colours, ranges.max_colours.max))),
+          },
+    );
   }
 
   function changeReplacements(replacements: readonly Replacement[]) {
@@ -344,7 +373,7 @@ function Converter({ limits }: { limits: Limits }) {
     schedule();
   }
 
-  function replaceWith(to: DmcThread) {
+  function replaceWith(to: DmcThread | null) {
     if (picking !== null) {
       const from = { code: picking.code, name: picking.name, rgb: picking.rgb };
       changeReplacements([...latest.current.replacements, { from, to }]);
@@ -433,16 +462,19 @@ function Converter({ limits }: { limits: Limits }) {
     change({ ...latest.current, image });
     // The PDF on the view belongs to the image that was there.
     clearPdf();
-    // The preview, any error and any download belong to the image that was there.
+    // The preview, any error, any download and the pixel art found belong to the image
+    // that was there.
     setPreview(null);
     setError(null);
     setDownload({ kind: "idle" });
+    setPixelArt(null);
+    cancelTimer();
+    due.current = false;
+    inspecting.current = false;
     if (image === null) {
-      cancelTimer();
-      due.current = false;
       setPending(false);
     } else {
-      schedule();
+      void inspect(image);
     }
   }
 
@@ -499,6 +531,40 @@ function Converter({ limits }: { limits: Limits }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preview, chart, busy, pdfVisible]);
 
+  const layoutWidth = preview?.pattern.width ?? 0;
+  const layoutHeight = preview?.pattern.height ?? 0;
+  const layoutKey = JSON.stringify([
+    layoutWidth,
+    layoutHeight,
+    chart.paper,
+    chart.orientation,
+    chart.split,
+    chart.pagesAcross,
+    chart.pagesDown,
+    chart.overlap,
+  ]);
+  const layoutChart = useRef(chart);
+  layoutChart.current = chart;
+  // Ask how the PDF would cut the preview once the layout choices have been quiet; an
+  // answer for choices since changed is dropped.
+  useEffect(() => {
+    if (layoutWidth === 0 || layoutHeight === 0) {
+      return;
+    }
+    let current = true;
+    const timer = setTimeout(() => {
+      void getChartLayout(layoutWidth, layoutHeight, layoutChart.current).then((result) => {
+        if (current && mounted.current && result.ok) {
+          setLayoutReport(result.report);
+        }
+      });
+    }, QUIET_MS);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [layoutKey, layoutWidth, layoutHeight]);
+
   let pdfNote: PdfNote = { kind: "none" };
   if (preview !== null) {
     const current = shows(shownPdf, { source: preview.source, chart });
@@ -513,6 +579,15 @@ function Converter({ limits }: { limits: Limits }) {
   }
 
   const { settings } = inputs;
+  /** A sheet icon for `paper` as `orientation` turns it. */
+  const sheet = (paper: ChartOptions["paper"], orientation = chart.orientation) => {
+    const [narrow, tall] = SHEET_PX[paper];
+    return orientation === "portrait" ? (
+      <SheetIcon width={narrow} height={tall} />
+    ) : (
+      <SheetIcon width={tall} height={narrow} />
+    );
+  };
   return (
     <div className="layout">
       <aside className="panel" aria-label="Settings">
@@ -520,48 +595,62 @@ function Converter({ limits }: { limits: Limits }) {
         <h2>Settings</h2>
         {/* noValidate: the API checks the settings and its message is shown, not the browser's. */}
         <form className="form" noValidate onSubmit={(event) => event.preventDefault()}>
-          <label className="field">
-            <span className="field-label">Image</span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(event) => chooseImage(event.target.files?.[0] ?? null)}
-            />
-          </label>
-          <SettingField
+          <DropZone label="Image" file={inputs.image} onChange={chooseImage} />
+          {pixelArt !== null && (
+            <div className="pixel-art">
+              <Switch
+                label="Pixel art"
+                checked={settings.pixelArt}
+                onChange={(on) => changeSettings({ pixelArt: on })}
+              />
+              <p className="field-hint">
+                {`${pixelArt.width} x ${pixelArt.height} pixels, ${pixelArt.colours} colours: ` +
+                  (settings.pixelArt ? "one stitch per pixel." : "converted as a picture.")}
+              </p>
+            </div>
+          )}
+
+          <h3 className="form-heading">Size and threads</h3>
+          <SliderField
             label="Width (stitches)"
             limits={ranges.width}
             value={settings.width}
             onChange={(value) => changeSetting("width", value)}
           />
-          <SettingField
-            label="Max colours"
+          <SliderField
+            label="Colours"
             limits={ranges.max_colours}
             value={settings.maxColours}
             onChange={(value) => changeSetting("maxColours", value)}
           />
-          <label className="field">
-            <span className="field-label">Fabric count</span>
-            <input
-              type="number"
-              step="any"
-              value={settings.fabricCount}
-              onChange={(event) => changeSetting("fabricCount", event.target.value)}
-            />
-          </label>
-          <SettingField
+          <ChipChoice
+            label="Fabric count"
+            presets={FABRIC_COUNTS}
+            value={settings.fabricCount}
+            onChange={(value) => changeSetting("fabricCount", value)}
+          />
+          <SwatchChoice
+            label="Fabric colour"
+            options={FABRICS}
+            value={chart.fabricColour}
+            onChange={(fabricColour) => setChart({ ...chart, fabricColour })}
+          />
+
+          <h3 className="form-heading">Cleanup</h3>
+          <p className="field-hint">Each at 0 is off.</p>
+          <SliderField
             label="Merge similar threads (colour distance)"
             limits={ranges.merge_distance}
             value={settings.mergeDistance}
             onChange={(value) => changeSetting("mergeDistance", value)}
           />
-          <SettingField
+          <SliderField
             label="Minimum stitches per thread"
             limits={ranges.min_stitches}
             value={settings.minStitches}
             onChange={(value) => changeSetting("minStitches", value)}
           />
-          <SettingField
+          <Stepper
             label="Largest confetti cluster (stitches)"
             limits={ranges.confetti_size}
             value={settings.confettiSize}
@@ -577,18 +666,18 @@ function Converter({ limits }: { limits: Limits }) {
                 <li
                   // A pair may be chosen twice; its place keeps the key unique.
                   // oxlint-disable-next-line react/no-array-index-key
-                  key={`${index}-${pair.from.code}-${pair.to.code}`}
+                  key={`${index}-${replacementField(pair)}`}
                   className={inactive.has(pair) ? "replacement inactive" : "replacement"}
                 >
                   <ThreadLabel thread={pair.from} />
                   <span aria-hidden="true">→</span>
                   <span className="visually-hidden">replaced by</span>
-                  <ThreadLabel thread={pair.to} />
+                  {pair.to === null ? <FabricLabel /> : <ThreadLabel thread={pair.to} />}
                   {inactive.has(pair) && <span className="replacement-note">not in the pattern</span>}
                   <button
                     type="button"
                     className="button"
-                    aria-label={`Undo ${pair.from.code} to ${pair.to.code}`}
+                    aria-label={`Undo ${pair.from.code} to ${pair.to?.code ?? "fabric"}`}
                     onClick={() =>
                       changeReplacements(latest.current.replacements.filter((p) => p !== pair))
                     }
@@ -607,93 +696,77 @@ function Converter({ limits }: { limits: Limits }) {
         {preview !== null && (
           <section aria-label="PDF chart" className="panel-section">
             <h2>PDF chart</h2>
-            <div className="choices">
-              <label className="field">
-                <span className="field-label">Chart</span>
-                <select
-                  value={chart.variant}
-                  onChange={(event) =>
-                    setChart({ ...chart, variant: event.target.value as ChartOptions["variant"] })
-                  }
-                >
-                  <option value="colour">Colour</option>
-                  <option value="bw">Black and white</option>
-                </select>
-              </label>
-              <label className="field">
-                <span className="field-label">Paper</span>
-                <select
-                  value={chart.paper}
-                  onChange={(event) =>
-                    setChart({ ...chart, paper: event.target.value as ChartOptions["paper"] })
-                  }
-                >
-                  {PAPERS.map((paper) => (
-                    <option key={paper} value={paper}>
-                      {paper}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span className="field-label">Orientation</span>
-                <select
-                  value={chart.orientation}
-                  onChange={(event) =>
-                    setChart({
-                      ...chart,
-                      orientation: event.target.value as ChartOptions["orientation"],
-                    })
-                  }
-                >
-                  <option value="portrait">Portrait</option>
-                  <option value="landscape">Landscape</option>
-                </select>
-              </label>
-            </div>
-            <div className="form chart-layout">
-              <label className="field">
-                <span className="field-label">Split</span>
-                <select
-                  value={chart.split}
-                  onChange={(event) =>
-                    setChart({ ...chart, split: event.target.value as ChartOptions["split"] })
-                  }
-                >
-                  <option value="cells">By cell size (3 mm)</option>
-                  <option value="pages">By pages</option>
-                </select>
-              </label>
+            <div className="form">
+              <Segmented
+                legend="Chart"
+                showLegend
+                options={[
+                  { value: "colour", label: "Colour" },
+                  { value: "bw", label: "Black and white" },
+                ]}
+                value={chart.variant}
+                onChange={(variant) => setChart({ ...chart, variant })}
+              />
+              <Segmented
+                legend="Paper"
+                showLegend
+                className="segmented-sheets"
+                options={PAPERS.map((paper) => ({ value: paper, label: paper, icon: sheet(paper) }))}
+                value={chart.paper}
+                onChange={(paper) => setChart({ ...chart, paper })}
+              />
+              <Segmented
+                legend="Orientation"
+                showLegend
+                className="segmented-sheets"
+                options={[
+                  { value: "portrait", label: "Portrait", icon: sheet("A5", "portrait") },
+                  { value: "landscape", label: "Landscape", icon: sheet("A5", "landscape") },
+                ]}
+                value={chart.orientation}
+                onChange={(orientation) => setChart({ ...chart, orientation })}
+              />
+              <Segmented
+                legend="Split"
+                showLegend
+                options={[
+                  { value: "cells", label: "By cell size (3 mm)" },
+                  { value: "pages", label: "By pages" },
+                ]}
+                value={chart.split}
+                onChange={(split) => setChart({ ...chart, split })}
+              />
               {chart.split === "pages" && (
-                <>
-                  <SettingField
-                    label="Pages across"
-                    limits={ranges.pages_across}
-                    value={chart.pagesAcross}
-                    onChange={(value) => setChart({ ...chart, pagesAcross: value })}
-                  />
-                  <SettingField
-                    label="Pages down"
-                    limits={ranges.pages_down}
-                    value={chart.pagesDown}
-                    onChange={(value) => setChart({ ...chart, pagesDown: value })}
-                  />
-                </>
+                <PagePicker
+                  report={layoutReport}
+                  orientation={chart.orientation}
+                  across={chart.pagesAcross}
+                  down={chart.pagesDown}
+                  onPick={(across, down) =>
+                    setChart({ ...chart, pagesAcross: String(across), pagesDown: String(down) })
+                  }
+                />
               )}
-              <SettingField
+              <SectionPreview
+                pattern={preview.pattern}
+                layout={layoutReport?.layout ?? null}
+                fabric={chart.fabricColour}
+              />
+              {layoutReport !== null && layoutReport.layout === null && layoutReport.message !== null && (
+                <p className="field-hint">{layoutReport.message}</p>
+              )}
+              <Stepper
                 label="Repeated rows and columns"
                 limits={ranges.overlap}
                 value={chart.overlap}
                 onChange={(value) => setChart({ ...chart, overlap: value })}
+                hint="Neighbouring pages share these, so their edges line up."
               />
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={chart.centreLines}
-                  onChange={(event) => setChart({ ...chart, centreLines: event.target.checked })}
-                />
-                <span>Centre lines in the PDF</span>
-              </label>
+              <Switch
+                label="Centre lines in the PDF"
+                checked={chart.centreLines}
+                onChange={(centreLines) => setChart({ ...chart, centreLines })}
+              />
             </div>
             <button
               type="button"
@@ -729,6 +802,7 @@ function Converter({ limits }: { limits: Limits }) {
             onReplace={setPicking}
             pdfView={<PdfView url={shownPdf?.url ?? null} note={pdfNote} />}
             onShowChange={(view) => setPdfVisible(view === "pdf")}
+            fabric={chart.fabricColour}
           />
         ) : (
           <div className="empty-state">
@@ -756,13 +830,20 @@ function Converter({ limits }: { limits: Limits }) {
 function ThreadLabel({ thread }: { thread: DmcThread }) {
   return (
     <span className="thread-label">
-      <span
-        aria-hidden="true"
-        className="swatch"
-        style={{ backgroundColor: `rgb(${thread.rgb.join(", ")})` }}
-      />
+      <Swatch rgb={thread.rgb} />
       <span className="thread-label-code">{thread.code}</span>
       <span className="thread-label-name">{thread.name}</span>
+    </span>
+  );
+}
+
+/** Bare fabric, where a removed thread was, as the replacements list shows it. */
+function FabricLabel() {
+  return (
+    <span className="thread-label">
+      <FabricSwatch />
+      <span className="thread-label-code">Fabric</span>
+      <span className="thread-label-name">thread removed</span>
     </span>
   );
 }

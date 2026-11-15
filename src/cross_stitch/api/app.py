@@ -32,8 +32,11 @@ from cross_stitch.export import (
     Split,
     SymbolInk,
     Variant,
+    chart_layout,
+    page_options,
     pattern_symbols,
     render_pdf,
+    section_name,
     symbol_ink,
 )
 from cross_stitch.pattern import (
@@ -42,10 +45,14 @@ from cross_stitch.pattern import (
     Pattern,
     Replaced,
     clean_pattern,
+    colours_with_headroom,
     convert_image,
+    find_pixel_grid,
     isolated_stitches,
+    pixel_art_colours,
     replace_threads,
     stitch_height,
+    unscale_pixel_art,
 )
 from cross_stitch.threads import Thread, dmc_thread, dmc_threads, similar_dmc
 
@@ -156,6 +163,54 @@ class PatternOut(BaseModel):
     )
 
 
+class PixelArtOut(BaseModel):
+    width: int
+    """Art pixels across: the width that gives one stitch per art pixel."""
+    height: int
+    colours: int
+    """Colours a stitcher would tell apart, at most the colour limit."""
+
+
+class InspectOut(BaseModel):
+    pixel_art: PixelArtOut | None
+    """The image's art pixels, or `null` when it is not pixel art."""
+
+
+class BandOut(BaseModel):
+    start: int
+    """First cell, 0-based."""
+    end: int
+    """One past the last cell."""
+    repeated: int
+    """Leading cells repeated from the previous page."""
+
+
+class LayoutOut(BaseModel):
+    cell_mm: float
+    columns: list[BandOut]
+    rows: list[BandOut]
+    sections: list[list[str]]
+    """Section names, by row then column: `sections[row][column]`."""
+
+
+class PageOptionOut(BaseModel):
+    cell_mm: float | None
+    """The chart cell of this pages split, or `null` where it is refused."""
+    columns: int
+    """Cells across the widest page."""
+    rows: int
+    """Cells down the tallest page."""
+
+
+class ChartLayoutOut(BaseModel):
+    layout: LayoutOut | None
+    """How the chart is cut, or `null` when the split is refused."""
+    message: str | None
+    """Why the split is refused, as `POST /patterns/pdf` would say it."""
+    pages: list[list[PageOptionOut]]
+    """Every pages split, `pages[down - 1][across - 1]`, 1 to 20 each way."""
+
+
 class SettingOut(BaseModel):
     min: int | float
     max: int | float
@@ -255,6 +310,14 @@ def _decode(upload: bytes) -> Image.Image:
         raise HTTPException(400, "the image has too many pixels") from error
 
 
+def _read_image(upload: UploadFile) -> Image.Image:
+    """The uploaded image, decoded; 413 over `MAX_UPLOAD_BYTES`, 400 if not an image."""
+    data = upload.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise _BodyTooLarge
+    return _decode(data)
+
+
 def _grid_json(pattern: Pattern) -> list[list[int | None]]:
     return [[None if cell == EMPTY else cell for cell in row] for row in pattern.grid.tolist()]
 
@@ -318,8 +381,13 @@ class _Cleanup:
         """Whether any setting is non-zero; all at 0 leave the pattern as converted."""
         return bool(self.merge_distance or self.min_stitches or self.confetti_size)
 
-    def __call__(self, pattern: Pattern) -> CleanedPattern:
-        return clean_pattern(pattern, **asdict(self))
+    def colours_to_convert(self, max_colours: int) -> int:
+        """Threads to convert with: more than asked when cleanup will remove some, since
+        `clean_pattern` caps the result at `max_colours` anyway."""
+        return colours_with_headroom(max_colours) if self.on else max_colours
+
+    def __call__(self, pattern: Pattern, max_colours: int) -> CleanedPattern:
+        return clean_pattern(pattern, **asdict(self), max_colours=max_colours)
 
 
 @dataclass(frozen=True)
@@ -366,19 +434,28 @@ def _cleanup(
     )
 
 
-def _replacement(value: str) -> tuple[Thread, Thread]:
-    """One `FROM:TO` value of the `replace` field, as two DMC threads."""
+FABRIC = "fabric"
+"""The `TO` of a `replace` value that removes a thread, leaving its cells bare fabric. No
+DMC code reads like it, whatever the case."""
+
+
+def _replacement(value: str) -> tuple[Thread, Thread | None]:
+    """One `FROM:TO` value of the `replace` field: a DMC thread and the DMC thread taking
+    its stitches, or `None` for `FABRIC`."""
     parts = value.split(":")
     try:
         if len(parts) != 2 or not all(part.strip() for part in parts):
             raise KeyError(value)
-        return dmc_thread(parts[0]), dmc_thread(parts[1])
+        source, target = parts
+        if target.strip().casefold() == FABRIC:
+            return dmc_thread(source), None
+        return dmc_thread(source), dmc_thread(target)
     except KeyError:
         raise RequestValidationError(
             [
                 {
                     "loc": ("body", "replace"),
-                    "msg": f"{value!r} is not FROM:TO with two DMC codes",
+                    "msg": f"{value!r} is not FROM:TO with two DMC codes (TO may be {FABRIC!r})",
                     "type": "value_error",
                     "input": value,
                 }
@@ -392,7 +469,12 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
     width: Annotated[int, Form(ge=_WIDTH.min, le=_WIDTH.max, description="Width in stitches")],
     max_colours: Annotated[
         int,
-        Form(ge=_MAX_COLOURS.min, le=_MAX_COLOURS.max, description="Most threads used"),
+        Form(
+            ge=_MAX_COLOURS.min,
+            le=_MAX_COLOURS.max,
+            description="Threads of the pattern, after cleanup (fewer only if the image "
+            "or the cleanup leaves fewer)",
+        ),
     ],
     cleanup: Annotated[_Cleanup, Depends(_cleanup)],
     fabric_count: Annotated[
@@ -400,8 +482,15 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
     ] = 14.0,
     replace: Annotated[
         list[str] | None,
-        Form(description="Thread swaps FROM:TO (DMC codes), repeated, applied in order"),
+        Form(
+            description="Thread swaps FROM:TO (DMC codes; TO 'fabric' removes FROM), "
+            "repeated, applied in order"
+        ),
     ] = None,
+    pixel_art: Annotated[
+        bool,
+        Form(description="Reduce the image to one pixel per art pixel first (pixel art)"),
+    ] = False,
 ) -> _Converted:
     """The conversion inputs both routes share: validated, decoded and converted here, so
     `POST /patterns` and `POST /patterns/pdf` accept and refuse exactly the same requests.
@@ -409,10 +498,12 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
     The settings come back with the pattern rather than through a second `Depends(_cleanup)`
     in a route: a dependency met twice reports each of its validation errors twice."""
     replacements = [_replacement(value) for value in replace or []]
-    upload = image.file.read(MAX_UPLOAD_BYTES + 1)
-    if len(upload) > MAX_UPLOAD_BYTES:
-        raise _BodyTooLarge
-    decoded = _decode(upload)
+    decoded = _read_image(image)
+    if pixel_art:
+        grid = find_pixel_grid(decoded)
+        if grid is None:
+            raise HTTPException(422, "pixel_art: no grid of art pixels found in the image")
+        decoded = unscale_pixel_art(decoded, grid)
     height = stitch_height(decoded.width, decoded.height, width)
     if height > MAX_HEIGHT:
         raise HTTPException(
@@ -420,13 +511,34 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
             f"height would be {height} stitches at width {width}; at most {MAX_HEIGHT}",
         )
     pattern = convert_image(
-        decoded, width=width, max_colours=max_colours, fabric_count=fabric_count
+        decoded,
+        width=width,
+        max_colours=cleanup.colours_to_convert(max_colours),
+        fabric_count=fabric_count,
     )
-    cleaned = cleanup(pattern)
+    cleaned = cleanup(pattern, max_colours)
     return _Converted(
         cleaned=cleaned,
         cleanup_on=cleanup.on,
         replaced=replace_threads(cleaned.pattern, replacements),
+    )
+
+
+@app.post("/images/inspect")
+def inspect_image(
+    image: Annotated[UploadFile, File(description="The image to look at")],
+) -> InspectOut:
+    """Whether the image is pixel art, and if so its size in art pixels and its colours:
+    the settings that give one stitch per art pixel with `pixel_art=true`."""
+    decoded = _read_image(image)
+    grid = find_pixel_grid(decoded)
+    if grid is None:
+        return InspectOut(pixel_art=None)
+    colours = pixel_art_colours(unscale_pixel_art(decoded, grid))
+    return InspectOut(
+        pixel_art=PixelArtOut(
+            width=grid.columns, height=grid.rows, colours=min(colours, _MAX_COLOURS.max)
+        )
     )
 
 
@@ -499,6 +611,48 @@ def _layout(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     )
 
 
+def _hex_rgb(colour: str) -> tuple[int, int, int]:
+    """A `#rrggbb` colour, already checked by its form field, as (r, g, b)."""
+    value = int(colour[1:], 16)
+    return (value >> 16, (value >> 8) & 0xFF, value & 0xFF)
+
+
+@app.post("/chart/layout")
+def chart_layout_route(
+    width: Annotated[int, Form(ge=_WIDTH.min, le=_WIDTH.max, description="Pattern width")],
+    height: Annotated[int, Form(ge=1, le=MAX_HEIGHT, description="Pattern height")],
+    layout: Annotated[LayoutSettings, Depends(_layout)],
+) -> ChartLayoutOut:
+    """How `POST /patterns/pdf` would cut a pattern of this size into pages with these
+    layout fields, and the cell of every pages split, for choosing one."""
+    # `_layout` fills every field, with the PDF route's defaults.
+    options = page_options(
+        width,
+        height,
+        paper=layout["paper"],
+        orientation=layout["orientation"],
+        overlap=layout["overlap"],
+    )
+    pages = [[PageOptionOut(**asdict(option)) for option in row] for row in options]
+    try:
+        cut = chart_layout(width, height, **layout)
+    except ValueError as error:
+        return ChartLayoutOut(layout=None, message=str(error), pages=pages)
+    return ChartLayoutOut(
+        layout=LayoutOut(
+            cell_mm=cut.cell_mm,
+            columns=[BandOut(**asdict(band)) for band in cut.columns],
+            rows=[BandOut(**asdict(band)) for band in cut.rows],
+            sections=[
+                [section_name(column, row) for column in range(len(cut.columns))]
+                for row in range(len(cut.rows))
+            ],
+        ),
+        message=None,
+        pages=pages,
+    )
+
+
 @app.post("/patterns/pdf", response_class=Response)
 def create_pattern_pdf(
     converted: Annotated[_Converted, Depends(_converted)],
@@ -507,6 +661,13 @@ def create_pattern_pdf(
     centre_lines: Annotated[
         bool, Form(description="Draw the centre column and row through the chart")
     ] = False,
+    fabric_colour: Annotated[
+        str,
+        Form(
+            pattern=r"^#[0-9a-fA-F]{6}$",
+            description="Fabric colour as #rrggbb, for bare fabric in the thumbnails",
+        ),
+    ] = "#ffffff",
 ) -> Response:
     """Convert an image as `POST /patterns` does and return it as a printable PDF chart.
 
@@ -516,7 +677,11 @@ def create_pattern_pdf(
     """
     try:
         pdf = render_pdf(
-            converted.replaced.pattern, variant=variant, centre_lines=centre_lines, **layout
+            converted.replaced.pattern,
+            variant=variant,
+            centre_lines=centre_lines,
+            fabric_rgb=_hex_rgb(fabric_colour),
+            **layout,
         )
     except ValueError as error:
         raise HTTPException(422, str(error)) from None

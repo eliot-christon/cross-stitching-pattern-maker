@@ -6,9 +6,11 @@ import {
   PATTERNS_URL,
   convertImage,
   downloadPdf,
+  getChartLayout,
   getLimits,
   getNearestThreads,
   getThreads,
+  inspectImage,
   type Limits,
 } from "./api";
 import type { Pattern } from "./pattern";
@@ -20,6 +22,7 @@ const SETTINGS = {
   mergeDistance: "2.5",
   minStitches: "10",
   confettiSize: "1",
+  pixelArt: false,
 };
 
 /** An upload limit as the API reports it today; the size checks take it as an argument. */
@@ -273,6 +276,7 @@ describe("downloadPdf", () => {
     pagesDown: "2",
     overlap: "2",
     centreLines: false,
+    fabricColour: "#f6efe1",
   } as const;
 
   function pdf(): Response {
@@ -424,6 +428,7 @@ describe("replacements on the wire", () => {
     mergeDistance: "0",
     minStitches: "0",
     confettiSize: "0",
+    pixelArt: false,
   };
   const black = { code: "310", name: "Black", rgb: [0, 0, 0] as [number, number, number] };
   const winter = { code: "3865", name: "Winter White", rgb: [249, 247, 241] as [number, number, number] };
@@ -450,7 +455,7 @@ describe("replacements on the wire", () => {
     ];
 
     await convertImage(image, settings, 1000, pairs);
-    await downloadPdf(image, settings, { variant: "colour", paper: "A4", orientation: "portrait", split: "cells", pagesAcross: "2", pagesDown: "2", overlap: "2", centreLines: false }, 1000, pairs);
+    await downloadPdf(image, settings, { variant: "colour", paper: "A4", orientation: "portrait", split: "cells", pagesAcross: "2", pagesDown: "2", overlap: "2", centreLines: false, fabricColour: "#ffffff" }, 1000, pairs);
     await convertImage(image, settings, 1000, []);
 
     expect(bodies.map((body) => body.getAll("replace"))).toEqual([
@@ -458,6 +463,18 @@ describe("replacements on the wire", () => {
       ["310:3865", "3865:3866"],
       [],
     ]);
+  });
+
+  it("sends a removal as FROM:fabric, in its place in the order", async () => {
+    const bodies = capture();
+    const image = new File(["x"], "a.png", { type: "image/png" });
+
+    await convertImage(image, settings, 1000, [
+      { from: black, to: null },
+      { from: winter, to: ivory },
+    ]);
+
+    expect(bodies[0]?.getAll("replace")).toEqual(["310:fabric", "3865:3866"]);
   });
 });
 
@@ -473,6 +490,7 @@ describe("chart layout on the wire", () => {
     mergeDistance: "0",
     minStitches: "0",
     confettiSize: "0",
+    pixelArt: false,
   };
   const layoutFields = ["split", "pages_across", "pages_down", "overlap", "centre_lines"];
 
@@ -500,6 +518,7 @@ describe("chart layout on the wire", () => {
       pagesDown: "2",
       overlap: "0",
       centreLines: true,
+      fabricColour: "#1e1e1e",
     } as const;
 
     await downloadPdf(image, settings, options, 1000);
@@ -508,6 +527,78 @@ describe("chart layout on the wire", () => {
     const [pdfBody, conversion] = bodies;
     expect(layoutFields.map((name) => pdfBody?.get(name))).toEqual(["pages", "3", "2", "0", "true"]);
     expect(pdfBody?.get("variant")).toBe("colour");
+    expect(pdfBody?.get("fabric_colour")).toBe("#1e1e1e");
     expect(layoutFields.map((name) => conversion?.get(name))).toEqual([null, null, null, null, null]);
+    expect(conversion?.get("fabric_colour")).toBeNull();
+  });
+});
+
+describe("inspectImage", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the image alone and gives the pixel art found", async () => {
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      Promise.resolve(new Response(JSON.stringify({ pixel_art: { width: 64, height: 60, colours: 6 } }))),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const image = new File(["x"], "a.png", { type: "image/png" });
+
+    const result = await inspectImage(image, 1000);
+
+    expect(result).toEqual({ ok: true, pixelArt: { width: 64, height: 60, colours: 6 } });
+    const call = fetchMock.mock.calls[0];
+    expect(call?.[0]).toBe("/api/images/inspect");
+    const body = call?.[1]?.body as FormData;
+    expect([...body.keys()]).toEqual(["image"]);
+  });
+
+  it("gives null for an image that is not pixel art, and the API's message on failure", async () => {
+    const answers = [
+      new Response(JSON.stringify({ pixel_art: null })),
+      new Response(JSON.stringify({ detail: "the upload is not a decodable image" }), { status: 400 }),
+    ];
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(answers.shift() as Response)));
+    const image = new File(["x"], "a.png", { type: "image/png" });
+
+    expect(await inspectImage(image, 1000)).toEqual({ ok: true, pixelArt: null });
+    expect(await inspectImage(image, 1000)).toEqual({
+      ok: false,
+      message: "the upload is not a decodable image",
+    });
+  });
+});
+
+describe("getChartLayout", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the size and chart choices and gives the API's report", async () => {
+    const report = { layout: null, message: "too small", pages: [] };
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      Promise.resolve(new Response(JSON.stringify(report))),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const options = {
+      variant: "colour",
+      paper: "A3",
+      orientation: "landscape",
+      split: "pages",
+      pagesAcross: "3",
+      pagesDown: "2",
+      overlap: "1",
+      centreLines: false,
+      fabricColour: "#ffffff",
+    } as const;
+
+    expect(await getChartLayout(120, 80, options)).toEqual({ ok: true, report });
+    const call = fetchMock.mock.calls[0];
+    expect(call?.[0]).toBe("/api/chart/layout");
+    const body = call?.[1]?.body as FormData;
+    expect(["width", "height", "paper", "orientation", "split", "pages_across", "pages_down", "overlap"].map((n) => body.get(n))).toEqual(
+      ["120", "80", "A3", "landscape", "pages", "3", "2", "1"],
+    );
   });
 });

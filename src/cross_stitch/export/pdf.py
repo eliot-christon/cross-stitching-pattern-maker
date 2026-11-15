@@ -55,6 +55,9 @@ SPLITS: tuple[Split, ...] = get_args(Split)
 
 _FONT = "DejaVuSans"
 
+FABRIC_WHITE = (255, 255, 255)
+"""The fabric colour a chart assumes unless told otherwise."""
+
 OVERLAP = 2
 """Columns (or rows) a chart page repeats from its left (or upper) neighbour, by default."""
 MAX_OVERLAP = 5
@@ -203,13 +206,11 @@ def _pages_layout(
     width, height = size
     pages_across, pages_down = pages
     area_width, area_height = _chart_area(page_size)
-    cell_mm = min(
-        _fitting_cell_mm(width, pages_across, overlap, area_width),
-        _fitting_cell_mm(height, pages_down, overlap, area_height),
-        MAX_CELL_MM,
+    cell_mm = _pages_cell_mm(
+        _axis_cell_mm(width, pages_across, overlap, area_width),
+        _axis_cell_mm(height, pages_down, overlap, area_height),
     )
-    narrow = width < pages_across + overlap or height < pages_down + overlap
-    if narrow or cell_mm < MIN_CELL_MM:
+    if cell_mm is None:
         across = _fewest_pages(width, overlap, area_width)
         down = _fewest_pages(height, overlap, area_height)
         raise ValueError(
@@ -223,6 +224,69 @@ def _pages_layout(
         tuple(_equal_bands(height, pages_down, overlap)),
         page_size,
     )
+
+
+def _axis_cell_mm(length: int, count: int, overlap: int, area: float) -> float | None:
+    """The largest cell at which `count` bands of `length` cells fit `area` on one axis, or
+    `None` when a band would hold repeated cells only."""
+    if length < count + overlap:
+        return None
+    return _fitting_cell_mm(length, count, overlap, area)
+
+
+def _pages_cell_mm(across: float | None, down: float | None) -> float | None:
+    """The cell of a pages split from each axis's (`_axis_cell_mm`): the smaller, at most
+    `MAX_CELL_MM`, or `None` when an axis has none or it is under `MIN_CELL_MM`."""
+    if across is None or down is None:
+        return None
+    cell_mm = min(across, down, MAX_CELL_MM)
+    return cell_mm if cell_mm >= MIN_CELL_MM else None
+
+
+@dataclass(frozen=True)
+class PageOption:
+    """What a pages split of `pages_across` x `pages_down` would give."""
+
+    cell_mm: float | None
+    """The chart cell, or `None` where `chart_layout` refuses the split."""
+    columns: int
+    """Cells across the widest page."""
+    rows: int
+    """Cells down the tallest page."""
+
+
+def page_options(
+    width: int,
+    height: int,
+    *,
+    paper: Paper = "A4",
+    orientation: Orientation = "portrait",
+    overlap: int = OVERLAP,
+) -> tuple[tuple[PageOption, ...], ...]:
+    """Every pages split of a `width` x `height` pattern, 1 to `MAX_PAGES` each way:
+    `[down - 1][across - 1]`, by the rule `chart_layout` applies. Raises `ValueError` for an
+    unknown paper or orientation or an overlap out of range."""
+    if not 0 <= overlap <= MAX_OVERLAP:
+        raise ValueError(f"overlap must be 0-{MAX_OVERLAP}, got {overlap}")
+    area_width, area_height = _chart_area(_page_size(paper, orientation))
+    counts = range(1, MAX_PAGES + 1)
+    across = [
+        (_axis_cell_mm(width, n, overlap, area_width), _biggest(width, n, overlap)) for n in counts
+    ]
+    down = [
+        (_axis_cell_mm(height, n, overlap, area_height), _biggest(height, n, overlap))
+        for n in counts
+    ]
+    return tuple(
+        tuple(
+            PageOption(_pages_cell_mm(x_cell, y_cell), columns, rows) for x_cell, columns in across
+        )
+        for y_cell, rows in down
+    )
+
+
+def _biggest(length: int, count: int, overlap: int) -> int:
+    return max(_equal_sizes(length, count, overlap))
 
 
 def _equal_sizes(length: int, count: int, overlap: int) -> list[int]:
@@ -241,8 +305,7 @@ def _equal_bands(length: int, count: int, overlap: int) -> Iterator[Band]:
 
 def _fitting_cell_mm(length: int, count: int, overlap: int, area: float) -> float:
     """The largest cell, floored to 0.1 mm, at which the biggest band fits `area`."""
-    biggest = max(_equal_sizes(length, count, overlap))
-    return math.floor(round(area / mm / biggest * 10, 6)) / 10
+    return math.floor(round(area / mm / _biggest(length, count, overlap) * 10, 6)) / 10
 
 
 def _fewest_pages(length: int, overlap: int, area: float) -> int:
@@ -261,13 +324,15 @@ def render_pdf(
     *,
     variant: Variant = "colour",
     centre_lines: bool = False,
+    fabric_rgb: tuple[int, int, int] = FABRIC_WHITE,
     **settings: Unpack[LayoutSettings],
 ) -> bytes:
     """The pattern as a PDF chart: cover page(s), then the chart pages.
 
     The layout `settings` are those of `chart_layout`, with its defaults; `centre_lines`
     draws the centre column and row through the chart (red in colour, dashed black in
-    black and white).
+    black and white). The cover and section plan thumbnails show bare fabric in
+    `fabric_rgb` (its grey in black and white); chart pages leave it unprinted.
     """
     if variant not in VARIANTS:
         raise ValueError(f"unknown variant {variant!r}; expected one of {VARIANTS}")
@@ -277,7 +342,9 @@ def render_pdf(
     buffer = io.BytesIO()
     canvas = Canvas(buffer, pagesize=page_size, invariant=True, pageCompression=True)
     canvas.setTitle("Cross-stitch chart")
-    document = _Document(canvas, pattern, pattern_symbols(pattern), variant == "colour", page_size)
+    document = _Document(
+        canvas, pattern, pattern_symbols(pattern), variant == "colour", page_size, fabric_rgb
+    )
     document.draw_cover(layout.cell_mm)
     document.draw_chart(layout, centre_lines=centre_lines)
     canvas.save()
@@ -345,6 +412,7 @@ class _Document:
     symbols: list[str]
     colour: bool
     page_size: tuple[float, float]
+    fabric_rgb: tuple[int, int, int]
 
     # --- cover --------------------------------------------------------------------------
 
@@ -395,10 +463,11 @@ class _Document:
         return bottom
 
     def _thumbnail(self) -> Image.Image:
-        """One pixel per cell: the thread colour (its grey in black and white), bare white."""
+        """One pixel per cell: the thread colour (its grey in black and white), bare fabric
+        in the fabric's colour."""
         pattern = self.pattern
         palette = np.array(
-            [entry.thread.rgb for entry in pattern.key] + [(255, 255, 255)], dtype=np.float64
+            [entry.thread.rgb for entry in pattern.key] + [self.fabric_rgb], dtype=np.float64
         )
         pixels = palette[np.where(pattern.grid == EMPTY, len(pattern.key), pattern.grid)]
         if self.colour:

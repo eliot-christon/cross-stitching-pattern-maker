@@ -2,6 +2,7 @@
 
 from cross_stitch.export.geometry import CELL_MM, FONT_PATH
 from cross_stitch.export.pdf import (
+    FABRIC_WHITE,
     MAX_OVERLAP,
     MAX_PAGES,
     ORIENTATIONS,
@@ -13,12 +14,14 @@ from cross_stitch.export.pdf import (
     ChartLayout,
     LayoutSettings,
     Orientation,
+    PageOption,
     Paper,
     Split,
     SymbolInk,
     Variant,
     chart_capacity,
     chart_layout,
+    page_options,
     render_pdf,
     section_name,
     symbol_ink,
@@ -27,6 +30,7 @@ from cross_stitch.export.symbols import SYMBOLS, pattern_symbols
 
 __all__ = [
     "CELL_MM",
+    "FABRIC_WHITE",
     "FONT_PATH",
     "MAX_OVERLAP",
     "MAX_PAGES",
@@ -40,12 +44,14 @@ __all__ = [
     "ChartLayout",
     "LayoutSettings",
     "Orientation",
+    "PageOption",
     "Paper",
     "Split",
     "SymbolInk",
     "Variant",
     "chart_capacity",
     "chart_layout",
+    "page_options",
     "pattern_symbols",
     "render_pdf",
     "section_name",

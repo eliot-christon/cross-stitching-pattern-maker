@@ -72,8 +72,27 @@ const LIMITS: Limits = {
   },
 };
 
+/** A `/chart/layout` answer: the cells split in one page, every pages split allowed up
+ * to 3 across and 3 down at 3.4 mm, the rest refused. */
+const LAYOUT = {
+  layout: {
+    cell_mm: 3,
+    columns: [{ start: 0, end: 4, repeated: 0 }],
+    rows: [{ start: 0, end: 3, repeated: 0 }],
+    sections: [["A1"]],
+  },
+  message: null,
+  pages: Array.from({ length: 20 }, (_, d) =>
+    Array.from({ length: 20 }, (_, a) => ({
+      cell_mm: a < 3 && d < 3 ? 3.4 : null,
+      columns: 40,
+      rows: 30,
+    })),
+  ),
+};
+
 const WIDTH = "Width (stitches)";
-const COLOURS = "Max colours";
+const COLOURS = "Colours";
 const MERGE = "Merge similar threads (colour distance)";
 const MIN_STITCHES = "Minimum stitches per thread";
 const CONFETTI = "Largest confetti cluster (stitches)";
@@ -105,13 +124,21 @@ type Handler = (init?: RequestInit) => Promise<Response>;
  * handlers (a conversion of PATTERN by default).
  */
 function stubApi(
-  handlers: { patterns?: Handler; pdf?: Handler } = {},
+  handlers: { patterns?: Handler; pdf?: Handler; inspect?: Handler; layout?: Handler } = {},
 ): ReturnType<typeof vi.fn<(url: string, init?: RequestInit) => Promise<Response>>> {
   const patterns = handlers.patterns ?? (() => Promise.resolve(json(200, PATTERN)));
+  const layout = handlers.layout ?? (() => Promise.resolve(json(200, LAYOUT)));
   const pdf = handlers.pdf ?? (() => Promise.reject(new Error("no PDF expected")));
+  const inspect = handlers.inspect ?? (() => Promise.resolve(json(200, { pixel_art: null })));
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     if (url === "/api/limits") {
       return Promise.resolve(json(200, LIMITS));
+    }
+    if (url === "/api/images/inspect") {
+      return inspect(init);
+    }
+    if (url === "/api/chart/layout") {
+      return layout(init);
     }
     return url === "/api/patterns" ? patterns(init) : pdf(init);
   });
@@ -215,6 +242,16 @@ function chooseFile(name = "photo.png", bytes = "png bytes"): File {
   return file;
 }
 
+/** The radio named `name` in the group named `group`. */
+function option(group: string, name: string): HTMLElement {
+  return within(screen.getByRole("group", { name: group })).getByRole("radio", { name });
+}
+
+/** Choose the option named `name` in the group named `group`. */
+function choose(group: string, name: string) {
+  fireEvent.click(option(group, name));
+}
+
 function setValue(field: HTMLElement, value: string) {
   fireEvent.change(field, { target: { value } });
 }
@@ -281,7 +318,7 @@ describe("UploadForm limits", () => {
     expect(slider(MERGE)).toHaveAttribute("step", "0.5");
     expect(slider(MERGE)).toHaveAttribute("max", "10");
     expect(slider(MIN_STITCHES)).toHaveAttribute("max", "1000");
-    expect(slider(CONFETTI)).toHaveAttribute("max", "10");
+    expect(numberField(CONFETTI)).toHaveAttribute("max", "10");
     for (const name of [MERGE, MIN_STITCHES, CONFETTI]) {
       expect(numberField(name)).toHaveValue(0);
     }
@@ -300,7 +337,7 @@ describe("UploadForm limits", () => {
     await renderLive();
 
     chooseFile();
-    setValue(slider(CONFETTI), "3");
+    setValue(numberField(CONFETTI), "3");
     expect(numberField(CONFETTI)).toHaveValue(3);
     await wait(QUIET_MS);
     await settle();
@@ -458,8 +495,8 @@ describe("UploadForm live conversion", () => {
       value: "4",
     },
     {
-      control: "confetti slider",
-      field: () => slider(CONFETTI),
+      control: "confetti stepper field",
+      field: () => numberField(CONFETTI),
       name: "confetti_size",
       value: "2",
     },
@@ -491,9 +528,9 @@ describe("UploadForm live conversion", () => {
     await wait(QUIET_MS);
     await calls.answer(0, json(200, PATTERN));
 
-    setValue(screen.getByLabelText("Chart"), "bw");
-    setValue(screen.getByLabelText("Paper"), "A3");
-    setValue(screen.getByLabelText("Orientation"), "landscape");
+    choose("Chart", "Black and white");
+    choose("Paper", "A3");
+    choose("Orientation", "Landscape");
 
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     await wait(10 * QUIET_MS);
@@ -509,7 +546,7 @@ describe("UploadForm live conversion", () => {
     await wait(QUIET_MS);
     await calls.answer(0, json(200, PATTERN));
 
-    setValue(slider(CONFETTI), "3");
+    setValue(numberField(CONFETTI), "3");
     await wait(200);
     setValue(numberField(CONFETTI), "0");
     await wait(2 * QUIET_MS);
@@ -922,28 +959,29 @@ describe("UploadForm errors and image changes", () => {
   });
 });
 
+function pdfResponse(): Response {
+  return new Response("%PDF-1.4 chart", {
+    status: 200,
+    headers: { "Content-Type": "application/pdf" },
+  });
+}
+
+/** Stub object URLs and link clicks, so a PDF can be shown or saved in jsdom. */
+function stubSave() {
+  // jsdom has no object URLs: a subclass stands in, leaving the real URL untouched.
+  const createObjectURL = vi.fn(() => "blob:chart");
+  vi.stubGlobal(
+    "URL",
+    class extends URL {
+      static override createObjectURL = createObjectURL;
+      static override revokeObjectURL = vi.fn();
+    },
+  );
+  const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  return { createObjectURL, click };
+}
+
 describe("UploadForm PDF download", () => {
-  function pdfResponse(): Response {
-    return new Response("%PDF-1.4 chart", {
-      status: 200,
-      headers: { "Content-Type": "application/pdf" },
-    });
-  }
-
-  function stubSave() {
-    // jsdom has no object URLs: a subclass stands in, leaving the real URL untouched.
-    const createObjectURL = vi.fn(() => "blob:chart");
-    vi.stubGlobal(
-      "URL",
-      class extends URL {
-        static override createObjectURL = createObjectURL;
-        static override revokeObjectURL = vi.fn();
-      },
-    );
-    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    return { createObjectURL, click };
-  }
-
   /** Choose an image at `width` and let its conversion (answered at once) show. */
   async function convert(width = "40") {
     chooseFile();
@@ -968,13 +1006,12 @@ describe("UploadForm PDF download", () => {
 
     expect(downloadButton()).toHaveTextContent("Download PDF");
     expect(downloadButton()).toBeEnabled();
-    expect(screen.getByLabelText("Chart")).toHaveValue("colour");
-    expect(screen.getByLabelText("Paper")).toHaveValue("A4");
-    expect(screen.getByLabelText("Orientation")).toHaveValue("portrait");
-    const papers = Array.from(
-      (screen.getByLabelText("Paper") as HTMLSelectElement).options,
-      (option) => option.value,
-    );
+    expect(option("Chart", "Colour")).toBeChecked();
+    expect(option("Paper", "A4")).toBeChecked();
+    expect(option("Orientation", "Portrait")).toBeChecked();
+    const papers = within(screen.getByRole("group", { name: "Paper" }))
+      .getAllByRole("radio")
+      .map((radio) => radio.closest("label")?.textContent);
     expect(papers).toEqual(["A2", "A3", "A4", "A5"]);
   });
 
@@ -985,9 +1022,9 @@ describe("UploadForm PDF download", () => {
 
     setValue(numberField(CONFETTI), "3");
     await convert("40");
-    setValue(screen.getByLabelText("Chart"), "bw");
-    setValue(screen.getByLabelText("Paper"), "A3");
-    setValue(screen.getByLabelText("Orientation"), "landscape");
+    choose("Chart", "Black and white");
+    choose("Paper", "A3");
+    choose("Orientation", "Landscape");
     fireEvent.click(downloadButton());
     await settle();
 
@@ -1230,6 +1267,27 @@ describe("thread replacements", () => {
     expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"]]);
   });
 
+  it("sends a removal as FROM:fabric and lists it as fabric, with its undo", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+
+    fireEvent.click(screen.getByRole("cell", { name: "310" }));
+    await settle();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Remove/ }));
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:fabric"]]);
+    expect(replacementItems()).toHaveLength(1);
+    expect(replacementItems()[0]).toHaveTextContent(/310.*Black.*Fabric/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to fabric" }));
+    await wait(QUIET_MS);
+    await settle();
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:fabric"], []]);
+  });
+
   it("sends no replace field once the only pair is undone, and hides the list", async () => {
     const fetchMock = stubWithThreads();
     await renderLive();
@@ -1354,23 +1412,6 @@ describe("thread replacements", () => {
 });
 
 describe("PDF chart layout", () => {
-  function pdfResponse(): Response {
-    return new Response("%PDF-1.4 chart", {
-      status: 200,
-      headers: { "Content-Type": "application/pdf" },
-    });
-  }
-
-  function stubSave() {
-    vi.stubGlobal(
-      "URL",
-      class extends URL {
-        static override createObjectURL = vi.fn(() => "blob:chart");
-        static override revokeObjectURL = vi.fn();
-      },
-    );
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-  }
 
   async function preview() {
     chooseFile();
@@ -1393,17 +1434,59 @@ describe("PDF chart layout", () => {
     expect(screen.queryByRole("spinbutton", { name: "Pages across" })).not.toBeInTheDocument();
   });
 
-  it("shows the pages fields only for a split by pages", async () => {
+  /** The sheet standing for `across` x `down` pages in the pages picker. */
+  function pageCell(across: number, down: number): HTMLElement {
+    return screen.getByRole("button", { name: `${String(across)} across, ${String(down)} down` });
+  }
+
+  it("shows the pages picker only for a split by pages, at the reported 2 x 2", async () => {
     stubApi();
     await renderLive();
     await preview();
 
-    setValue(screen.getByLabelText("Split"), "pages");
-    expect(numberField("Pages across")).toHaveValue(2);
-    expect(numberField("Pages down")).toHaveValue(2);
+    choose("Split", "By pages");
+    await wait(QUIET_MS);
+    await settle();
+    expect(pageCell(2, 2)).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(/2 × 2 = 4 pages, 3.4 mm cells, up to 40 × 30 cells each/)).toBeInTheDocument();
 
-    setValue(screen.getByLabelText("Split"), "cells");
-    expect(screen.queryByRole("spinbutton", { name: "Pages across" })).not.toBeInTheDocument();
+    choose("Split", "By cell size (3 mm)");
+    expect(screen.queryByRole("group", { name: "Pages across and down" })).not.toBeInTheDocument();
+  });
+
+  it("disables the splits the API refuses and shows the sheets turned with the paper", async () => {
+    stubApi();
+    await renderLive();
+    await preview();
+
+    choose("Split", "By pages");
+    await wait(QUIET_MS);
+    await settle();
+    expect(pageCell(3, 3)).toBeEnabled();
+    expect(pageCell(4, 1)).toBeDisabled();
+    const grid = screen.getByRole("group", { name: "Pages across and down" });
+    expect(grid).toHaveClass("page-grid-portrait");
+
+    choose("Orientation", "Landscape");
+    expect(screen.getByRole("group", { name: "Pages across and down" })).toHaveClass("page-grid-landscape");
+  });
+
+  it("asks the API how the chart is cut, with the size and choices, after the quiet delay", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+    await preview();
+    await wait(QUIET_MS);
+    await settle();
+
+    choose("Paper", "A3");
+    await wait(QUIET_MS);
+    await settle();
+
+    const bodies = posted(fetchMock, "/api/chart/layout");
+    expect(bodies.length).toBeGreaterThanOrEqual(2);
+    const last = bodies.at(-1);
+    expect([last?.get("width"), last?.get("height"), last?.get("paper")]).toEqual(["2", "1", "A3"]);
+    expect(screen.getByRole("img", { name: /Chart sections: 1 page/ })).toBeInTheDocument();
   });
 
   it("asks for the default layout by default", async () => {
@@ -1427,8 +1510,10 @@ describe("PDF chart layout", () => {
     await renderLive();
     await preview();
 
-    setValue(screen.getByLabelText("Split"), "pages");
-    setValue(numberField("Pages across"), "3");
+    choose("Split", "By pages");
+    await wait(QUIET_MS);
+    await settle();
+    fireEvent.click(pageCell(3, 2));
     setValue(numberField("Repeated rows and columns"), "0");
     fireEvent.click(screen.getByRole("checkbox", { name: "Centre lines in the PDF" }));
     fireEvent.click(downloadButton());
@@ -1456,13 +1541,6 @@ describe("PDF chart layout", () => {
 describe("PDF view", () => {
   let made = 0;
   let revoked: string[] = [];
-
-  function pdfResponse(): Response {
-    return new Response("%PDF-1.4 chart", {
-      status: 200,
-      headers: { "Content-Type": "application/pdf" },
-    });
-  }
 
   /** Object URLs counted (blob:pdf-1, blob:pdf-2, ...) and their revocations recorded. */
   function stubUrls() {
@@ -1541,7 +1619,7 @@ describe("PDF view", () => {
     showPdf();
     await settle();
 
-    setValue(screen.getByLabelText("Paper"), "A3");
+    choose("Paper", "A3");
     await wait(QUIET_MS - 1);
     expect(pdfRequests(fetchMock)).toHaveLength(1);
     expect(frameUrl()).toBe("blob:pdf-1");
@@ -1583,9 +1661,9 @@ describe("PDF view", () => {
     await settle();
     expect(pdfRequests(fetchMock)).toHaveLength(1);
 
-    setValue(screen.getByLabelText("Paper"), "A3");
+    choose("Paper", "A3");
     await wait(QUIET_MS);
-    setValue(screen.getByLabelText("Paper"), "A5");
+    choose("Paper", "A5");
     await wait(QUIET_MS);
     expect(pdfRequests(fetchMock)).toHaveLength(1);
 
@@ -1609,7 +1687,7 @@ describe("PDF view", () => {
     expect(frameUrl()).toBe("blob:pdf-1");
 
     fireEvent.click(screen.getByRole("radio", { name: "Pattern" }));
-    setValue(screen.getByLabelText("Paper"), "A3");
+    choose("Paper", "A3");
     await wait(2000);
     expect(pdfRequests(fetchMock)).toHaveLength(1);
 
@@ -1632,7 +1710,7 @@ describe("PDF view", () => {
     showPdf();
     await settle();
 
-    setValue(screen.getByLabelText("Paper"), "A3");
+    choose("Paper", "A3");
     await wait(QUIET_MS);
     await settle();
 
@@ -1654,7 +1732,7 @@ describe("PDF view", () => {
     expect(click).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("radio", { name: "Pattern" }));
-    setValue(screen.getByLabelText("Paper"), "A3");
+    choose("Paper", "A3");
     fireEvent.click(downloadButton());
     await settle();
     expect(pdfRequests(fetchMock)).toHaveLength(2);
@@ -1683,7 +1761,7 @@ describe("PDF view", () => {
     expect(pdfRequests(fetchMock)).toHaveLength(1);
     expect(frameUrl()).toBe("blob:pdf-1");
 
-    setValue(screen.getByLabelText("Paper"), "A3");
+    choose("Paper", "A3");
     await wait(2000);
     expect(pdfRequests(fetchMock)).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Generate preview" })).toBeInTheDocument();
@@ -1708,5 +1786,126 @@ describe("PDF view", () => {
     const shown = frameUrl();
     view.unmount();
     expect(revoked).toContain(shown);
+  });
+});
+
+describe("pixel art", () => {
+  const ART = { pixel_art: { width: 64, height: 60, colours: 6 } };
+
+  function pixelArtSwitch(): HTMLElement | null {
+    return screen.queryByRole("checkbox", { name: "Pixel art" });
+  }
+
+  it("converts pixel art once, at one stitch per art pixel and its colours", async () => {
+    const fetchMock = stubApi({ inspect: () => Promise.resolve(json(200, ART)) });
+    await renderLive();
+
+    chooseFile("sprite.png");
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "width")).toEqual(["64"]);
+    expect(sent(fetchMock, "max_colours")).toEqual(["6"]);
+    expect(sent(fetchMock, "pixel_art")).toEqual(["true"]);
+    expect(pixelArtSwitch()).toBeChecked();
+    expect(screen.getByText(/64 x 60 pixels, 6 colours: one stitch per pixel/)).toBeInTheDocument();
+  });
+
+  it("converts the image as a picture once the switch is off", async () => {
+    const fetchMock = stubApi({ inspect: () => Promise.resolve(json(200, ART)) });
+    await renderLive();
+    chooseFile("sprite.png");
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(pixelArtSwitch() as HTMLElement);
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "pixel_art")).toEqual(["true", "false"]);
+    expect(sent(fetchMock, "width")).toEqual(["64", "64"]);
+  });
+
+  it("keeps the settings and shows no switch for an image that is not pixel art", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+
+    chooseFile();
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "width")).toEqual(["100"]);
+    expect(sent(fetchMock, "max_colours")).toEqual(["7"]);
+    expect(sent(fetchMock, "pixel_art")).toEqual(["false"]);
+    expect(pixelArtSwitch()).not.toBeInTheDocument();
+  });
+
+  it("converts as a picture when the inspection fails", async () => {
+    const fetchMock = stubApi({ inspect: () => Promise.reject(new Error("offline")) });
+    await renderLive();
+
+    chooseFile();
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "pixel_art")).toEqual(["false"]);
+    expect(pixelArtSwitch()).not.toBeInTheDocument();
+  });
+
+  it("caps the colours found at the colour limit", async () => {
+    const many = { pixel_art: { width: 40, height: 40, colours: 250 } };
+    const fetchMock = stubApi({ inspect: () => Promise.resolve(json(200, many)) });
+    await renderLive();
+
+    chooseFile("sprite.png");
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "max_colours")).toEqual(["100"]);
+  });
+});
+
+describe("fabric colour", () => {
+  it("sends the fabric chosen with the next PDF request, white until then", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    chooseFile();
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    const fabric = screen.getByRole("group", { name: "Fabric colour" });
+    expect(within(fabric).getByRole("radio", { name: "White" })).toBeChecked();
+    fireEvent.click(within(fabric).getByRole("radio", { name: "Black" }));
+    fireEvent.click(downloadButton());
+    await settle();
+
+    expect(posted(fetchMock, "/api/patterns/pdf").map((body) => body.get("fabric_colour"))).toEqual([
+      "#1e1e1e",
+    ]);
+  });
+});
+
+describe("fabric count chips", () => {
+  it("converts with the count of the chip chosen", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+    chooseFile();
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+
+    choose("Fabric count", "18");
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "fabric_count")).toEqual(["14", "18"]);
+    expect(fabricCount()).toHaveValue(18);
   });
 });

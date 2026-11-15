@@ -282,8 +282,21 @@ describe("PatternViewer", () => {
     });
     // (row + column) even is black: 8 such cells, one of them bare; odd is white: 8.
     const count = (fill: string) => recording.fills.filter((f) => f === fill).length;
-    expect(count("rgb(0 0 0)")).toBe(7);
-    expect(count("rgb(252 251 248)")).toBe(8);
+    expect(count("rgb(0, 0, 0)")).toBe(7);
+    expect(count("rgb(252, 251, 248)")).toBe(8);
+    expect(count("#ffffff")).toBe(1);
+  });
+
+  it("shows bare fabric in the fabric's colour, in colours and symbols on colours", () => {
+    const recording = stubCanvas();
+    const pattern = makePattern(4, 4);
+    pattern.grid = pattern.grid.map((row, r) => row.map((cell, c) => (r === 0 && c === 0 ? null : cell)));
+    render(<PatternViewer pattern={pattern} fabric="#1e1e1e" />);
+
+    expect(recording.fills).toContain("#1e1e1e");
+    recording.fills.length = 0;
+    fireEvent.click(screen.getByRole("radio", { name: "Symbols on colours" }));
+    expect(recording.fills.filter((fill) => fill === "#1e1e1e")).toHaveLength(1);
   });
 
   it("draws red centre lines only once asked, in every mode, and keeps them for a new pattern", () => {

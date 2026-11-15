@@ -16,6 +16,7 @@
   --danger-soft: #f6e3dc;
   --focus: #4d6a4f;
   --swatch-border: rgb(46 41 34 / 0.35);
+  --thread-2: #9c6a2f;
 
   --font-text: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-heading: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia,
@@ -60,6 +61,7 @@
     --danger-soft: #3a2621;
     --focus: #a3bf98;
     --swatch-border: rgb(238 231 218 / 0.45);
+    --thread-2: #d8a865;
 
     --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
     --shadow-md: 0 1px 2px rgb(0 0 0 / 0.3), 0 6px 20px rgb(0 0 0 / 0.25);
@@ -118,15 +120,32 @@ h3 {
   padding: var(--space-4);
 }
 
+/* The header: the title stitched in two threads, big and centred, the tagline under it. */
 .app-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) 0 var(--space-3);
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0 var(--space-4);
+  text-align: center;
 }
 
 .app-header h1 {
-  font-size: var(--text-lg);
+  width: min(100%, 640px);
+  margin: 0;
+}
+
+.stitched-title {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.title-thread-1 {
+  color: var(--accent);
+}
+
+.title-thread-2 {
+  color: var(--thread-2);
 }
 
 .app-header .tagline {
@@ -156,9 +175,6 @@ h3 {
     padding: var(--space-5) var(--space-6);
   }
 
-  .app-header h1 {
-    font-size: var(--text-xl);
-  }
 
   .layout {
     grid-template-columns: 340px minmax(0, 1fr);
@@ -184,6 +200,7 @@ h3 {
   margin-bottom: var(--space-2);
 }
 
+.form + .panel-section,
 .panel-section + .panel-section {
   margin-top: var(--space-5);
 }
@@ -277,7 +294,6 @@ input[type="range"] {
 }
 
 input[type="number"],
-input[type="file"],
 select {
   font: inherit;
   font-size: var(--text-sm);
@@ -288,32 +304,6 @@ select {
   padding: var(--space-1) var(--space-2);
   min-width: 0;
   max-width: 100%;
-}
-
-input[type="file"] {
-  width: 100%;
-  padding: var(--space-2);
-}
-
-input[type="file"]::file-selector-button {
-  font: inherit;
-  margin-right: var(--space-3);
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--accent);
-  cursor: pointer;
-}
-
-.choices {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-
-.choices .field select {
-  width: 100%;
 }
 
 .button {
@@ -504,30 +494,6 @@ input[type="file"]::file-selector-button {
   }
 }
 
-/* A checkbox as a small pill: "Centre lines". */
-
-.toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  font-size: var(--text-sm);
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.toggle input {
-  margin: 0;
-  accent-color: var(--accent);
-}
-
-.toggle:has(input:checked) {
-  color: var(--text);
-}
-
 /* Under the viewer: the pattern's sizes and its thread key. */
 
 .preview {
@@ -636,6 +602,16 @@ input[type="file"]::file-selector-button {
   border-radius: var(--radius-sm);
   border: 1px solid var(--swatch-border);
   vertical-align: middle;
+}
+
+/* Bare fabric: no thread, a light diagonal weave on the surface colour. */
+.swatch-fabric {
+  border-style: dashed;
+  background: repeating-linear-gradient(
+    45deg,
+    var(--surface) 0 3px,
+    var(--border) 3px 4px
+  );
 }
 
 /* Below 800 px each key entry is a card; the table stays a table for assistive tech. */
@@ -895,13 +871,6 @@ input[type="file"]::file-selector-button {
 
 /* The PDF's layout choices under the paper choices. */
 
-.chart-layout {
-  margin-top: var(--space-3);
-}
-
-.chart-layout .toggle {
-  justify-self: start;
-}
 
 /* The PDF view: the browser's own PDF viewer in the viewer's place. */
 
@@ -945,5 +914,441 @@ input[type="file"]::file-selector-button {
 .pdf-view-empty {
   display: grid;
   place-items: center;
+  color: var(--muted);
+}
+
+/* Pixel art found in the chosen image: its switch and what it does. */
+.pixel-art {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: start;
+}
+
+.field-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+/* A colour among presets: round swatches, the chosen one ringed in the accent. */
+.swatch-choice {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.swatch-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.swatch-option {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.swatch-option input[type="radio"] {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.swatch-option > span[aria-hidden="true"] {
+  width: 1.625rem;
+  height: 1.625rem;
+  border-radius: 50%;
+  border: 1px solid var(--swatch-border);
+}
+
+.swatch-option:has(input:checked) {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.swatch-option:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Any other colour: the browser's picker, behind a rainbow swatch. */
+.swatch-custom {
+  background: conic-gradient(#e05a5a, #e0c25a, #6ac46a, #5ab0e0, #8a6ae0, #e05aa8, #e05a5a);
+  border: 1px solid var(--swatch-border);
+}
+
+.swatch-custom input[type="color"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.swatch-custom.is-custom {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* Panel headings inside the form: a quiet label above each group of settings. */
+.form-heading {
+  margin: var(--space-2) 0 calc(-1 * var(--space-2));
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+
+/* Segmented choices in the panel: full width, the pills sharing it. */
+.segmented-wide {
+  display: flex;
+  flex-wrap: wrap;
+  border-radius: var(--radius-md);
+}
+
+.segmented-wide label {
+  flex: 1 1 auto;
+}
+
+.segmented-wide span {
+  border-radius: calc(var(--radius-md) - 2px);
+  text-align: center;
+}
+
+/* Sheets: the paper icon above its name, aligned on the bottom edge. */
+.segmented-sheets span {
+  display: grid;
+  justify-items: center;
+  align-content: end;
+  gap: var(--space-1);
+  min-height: 3.25rem;
+  padding: var(--space-2) var(--space-2) var(--space-1);
+}
+
+.sheet-icon {
+  display: block;
+  color: var(--muted);
+}
+
+.segmented input:checked + span .sheet-icon {
+  color: var(--accent);
+}
+
+/* Stepper: minus, the number, plus. */
+.stepper {
+  display: inline-flex;
+  align-items: stretch;
+  width: fit-content;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--sunk);
+  overflow: hidden;
+}
+
+.stepper input[type="number"] {
+  width: 4rem;
+  border: 0;
+  border-radius: 0;
+  text-align: center;
+  background: var(--surface);
+  -moz-appearance: textfield;
+}
+
+.stepper input[type="number"]::-webkit-inner-spin-button,
+.stepper input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.stepper-button {
+  font: inherit;
+  font-size: var(--text-lg);
+  line-height: 1;
+  width: 2.25rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.stepper-button:hover:not(:disabled) {
+  background: var(--border);
+}
+
+.stepper-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.stepper-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+/* Chips: common values as pills, then a field for any other. */
+.chip-choice {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.chip {
+  position: relative;
+  cursor: pointer;
+}
+
+.chip input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.chip span {
+  display: block;
+  min-width: 2.5rem;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: var(--text-sm);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip input:checked + span {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.chip input:focus-visible + span {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.chip-other {
+  width: 4.5rem;
+}
+
+/* Switch: a checkbox drawn as a sliding knob, its label beside it. */
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  width: fit-content;
+}
+
+.switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.switch-track {
+  position: relative;
+  flex: none;
+  width: 2.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: var(--border);
+  transition: background-color 120ms ease;
+}
+
+.switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: calc(1.25rem - 4px);
+  height: calc(1.25rem - 4px);
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: transform 120ms ease;
+}
+
+.switch input:checked + .switch-track {
+  background: var(--accent);
+}
+
+.switch input:checked + .switch-track::after {
+  transform: translateX(1rem);
+}
+
+.switch input:focus-visible + .switch-track {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch-track,
+  .switch-track::after {
+    transition: none;
+  }
+}
+
+/* Drop zone: a dashed target, the chosen image's thumbnail and name in it. */
+.drop-zone {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 4.5rem;
+  padding: var(--space-3);
+  border: 1.5px dashed var(--stitch);
+  border-radius: var(--radius-md);
+  background: var(--sunk);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.drop-zone:hover,
+.drop-zone.is-over {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.drop-zone:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.drop-zone strong {
+  color: var(--accent);
+}
+
+.drop-zone-thumbnail {
+  flex: none;
+  width: 3.5rem;
+  height: 3.5rem;
+  object-fit: contain;
+  image-rendering: pixelated;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.drop-zone-text {
+  display: grid;
+  min-width: 0;
+}
+
+.drop-zone-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Pages picker: one sheet per page count, shaped like the paper as it is turned; the
+   pages of the split hovered (or chosen) filled in the accent. */
+.page-picker {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+}
+
+.page-picker-summary {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  min-height: 2.6em;
+}
+
+.page-grid {
+  display: grid;
+  gap: 3px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--sunk);
+  border: 1px solid var(--border);
+}
+
+.page-cell {
+  width: 14px;
+  height: 19px;
+  padding: 0;
+  border: 1px solid var(--stitch);
+  border-radius: 2px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.page-grid-landscape .page-cell {
+  width: 19px;
+  height: 14px;
+}
+
+.page-cell.in-range {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 35%, var(--surface));
+}
+
+.page-cell.is-chosen {
+  background: var(--accent);
+}
+
+/* A split the PDF refuses cannot be picked, but its sheets still belong to bigger ones. */
+.page-cell:disabled {
+  cursor: not-allowed;
+}
+
+.page-cell:disabled:not(.in-range) {
+  opacity: 0.3;
+  background: transparent;
+}
+
+.link-button {
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Section preview: the pattern with its pages outlined and named, as the PDF's plan. */
+.section-preview {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.section-preview canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.section-preview figcaption {
+  font-size: var(--text-xs);
   color: var(--muted);
 }
