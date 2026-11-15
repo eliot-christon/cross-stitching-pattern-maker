@@ -32,8 +32,11 @@ from cross_stitch.export import (
     Split,
     SymbolInk,
     Variant,
+    chart_layout,
+    page_options,
     pattern_symbols,
     render_pdf,
+    section_name,
     symbol_ink,
 )
 from cross_stitch.pattern import (
@@ -171,6 +174,41 @@ class PixelArtOut(BaseModel):
 class InspectOut(BaseModel):
     pixel_art: PixelArtOut | None
     """The image's art pixels, or `null` when it is not pixel art."""
+
+
+class BandOut(BaseModel):
+    start: int
+    """First cell, 0-based."""
+    end: int
+    """One past the last cell."""
+    repeated: int
+    """Leading cells repeated from the previous page."""
+
+
+class LayoutOut(BaseModel):
+    cell_mm: float
+    columns: list[BandOut]
+    rows: list[BandOut]
+    sections: list[list[str]]
+    """Section names, by row then column: `sections[row][column]`."""
+
+
+class PageOptionOut(BaseModel):
+    cell_mm: float | None
+    """The chart cell of this pages split, or `null` where it is refused."""
+    columns: int
+    """Cells across the widest page."""
+    rows: int
+    """Cells down the tallest page."""
+
+
+class ChartLayoutOut(BaseModel):
+    layout: LayoutOut | None
+    """How the chart is cut, or `null` when the split is refused."""
+    message: str | None
+    """Why the split is refused, as `POST /patterns/pdf` would say it."""
+    pages: list[list[PageOptionOut]]
+    """Every pages split, `pages[down - 1][across - 1]`, 1 to 20 each way."""
 
 
 class SettingOut(BaseModel):
@@ -577,6 +615,42 @@ def _hex_rgb(colour: str) -> tuple[int, int, int]:
     """A `#rrggbb` colour, already checked by its form field, as (r, g, b)."""
     value = int(colour[1:], 16)
     return (value >> 16, (value >> 8) & 0xFF, value & 0xFF)
+
+
+@app.post("/chart/layout")
+def chart_layout_route(
+    width: Annotated[int, Form(ge=_WIDTH.min, le=_WIDTH.max, description="Pattern width")],
+    height: Annotated[int, Form(ge=1, le=MAX_HEIGHT, description="Pattern height")],
+    layout: Annotated[LayoutSettings, Depends(_layout)],
+) -> ChartLayoutOut:
+    """How `POST /patterns/pdf` would cut a pattern of this size into pages with these
+    layout fields, and the cell of every pages split, for choosing one."""
+    # `_layout` fills every field, with the PDF route's defaults.
+    options = page_options(
+        width,
+        height,
+        paper=layout["paper"],
+        orientation=layout["orientation"],
+        overlap=layout["overlap"],
+    )
+    pages = [[PageOptionOut(**asdict(option)) for option in row] for row in options]
+    try:
+        cut = chart_layout(width, height, **layout)
+    except ValueError as error:
+        return ChartLayoutOut(layout=None, message=str(error), pages=pages)
+    return ChartLayoutOut(
+        layout=LayoutOut(
+            cell_mm=cut.cell_mm,
+            columns=[BandOut(**asdict(band)) for band in cut.columns],
+            rows=[BandOut(**asdict(band)) for band in cut.rows],
+            sections=[
+                [section_name(column, row) for column in range(len(cut.columns))]
+                for row in range(len(cut.rows))
+            ],
+        ),
+        message=None,
+        pages=pages,
+    )
 
 
 @app.post("/patterns/pdf", response_class=Response)

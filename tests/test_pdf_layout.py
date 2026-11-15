@@ -21,7 +21,14 @@ from pdf_helpers import (
 from PIL import Image
 from pypdf import PdfReader
 
-from cross_stitch.export import chart_layout, render_pdf, section_name
+from cross_stitch.export import (
+    MAX_PAGES,
+    Orientation,
+    chart_layout,
+    page_options,
+    render_pdf,
+    section_name,
+)
 
 
 def _labels(data: bytes) -> list[tuple[int, int, int, int]]:
@@ -287,3 +294,48 @@ def test_white_fabric_is_the_default_and_leaves_the_chart_pages_as_they_are() ->
     assert [p.extract_text() for p in _chart_pages(coloured)] == [
         p.extract_text() for p in _chart_pages(plain)
     ]
+
+
+# --------------------------------------------------------------------------- page options
+
+
+@pytest.mark.parametrize("size", [(100, 100), (1000, 700), (30, 300)])
+@pytest.mark.parametrize("orientation", ["portrait", "landscape"])
+def test_every_page_option_is_what_chart_layout_gives_or_refuses(
+    size: tuple[int, int], orientation: Orientation
+) -> None:
+    width, height = size
+    options = page_options(width, height, paper="A4", orientation=orientation, overlap=2)
+
+    assert len(options) == MAX_PAGES
+    for down, row in enumerate(options, start=1):
+        assert len(row) == MAX_PAGES
+        for across, option in enumerate(row, start=1):
+            try:
+                layout = chart_layout(
+                    width,
+                    height,
+                    orientation=orientation,
+                    split="pages",
+                    pages_across=across,
+                    pages_down=down,
+                )
+            except ValueError:
+                assert option.cell_mm is None, (across, down)
+                continue
+            assert option.cell_mm == layout.cell_mm, (across, down)
+            assert option.columns == max(band.size for band in layout.columns)
+            assert option.rows == max(band.size for band in layout.rows)
+
+
+def test_the_orientation_changes_the_cell_of_a_split() -> None:
+    # 6 pages across, 4 down: the bands are narrow and tall, so the sheet's way matters.
+    portrait = page_options(300, 300, orientation="portrait")[3][5]
+    landscape = page_options(300, 300, orientation="landscape")[3][5]
+    assert portrait.cell_mm is not None and landscape.cell_mm is not None
+    assert portrait.cell_mm != landscape.cell_mm
+
+
+def test_page_options_refuse_an_overlap_out_of_range() -> None:
+    with pytest.raises(ValueError, match="overlap"):
+        page_options(100, 100, overlap=6)
