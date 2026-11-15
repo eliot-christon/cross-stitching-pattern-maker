@@ -1230,6 +1230,27 @@ describe("thread replacements", () => {
     expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"]]);
   });
 
+  it("sends a removal as FROM:fabric and lists it as fabric, with its undo", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+
+    fireEvent.click(screen.getByRole("cell", { name: "310" }));
+    await settle();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Remove/ }));
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:fabric"]]);
+    expect(replacementItems()).toHaveLength(1);
+    expect(replacementItems()[0]).toHaveTextContent(/310.*Black.*Fabric/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to fabric" }));
+    await wait(QUIET_MS);
+    await settle();
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:fabric"], []]);
+  });
+
   it("sends no replace field once the only pair is undone, and hides the list", async () => {
     const fetchMock = stubWithThreads();
     await renderLive();

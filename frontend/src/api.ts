@@ -53,10 +53,19 @@ export interface Settings {
 /** The PDF chart endpoint: the same inputs as `PATTERNS_URL` plus the chart options. */
 export const PATTERN_PDF_URL = "/api/patterns/pdf";
 
-/** One thread swap, applied by the API after cleanup; a list applies in order. */
+/** One thread swap, applied by the API after cleanup; a list applies in order. A `to` of
+ * `null` removes the thread: its cells become bare fabric. */
 export interface Replacement {
   from: DmcThread;
-  to: DmcThread;
+  to: DmcThread | null;
+}
+
+/** The `TO` of a `replace` field that removes a thread, as the API spells it. */
+export const FABRIC = "fabric";
+
+/** A replacement as the API's `replace` field spells it: `FROM:TO`. */
+export function replacementField({ from, to }: Replacement): string {
+  return `${from.code}:${to === null ? FABRIC : to.code}`;
 }
 
 /** The chart options `POST /patterns/pdf` accepts, as its form fields spell them. */
@@ -146,8 +155,8 @@ async function post(
   body.append("min_stitches", settings.minStitches);
   body.append("confetti_size", settings.confettiSize);
   // Repeated `replace` fields, in order: the API applies them in sequence.
-  for (const { from, to } of replacements) {
-    body.append("replace", `${from.code}:${to.code}`);
+  for (const pair of replacements) {
+    body.append("replace", replacementField(pair));
   }
   for (const [name, value] of Object.entries(extra)) {
     body.append(name, value);
