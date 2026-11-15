@@ -9,9 +9,11 @@ from cross_stitch.export.pdf import (
     VARIANTS,
     Orientation,
     Paper,
+    SymbolInk,
     Variant,
     chart_capacity,
     render_pdf,
+    symbol_ink,
 )
 from cross_stitch.export.symbols import SYMBOLS, key_symbols
 
@@ -25,8 +27,10 @@ __all__ = [
     "VARIANTS",
     "Orientation",
     "Paper",
+    "SymbolInk",
     "Variant",
     "chart_capacity",
     "key_symbols",
     "render_pdf",
+    "symbol_ink",
 ]

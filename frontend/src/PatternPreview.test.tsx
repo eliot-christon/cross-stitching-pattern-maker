@@ -7,8 +7,8 @@ import { PatternPreview } from "./PatternPreview";
 
 function makePattern(overrides: Partial<Pattern> = {}): Pattern {
   const key: KeyEntry[] = [
-    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 5, skeins: 1, symbol: "Z" },
-    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 9, skeins: 2, symbol: "A" },
+    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 5, skeins: 1, symbol: "Z", symbol_ink: "white" },
+    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 9, skeins: 2, symbol: "A", symbol_ink: "white" },
   ];
   return {
     width: 40,
@@ -208,9 +208,9 @@ describe("PatternPreview before and after cleanup", () => {
       converted: {
         grid: [[0, 2, null]],
         key: [
-          { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "Z" },
-          { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 0, skeins: 0, symbol: "A" },
-          { code: "Blanc", name: "White", rgb: [252, 251, 248], stitches: 1, skeins: 1, symbol: "B" },
+          { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "Z", symbol_ink: "white" },
+          { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 0, skeins: 0, symbol: "A", symbol_ink: "white" },
+          { code: "Blanc", name: "White", rgb: [252, 251, 248], stitches: 1, skeins: 1, symbol: "B", symbol_ink: "black" },
         ],
         total_stitches: 2,
       },

@@ -28,7 +28,7 @@ const PATTERN: Pattern = {
   height: 1,
   fabric_count: 16,
   grid: [[0, null]],
-  key: [{ code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol: "A" }],
+  key: [{ code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol: "A", symbol_ink: "white" }],
   total_stitches: 1,
   finished_size: { width_in: 0.125, height_in: 0.0625, width_cm: 0.3175, height_cm: 0.15875 },
   isolated_stitches: { before: 1, after: 1 },

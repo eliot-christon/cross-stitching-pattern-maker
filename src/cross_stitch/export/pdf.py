@@ -11,9 +11,9 @@ and column, and a label stating the columns and rows it shows.
 
 The cell side is `CELL_MM` on every paper; a bigger sheet holds more cells per page
 (`chart_capacity`). In the colour variant cells are filled with their thread's colour and
-the symbol is black or white, whichever reads better on it; the black-and-white variant
-uses grey levels only. Symbols come from `key_symbols`, numbers only from the `Pattern`.
-The same pattern and settings always give the same bytes.
+the symbol is black or white, whichever reads better on it (`symbol_ink`); the
+black-and-white variant uses grey levels only. Symbols come from `key_symbols`, numbers
+only from the `Pattern`. The same pattern and settings always give the same bytes.
 """
 
 import io
@@ -141,6 +141,19 @@ _REC601 = np.array([0.299, 0.587, 0.114])
 def _luminance(rgb: tuple[int, int, int]) -> float:
     """Luminance of an sRGB colour, 0-255."""
     return float(np.dot(_REC601, rgb))
+
+
+SymbolInk = Literal["black", "white"]
+
+
+def symbol_ink(rgb: tuple[int, int, int]) -> SymbolInk:
+    """The ink a symbol takes on a cell of this colour in the colour chart.
+
+    White on a colour whose Rec. 601 luminance is below 140, black otherwise. The colour
+    PDF and the JSON response both read it here, so the page draws every symbol in the ink
+    the printed chart uses.
+    """
+    return "white" if _luminance(rgb) < _DARK_FILL else "black"
 
 
 def _key_text_width(value: str) -> float:
@@ -433,7 +446,7 @@ class _ChartPage:
             positions = np.argwhere(cells == index).tolist()
             if not positions:
                 continue
-            dark = document.colour and _luminance(entry.thread.rgb) < _DARK_FILL
+            dark = document.colour and symbol_ink(entry.thread.rgb) == "white"
             text.setFillGray(1 if dark else 0)
             half = pdfmetrics.stringWidth(symbol, _FONT, _SYMBOL_SIZE) / 2
             for row, column in positions:

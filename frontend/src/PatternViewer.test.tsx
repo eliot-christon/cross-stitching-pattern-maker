@@ -6,8 +6,8 @@ import type { KeyEntry, Pattern } from "./pattern";
 import { PatternViewer } from "./PatternViewer";
 
 const KEY: KeyEntry[] = [
-  { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "Z" },
-  { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol: "A" },
+  { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "Z", symbol_ink: "white" },
+  { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol: "A", symbol_ink: "white" },
 ];
 
 function makePattern(width: number, height: number, overrides: Partial<Pattern> = {}): Pattern {
@@ -28,15 +28,28 @@ function makePattern(width: number, height: number, overrides: Partial<Pattern> 
   };
 }
 
-/** What every 2D context was asked to do: images put and texts drawn. */
+/** What every 2D context was asked to do: images put, texts (with their fill), fills, strokes. */
 interface Recording {
   images: Uint8ClampedArray[];
   texts: string[];
+  inks: unknown[];
+  fills: unknown[];
+  strokes: unknown[];
+  /** For each stroke, the points its path moved to. */
+  paths: { style: unknown; moves: [number, number][] }[];
 }
 
 /** A 2D context on every canvas that records images and texts and ignores the rest. */
 function stubCanvas(): Recording {
-  const recording: Recording = { images: [], texts: [] };
+  const recording: Recording = {
+    images: [],
+    texts: [],
+    inks: [],
+    fills: [],
+    strokes: [],
+    paths: [],
+  };
+  let moves: [number, number][] = [];
   vi.stubGlobal(
     "ImageData",
     class {
@@ -47,6 +60,7 @@ function stubCanvas(): Recording {
       ) {}
     },
   );
+  const state: Record<string | symbol, unknown> = { fillStyle: "", strokeStyle: "" };
   const context = new Proxy(
     {
       putImageData: (image: { data: Uint8ClampedArray }) => {
@@ -54,12 +68,30 @@ function stubCanvas(): Recording {
       },
       fillText: (text: string) => {
         recording.texts.push(text);
+        recording.inks.push(state.fillStyle);
+      },
+      fillRect: () => {
+        recording.fills.push(state.fillStyle);
+      },
+      beginPath: () => {
+        moves = [];
+      },
+      moveTo: (x: number, y: number) => {
+        moves.push([x, y]);
+      },
+      stroke: () => {
+        recording.strokes.push(state.strokeStyle);
+        recording.paths.push({ style: state.strokeStyle, moves });
       },
       createPattern: () => null,
     } as Record<string | symbol, unknown>,
     {
-      get: (target, prop) => (prop in target ? target[prop] : () => undefined),
-      set: () => true,
+      get: (target, prop) =>
+        prop in state ? state[prop] : prop in target ? target[prop] : () => undefined,
+      set: (_target, prop, value) => {
+        state[prop] = value;
+        return true;
+      },
     },
   );
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
@@ -214,5 +246,81 @@ describe("PatternViewer", () => {
 
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("offers three modes, Colours first and checked", () => {
+    render(<PatternViewer pattern={makePattern(4, 4)} />);
+
+    const modes = ["Colours", "Symbols", "Symbols on colours"].map((name) =>
+      screen.getByRole("radio", { name }),
+    );
+    expect(modes.map((radio) => (radio as HTMLInputElement).checked)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+  });
+
+  it("fills each cell with its thread and draws its symbol in the entry's ink", () => {
+    const recording = stubCanvas();
+    const key: KeyEntry[] = [
+      { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 8, skeins: 1, symbol: "B", symbol_ink: "white" },
+      { code: "Blanc", name: "White", rgb: [252, 251, 248], stitches: 7, skeins: 1, symbol: "W", symbol_ink: "black" },
+    ];
+    const pattern = makePattern(4, 4, { key });
+    pattern.grid = pattern.grid.map((row, r) => row.map((cell, c) => (r === 3 && c === 3 ? null : cell)));
+    render(<PatternViewer pattern={pattern} />);
+    recording.fills.length = 0;
+
+    fireEvent.click(screen.getByRole("radio", { name: "Symbols on colours" }));
+
+    expect(screen.getByRole("img")).toHaveAccessibleName("Pattern symbols on colours, 4 x 4 stitches");
+    expect(recording.texts).toHaveLength(15);
+    recording.texts.forEach((text, i) => {
+      expect(recording.inks[i]).toBe(text === "B" ? "#ffffff" : "#000000");
+    });
+    // (row + column) even is black: 8 such cells, one of them bare; odd is white: 8.
+    const count = (fill: string) => recording.fills.filter((f) => f === fill).length;
+    expect(count("rgb(0 0 0)")).toBe(7);
+    expect(count("rgb(252 251 248)")).toBe(8);
+  });
+
+  it("draws red centre lines only once asked, in every mode, and keeps them for a new pattern", () => {
+    const recording = stubCanvas();
+    const { rerender } = render(<PatternViewer pattern={makePattern(4, 4)} />);
+    const red = () => recording.strokes.filter((colour) => colour === "#d62828").length;
+
+    expect(screen.getByRole("checkbox", { name: "Centre lines" })).not.toBeChecked();
+    expect(red()).toBe(0);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Centre lines" }));
+    expect(red()).toBe(1);
+    // 4 x 4 at 40 px per cell fills the 160 px viewer: the centre is at 80 px both ways.
+    const centre = recording.paths.find((path) => path.style === "#d62828");
+    expect(centre?.moves).toEqual([
+      [80, 0],
+      [0, 80],
+    ]);
+    for (const name of ["Symbols", "Symbols on colours"]) {
+      fireEvent.click(screen.getByRole("radio", { name }));
+    }
+    expect(red()).toBe(3);
+
+    rerender(<PatternViewer pattern={makePattern(4, 4)} />);
+    expect(screen.getByRole("checkbox", { name: "Centre lines" })).toBeChecked();
+    expect(red()).toBe(4);
+  });
+
+  it("shows the cleaned pattern only in Symbols on colours", () => {
+    const recording = stubCanvas();
+    const converted = { grid: [[1, 1, null]], key: KEY, total_stitches: 2 };
+    render(<PatternViewer pattern={makePattern(3, 1, { grid: [[0, 1, null]], converted })} />);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Symbols on colours" }));
+
+    expect(screen.queryByRole("radio", { name: "Before cleanup" })).not.toBeInTheDocument();
+    expect(screen.getByRole("img")).toHaveAccessibleName("Pattern symbols on colours, 3 x 1 stitches");
+    // The cleaned grid [0, 1, bare] draws Z then A; the converted one would draw A, A.
+    expect(recording.texts).toEqual(["Z", "A"]);
   });
 });

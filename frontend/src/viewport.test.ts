@@ -240,7 +240,7 @@ describe("visibleWindow", () => {
       rgb: [0, 0, 0],
       stitches: 1,
       skeins: 1,
-      symbol: "A",
+      symbol: "A", symbol_ink: "white",
     };
     const grid = Array.from({ length: 1000 }, () => Array.from({ length: 1000 }, () => 0));
 
