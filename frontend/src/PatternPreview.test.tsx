@@ -217,7 +217,7 @@ describe("PatternPreview before and after cleanup", () => {
     });
   }
 
-  /** A 2D context per canvas, recording what each one is painted with, by accessible name. */
+  /** A 2D context on every canvas, recording each image put, in order; the rest is ignored. */
   function stubCanvas() {
     vi.stubGlobal(
       "ImageData",
@@ -229,17 +229,25 @@ describe("PatternPreview before and after cleanup", () => {
         ) {}
       },
     );
-    const painted = new Map<string, Uint8ClampedArray[]>();
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (
-      this: HTMLCanvasElement,
-    ) {
-      const name = this.getAttribute("aria-label") ?? "";
-      return {
+    const painted: Uint8ClampedArray[] = [];
+    const context = new Proxy(
+      {
         putImageData: (image: { data: Uint8ClampedArray }) => {
-          painted.set(name, [...(painted.get(name) ?? []), image.data]);
+          painted.push(image.data);
         },
-      } as unknown as CanvasRenderingContext2D;
-    } as unknown as HTMLCanvasElement["getContext"]);
+        createPattern: () => null,
+      } as Record<string | symbol, unknown>,
+      {
+        get: (target, prop) => (prop in target ? target[prop] : () => undefined),
+        set: () => true,
+      },
+    );
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      (() => context) as unknown as HTMLCanvasElement["getContext"],
+    );
+    // The viewer needs a size to draw anything.
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(120);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(120);
     return painted;
   }
 
@@ -248,16 +256,19 @@ describe("PatternPreview before and after cleanup", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows a before and an after grid, each named, when the response has converted", () => {
+  it("shows the after grid, with a switch to the before grid, when the response has converted", () => {
     render(<PatternPreview pattern={cleanedPattern()} />);
 
-    const images = screen.getAllByRole("img");
-    expect(images.map((image) => image.getAttribute("aria-label"))).toEqual([
-      "Before cleanup, 3 x 1 stitches",
+    expect(screen.getAllByRole("img").map((image) => image.getAttribute("aria-label"))).toEqual([
       "After cleanup, 3 x 1 stitches",
     ]);
-    expect(screen.getByText("Before cleanup")).toBeInTheDocument();
-    expect(screen.getByText("After cleanup")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "After cleanup" })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Before cleanup" }));
+
+    expect(screen.getAllByRole("img").map((image) => image.getAttribute("aria-label"))).toEqual([
+      "Before cleanup, 3 x 1 stitches",
+    ]);
   });
 
   it("shows one grid, named as without cleanup, when converted is null", () => {
@@ -278,28 +289,24 @@ describe("PatternPreview before and after cleanup", () => {
     }
     const before = gridPixels({ width: 3, height: 1, grid: converted.grid, key: converted.key });
     const after = gridPixels(pattern);
-    // The fixture's two grids differ, so the canvases cannot pass by swapping.
+    // The fixture's two grids differ, so the images cannot pass by swapping.
     expect(Array.from(before)).not.toEqual(Array.from(after));
 
     render(<PatternPreview pattern={pattern} />);
+    expect(painted.map((d) => Array.from(d))).toEqual([Array.from(after)]);
 
-    expect(painted.get("Before cleanup, 3 x 1 stitches")?.map((d) => Array.from(d))).toEqual([
-      Array.from(before),
-    ]);
-    expect(painted.get("After cleanup, 3 x 1 stitches")?.map((d) => Array.from(d))).toEqual([
-      Array.from(after),
-    ]);
+    fireEvent.click(screen.getByRole("radio", { name: "Before cleanup" }));
+    expect(painted.map((d) => Array.from(d))).toEqual([Array.from(after), Array.from(before)]);
   });
 
-  it("does not repaint either grid when shown again with the same pattern", () => {
+  it("does not rebuild the grid image when shown again with the same pattern", () => {
     const painted = stubCanvas();
     const pattern = cleanedPattern();
 
     const { rerender } = render(<PatternPreview pattern={pattern} />);
     rerender(<PatternPreview pattern={pattern} />);
 
-    expect(painted.get("Before cleanup, 3 x 1 stitches")).toHaveLength(1);
-    expect(painted.get("After cleanup, 3 x 1 stitches")).toHaveLength(1);
+    expect(painted).toHaveLength(1);
   });
 
   it("shows one symbol grid, the cleaned one, in the symbol view", () => {
