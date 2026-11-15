@@ -23,8 +23,12 @@ from starlette.formparsers import MultiPartParser
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from cross_stitch.export import (
+    MAX_OVERLAP,
+    MAX_PAGES,
+    OVERLAP,
     Orientation,
     Paper,
+    Split,
     SymbolInk,
     Variant,
     pattern_symbols,
@@ -70,6 +74,9 @@ MAX_COLOURS = _MAX_COLOURS.max
 _MERGE_DISTANCE = _Setting(min=0.0, max=10.0, step=0.1, default=0.0)
 _MIN_STITCHES = _Setting(min=0, max=1000, step=1, default=0)
 _CONFETTI_SIZE = _Setting(min=0, max=10, step=1, default=0)
+# The chart layout of `POST /patterns/pdf`.
+_PAGES = _Setting(min=1, max=MAX_PAGES, step=1, default=2)
+_OVERLAP = _Setting(min=0, max=MAX_OVERLAP, step=1, default=OVERLAP)
 # Room for the multipart framing and the form fields around the image.
 _MAX_BODY_BYTES = MAX_UPLOAD_BYTES + 64 * 1024
 _TOO_LARGE = f"the upload is larger than {MAX_UPLOAD_BYTES} bytes"
@@ -158,7 +165,8 @@ class SettingOut(BaseModel):
 class LimitsOut(BaseModel):
     max_upload_bytes: int
     settings: dict[str, SettingOut]
-    """Keyed by the form field name of `POST /patterns`."""
+    """Keyed by form field name: the conversion settings both pattern routes take, then
+    the chart layout settings `POST /patterns/pdf` takes."""
 
 
 _LIMITS = LimitsOut(
@@ -171,6 +179,9 @@ _LIMITS = LimitsOut(
             "merge_distance": _MERGE_DISTANCE,
             "min_stitches": _MIN_STITCHES,
             "confetti_size": _CONFETTI_SIZE,
+            "pages_across": _PAGES,
+            "pages_down": _PAGES,
+            "overlap": _OVERLAP,
         }.items()
     },
 )
@@ -459,21 +470,51 @@ def create_pattern(
 
 
 @app.post("/patterns/pdf", response_class=Response)
-def create_pattern_pdf(
+# Each parameter is a form field FastAPI reads; grouping them would hide them from /docs.
+def create_pattern_pdf(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     converted: Annotated[_Converted, Depends(_converted)],
     variant: Annotated[Variant, Form(description="Colour or black and white")] = "colour",
     paper: Annotated[Paper, Form(description="Paper size")] = "A4",
     orientation: Annotated[Orientation, Form(description="Page orientation")] = "portrait",
+    split: Annotated[
+        Split, Form(description="cells: a 3 mm cell; pages: exactly pages_across x pages_down")
+    ] = "cells",
+    pages_across: Annotated[
+        int, Form(ge=_PAGES.min, le=_PAGES.max, description="Pages across, split=pages")
+    ] = _PAGES.default,
+    pages_down: Annotated[
+        int, Form(ge=_PAGES.min, le=_PAGES.max, description="Pages down, split=pages")
+    ] = _PAGES.default,
+    overlap: Annotated[
+        int,
+        Form(ge=_OVERLAP.min, le=_OVERLAP.max, description="Columns or rows pages repeat"),
+    ] = _OVERLAP.default,
+    centre_lines: Annotated[
+        bool, Form(description="Draw the centre column and row through the chart")
+    ] = False,
 ) -> Response:
     """Convert an image as `POST /patterns` does and return it as a printable PDF chart.
 
     The same request always gives the same bytes, so a client can ask again for the chart
-    of the pattern it shows; nothing is stored between requests.
+    of the pattern it shows; nothing is stored between requests. A pages split that would
+    need cells under 2 mm is a 422 naming the fewest pages that fit.
     """
+    try:
+        pdf = render_pdf(
+            converted.replaced.pattern,
+            variant=variant,
+            paper=paper,
+            orientation=orientation,
+            split=split,
+            pages_across=pages_across,
+            pages_down=pages_down,
+            overlap=overlap,
+            centre_lines=centre_lines,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
     return Response(
-        render_pdf(
-            converted.replaced.pattern, variant=variant, paper=paper, orientation=orientation
-        ),
+        pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="pattern.pdf"'},
     )
