@@ -794,6 +794,17 @@ def test_replace_fields_apply_in_the_order_sent() -> None:
     assert reverse["key"] != body["key"]
 
 
+@pytest.mark.parametrize("target", ["fabric", "FABRIC", "Fabric"])
+def test_replace_onto_fabric_leaves_the_thread_s_cells_bare(target: str) -> None:
+    body = _replaced_body(f"310:{target}")
+    expected = replace_threads(_core_replaced(), [(dmc_thread("310"), None)]).pattern
+
+    assert body["grid"] == _grid_json(expected)
+    assert body["key"] == _key_json(expected)
+    assert body["total_stitches"] == 600
+    assert sum(row.count(None) for row in body["grid"]) == 200
+
+
 def test_a_replace_of_a_thread_not_in_the_pattern_is_reported_and_changes_nothing() -> None:
     plain = _stripes_response()
     body = _replaced_body("3865:310")
@@ -822,7 +833,10 @@ def test_replace_codes_are_case_insensitive_and_keep_their_stored_spelling() -> 
     assert body["key"] == _key_json(_core_replaced(("Blanc", "B5200")))
 
 
-@pytest.mark.parametrize("value", ["310", "310:", ":310", "310:3865:321", "XYZ:310", "310:XYZ"])
+@pytest.mark.parametrize(
+    "value",
+    ["310", "310:", ":310", "310:3865:321", "XYZ:310", "310:XYZ", "310:fabrik", "fabric:310"],
+)
 def test_a_malformed_replace_gives_the_same_422_naming_it_on_both_routes(value: str) -> None:
     by_json = _post_replace("/patterns", (value,))
     by_pdf = _post_replace("/patterns/pdf", (value,))
