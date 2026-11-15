@@ -72,6 +72,25 @@ const LIMITS: Limits = {
   },
 };
 
+/** A `/chart/layout` answer: the cells split in one page, every pages split allowed up
+ * to 3 across and 3 down at 3.4 mm, the rest refused. */
+const LAYOUT = {
+  layout: {
+    cell_mm: 3,
+    columns: [{ start: 0, end: 4, repeated: 0 }],
+    rows: [{ start: 0, end: 3, repeated: 0 }],
+    sections: [["A1"]],
+  },
+  message: null,
+  pages: Array.from({ length: 20 }, (_, d) =>
+    Array.from({ length: 20 }, (_, a) => ({
+      cell_mm: a < 3 && d < 3 ? 3.4 : null,
+      columns: 40,
+      rows: 30,
+    })),
+  ),
+};
+
 const WIDTH = "Width (stitches)";
 const COLOURS = "Colours";
 const MERGE = "Merge similar threads (colour distance)";
@@ -105,9 +124,10 @@ type Handler = (init?: RequestInit) => Promise<Response>;
  * handlers (a conversion of PATTERN by default).
  */
 function stubApi(
-  handlers: { patterns?: Handler; pdf?: Handler; inspect?: Handler } = {},
+  handlers: { patterns?: Handler; pdf?: Handler; inspect?: Handler; layout?: Handler } = {},
 ): ReturnType<typeof vi.fn<(url: string, init?: RequestInit) => Promise<Response>>> {
   const patterns = handlers.patterns ?? (() => Promise.resolve(json(200, PATTERN)));
+  const layout = handlers.layout ?? (() => Promise.resolve(json(200, LAYOUT)));
   const pdf = handlers.pdf ?? (() => Promise.reject(new Error("no PDF expected")));
   const inspect = handlers.inspect ?? (() => Promise.resolve(json(200, { pixel_art: null })));
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
@@ -116,6 +136,9 @@ function stubApi(
     }
     if (url === "/api/images/inspect") {
       return inspect(init);
+    }
+    if (url === "/api/chart/layout") {
+      return layout(init);
     }
     return url === "/api/patterns" ? patterns(init) : pdf(init);
   });
@@ -1411,17 +1434,59 @@ describe("PDF chart layout", () => {
     expect(screen.queryByRole("spinbutton", { name: "Pages across" })).not.toBeInTheDocument();
   });
 
-  it("shows the pages fields only for a split by pages", async () => {
+  /** The sheet standing for `across` x `down` pages in the pages picker. */
+  function pageCell(across: number, down: number): HTMLElement {
+    return screen.getByRole("button", { name: `${String(across)} across, ${String(down)} down` });
+  }
+
+  it("shows the pages picker only for a split by pages, at the reported 2 x 2", async () => {
     stubApi();
     await renderLive();
     await preview();
 
     choose("Split", "By pages");
-    expect(numberField("Pages across")).toHaveValue(2);
-    expect(numberField("Pages down")).toHaveValue(2);
+    await wait(QUIET_MS);
+    await settle();
+    expect(pageCell(2, 2)).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(/2 × 2 = 4 pages, 3.4 mm cells, up to 40 × 30 cells each/)).toBeInTheDocument();
 
     choose("Split", "By cell size (3 mm)");
-    expect(screen.queryByRole("spinbutton", { name: "Pages across" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Pages across and down" })).not.toBeInTheDocument();
+  });
+
+  it("disables the splits the API refuses and shows the sheets turned with the paper", async () => {
+    stubApi();
+    await renderLive();
+    await preview();
+
+    choose("Split", "By pages");
+    await wait(QUIET_MS);
+    await settle();
+    expect(pageCell(3, 3)).toBeEnabled();
+    expect(pageCell(4, 1)).toBeDisabled();
+    const grid = screen.getByRole("group", { name: "Pages across and down" });
+    expect(grid).toHaveClass("page-grid-portrait");
+
+    choose("Orientation", "Landscape");
+    expect(screen.getByRole("group", { name: "Pages across and down" })).toHaveClass("page-grid-landscape");
+  });
+
+  it("asks the API how the chart is cut, with the size and choices, after the quiet delay", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+    await preview();
+    await wait(QUIET_MS);
+    await settle();
+
+    choose("Paper", "A3");
+    await wait(QUIET_MS);
+    await settle();
+
+    const bodies = posted(fetchMock, "/api/chart/layout");
+    expect(bodies.length).toBeGreaterThanOrEqual(2);
+    const last = bodies.at(-1);
+    expect([last?.get("width"), last?.get("height"), last?.get("paper")]).toEqual(["2", "1", "A3"]);
+    expect(screen.getByRole("img", { name: /Chart sections: 1 page/ })).toBeInTheDocument();
   });
 
   it("asks for the default layout by default", async () => {
@@ -1446,7 +1511,9 @@ describe("PDF chart layout", () => {
     await preview();
 
     choose("Split", "By pages");
-    setValue(numberField("Pages across"), "3");
+    await wait(QUIET_MS);
+    await settle();
+    fireEvent.click(pageCell(3, 2));
     setValue(numberField("Repeated rows and columns"), "0");
     fireEvent.click(screen.getByRole("checkbox", { name: "Centre lines in the PDF" }));
     fireEvent.click(downloadButton());

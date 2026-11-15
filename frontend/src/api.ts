@@ -349,3 +349,63 @@ export function getNearestThreads(code: string): Promise<ThreadsResult<NearThrea
     "Loading the nearest threads failed",
   );
 }
+
+/** How the PDF would cut a pattern into pages: `POST /chart/layout`. */
+export const CHART_LAYOUT_URL = "/api/chart/layout";
+
+/** A run of columns or rows on one chart page. */
+export interface Band {
+  start: number;
+  end: number;
+  repeated: number;
+}
+
+/** The pages of a chart: the cell, the bands, and each section's name by row. */
+export interface ChartLayout {
+  cell_mm: number;
+  columns: Band[];
+  rows: Band[];
+  sections: string[][];
+}
+
+/** One pages split: its cell (`null` where the PDF refuses it) and its biggest page. */
+export interface PageOption {
+  cell_mm: number | null;
+  columns: number;
+  rows: number;
+}
+
+/** The `POST /chart/layout` body, written by hand to match `ChartLayoutOut`. */
+export interface ChartLayoutReport {
+  layout: ChartLayout | null;
+  message: string | null;
+  /** Every pages split, `pages[down - 1][across - 1]`. */
+  pages: PageOption[][];
+}
+
+export type ChartLayoutResult = { ok: true; report: ChartLayoutReport } | { ok: false; message: string };
+
+/** How the PDF with `options` would cut a `width` x `height` pattern, and every split. */
+export async function getChartLayout(
+  width: number,
+  height: number,
+  options: ChartOptions,
+): Promise<ChartLayoutResult> {
+  const body = new FormData();
+  body.append("width", String(width));
+  body.append("height", String(height));
+  for (const [name, value] of Object.entries(chartFields(options))) {
+    body.append(name, value);
+  }
+  let response: Response;
+  try {
+    response = await fetch(CHART_LAYOUT_URL, { method: "POST", body });
+  } catch {
+    return { ok: false, message: UNREACHABLE };
+  }
+  const payload = await readJson(response);
+  if (response.ok && typeof payload === "object" && payload !== null) {
+    return { ok: true, report: payload as ChartLayoutReport };
+  }
+  return { ok: false, message: errorMessage(response.status, payload, "Loading the chart layout failed") };
+}
