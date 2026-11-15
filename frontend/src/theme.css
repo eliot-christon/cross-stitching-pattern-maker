@@ -501,3 +501,27 @@ input[type="file"]::file-selector-button {
     height: min(60vh, 520px);
   }
 }
+
+/* A checkbox as a small pill: "Centre lines". */
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.toggle:has(input:checked) {
+  color: var(--text);
+}

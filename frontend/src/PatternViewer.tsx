@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { centreLines, tenCellLines } from "./chartAids";
 import { gridPixels } from "./grid";
 import type { Pattern } from "./pattern";
-import { visibleSymbols, type View } from "./symbolView";
+import { visibleCells, visibleSymbols, type View } from "./symbolView";
 import {
   fitViewport,
   maxScale,
@@ -19,7 +20,7 @@ import {
 
 type Cells = Pick<Pattern, "width" | "height" | "grid" | "key">;
 
-export type ViewMode = "colours" | "symbols";
+export type ViewMode = "colours" | "symbols" | "symbols-on-colours";
 
 /** Smallest cell, in CSS px, whose symbol can be read; below it no symbol is drawn. */
 export const SYMBOL_MIN_PX = 12;
@@ -37,6 +38,12 @@ const CELL_LINE = "#c8c8c8";
 const CHECKER_LIGHT = "#f4f1ea";
 const CHECKER_DARK = "#d9d3c7";
 const CHECKER_PX = 4;
+// The chart aids: 10-cell lines as the PDF's bold lines, centre lines in red.
+const TEN_LINE = "rgba(20, 16, 12, 0.6)";
+const TEN_LINE_WIDTH = 1.5;
+const CENTRE_LINE = "#d62828";
+const CENTRE_LINE_WIDTH = 2;
+const INK = { black: "#000000", white: "#ffffff" } as const;
 
 const EMPTY_SIZE: Size = { width: 0, height: 0 };
 
@@ -110,6 +117,11 @@ function paintColours(
   );
 }
 
+/** The symbol font for cells of `scale` CSS px. */
+function symbolFont(scale: number): string {
+  return `${Math.round(scale * 0.72)}px "DejaVu Sans", "Segoe UI Symbol", sans-serif`;
+}
+
 function paintSymbols(
   context: CanvasRenderingContext2D,
   vp: Viewport,
@@ -117,7 +129,7 @@ function paintSymbols(
   cells: Cells,
 ) {
   const { scale } = vp;
-  context.font = `${Math.round(scale * 0.72)}px "DejaVu Sans", "Segoe UI Symbol", sans-serif`;
+  context.font = symbolFont(scale);
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.lineWidth = 1;
@@ -135,10 +147,92 @@ function paintSymbols(
   }
 }
 
+/** Each cell in view filled with its thread's colour, its symbol in the entry's ink. */
+function paintSymbolsOnColours(
+  context: CanvasRenderingContext2D,
+  vp: Viewport,
+  view: View,
+  cells: Cells,
+) {
+  const { scale } = vp;
+  context.font = symbolFont(scale);
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.lineWidth = 1;
+  context.strokeStyle = "rgba(0, 0, 0, 0.15)";
+  for (const { column, row, entry } of visibleCells(cells, view)) {
+    const x = vp.x + column * scale;
+    const y = vp.y + row * scale;
+    if (entry === null) {
+      context.fillStyle = BARE_CELL;
+      context.fillRect(x, y, scale, scale);
+      continue;
+    }
+    context.fillStyle = `rgb(${entry.rgb.join(" ")})`;
+    context.fillRect(x, y, scale, scale);
+    context.strokeRect(x + 0.5, y + 0.5, scale - 1, scale - 1);
+    context.fillStyle = INK[entry.symbol_ink];
+    context.fillText(entry.symbol, x + scale / 2, y + scale / 2 + 1);
+  }
+}
+
+function strokeLines(
+  context: CanvasRenderingContext2D,
+  colour: string,
+  width: number,
+  lines: { x1: number; y1: number; x2: number; y2: number }[],
+) {
+  if (lines.length === 0) {
+    return;
+  }
+  context.strokeStyle = colour;
+  context.lineWidth = width;
+  context.beginPath();
+  for (const line of lines) {
+    context.moveTo(line.x1, line.y1);
+    context.lineTo(line.x2, line.y2);
+  }
+  context.stroke();
+}
+
+/** The 10-cell lines and, when asked, the centre lines, over the window. */
+function paintAids(
+  context: CanvasRenderingContext2D,
+  vp: Viewport,
+  view: View,
+  pattern: Size,
+  centre: boolean,
+) {
+  const rect = windowRect(vp, view);
+  const ten = tenCellLines(view, pattern, vp.scale);
+  strokeLines(context, TEN_LINE, TEN_LINE_WIDTH, [
+    ...ten.columns.map((column) => {
+      const x = vp.x + column * vp.scale;
+      return { x1: x, y1: rect.y, x2: x, y2: rect.y + rect.height };
+    }),
+    ...ten.rows.map((row) => {
+      const y = vp.y + row * vp.scale;
+      return { x1: rect.x, y1: y, x2: rect.x + rect.width, y2: y };
+    }),
+  ]);
+  if (centre) {
+    const middle = centreLines(pattern);
+    const x = vp.x + middle.column * vp.scale;
+    const y = vp.y + middle.row * vp.scale;
+    strokeLines(context, CENTRE_LINE, CENTRE_LINE_WIDTH, [
+      { x1: x, y1: rect.y, x2: x, y2: rect.y + rect.height },
+      { x1: rect.x, y1: y, x2: rect.x + rect.width, y2: y },
+    ]);
+  }
+}
+
 function canvasName(mode: ViewMode, before: boolean | null, cells: Cells): string {
   const size = `${cells.width} x ${cells.height} stitches`;
   if (mode === "symbols") {
     return `Pattern symbols, ${size}`;
+  }
+  if (mode === "symbols-on-colours") {
+    return `Pattern symbols on colours, ${size}`;
   }
   if (before === null) {
     return `Pattern preview, ${size}`;
@@ -204,6 +298,7 @@ function Segmented<T extends string>(props: {
 export function PatternViewer({ pattern }: { pattern: Pattern }) {
   const [mode, setMode] = useState<ViewMode>("colours");
   const [showBefore, setShowBefore] = useState(false);
+  const [centreLinesOn, setCentreLinesOn] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const size = useBoxSize(boxRef);
@@ -273,10 +368,13 @@ export function PatternViewer({ pattern }: { pattern: Pattern }) {
     }
     if (mode === "symbols" && readable) {
       paintSymbols(context, vp, view, pattern);
+    } else if (mode === "symbols-on-colours" && readable) {
+      paintSymbolsOnColours(context, vp, view, pattern);
     } else {
       paintColours(context, vp, view, source);
     }
-  }, [vp, dims, size, mode, readable, pattern, source]);
+    paintAids(context, vp, view, dims, centreLinesOn);
+  }, [vp, dims, size, mode, readable, pattern, source, centreLinesOn]);
 
   // The wheel zooms about the pointer. A native listener, because React's is passive and
   // the page must not scroll while the wheel zooms.
@@ -378,6 +476,7 @@ export function PatternViewer({ pattern }: { pattern: Pattern }) {
           options={[
             { value: "colours", label: "Colours" },
             { value: "symbols", label: "Symbols" },
+            { value: "symbols-on-colours", label: "Symbols on colours" },
           ]}
           value={mode}
           onChange={setMode}
@@ -394,6 +493,14 @@ export function PatternViewer({ pattern }: { pattern: Pattern }) {
             onChange={(value) => setShowBefore(value === "before")}
           />
         )}
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={centreLinesOn}
+            onChange={(event) => setCentreLinesOn(event.target.checked)}
+          />
+          <span>Centre lines</span>
+        </label>
         <div className="viewer-zoom">
           <button
             type="button"
@@ -437,7 +544,7 @@ export function PatternViewer({ pattern }: { pattern: Pattern }) {
       >
         <canvas ref={canvasRef} role="img" aria-label={label} />
       </div>
-      {mode === "symbols" && !readable && (
+      {mode !== "colours" && !readable && (
         <p className="viewer-hint">Zoom in to read the symbols.</p>
       )}
     </div>

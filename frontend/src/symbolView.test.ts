@@ -6,7 +6,15 @@ import { visibleSymbols } from "./symbolView";
 type Grid = Pattern["grid"];
 
 function entry(symbol: string): KeyEntry {
-  return { code: symbol, name: `Thread ${symbol}`, rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol };
+  return {
+    code: symbol,
+    name: `Thread ${symbol}`,
+    rgb: [0, 0, 0],
+    stitches: 1,
+    skeins: 1,
+    symbol,
+    symbol_ink: "white",
+  };
 }
 
 function pattern(grid: Grid, symbols: string[], width?: number, height?: number) {
