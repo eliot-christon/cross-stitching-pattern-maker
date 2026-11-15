@@ -16,8 +16,9 @@ from dataclasses import asdict, dataclass
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi.exceptions import RequestValidationError
 from PIL import Image, ImageOps, UnidentifiedImageError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.formparsers import MultiPartParser
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -34,10 +35,14 @@ from cross_stitch.pattern import (
     EMPTY,
     CleanedPattern,
     Pattern,
+    Replaced,
     clean_pattern,
     convert_image,
+    isolated_stitches,
+    replace_threads,
     stitch_height,
 )
+from cross_stitch.threads import Thread, dmc_thread
 
 __all__ = ["MAX_UPLOAD_BYTES", "app"]
 
@@ -122,6 +127,9 @@ class PatternOut(BaseModel):
     isolated_stitches: IsolatedStitchesOut
     converted: ConvertedOut | None
     """The pattern before cleanup, or `null` when every cleanup setting is 0."""
+    ignored_replacements: list[int] = Field(
+        description="0-based positions of the `replace` pairs that did nothing"
+    )
 
 
 class SettingOut(BaseModel):
@@ -238,8 +246,8 @@ def _key_json(pattern: Pattern) -> list[KeyEntryOut]:
     ]
 
 
-def _to_json(cleaned: CleanedPattern, *, with_converted: bool) -> PatternOut:
-    pattern = cleaned.pattern
+def _to_json(cleaned: CleanedPattern, replaced: Replaced, *, with_converted: bool) -> PatternOut:
+    pattern = replaced.pattern
     converted = cleaned.converted
     return PatternOut(
         width=pattern.width,
@@ -255,7 +263,7 @@ def _to_json(cleaned: CleanedPattern, *, with_converted: bool) -> PatternOut:
             height_cm=pattern.height_cm,
         ),
         isolated_stitches=IsolatedStitchesOut(
-            before=cleaned.isolated_before, after=cleaned.isolated_after
+            before=cleaned.isolated_before, after=isolated_stitches(pattern)
         ),
         converted=ConvertedOut(
             grid=_grid_json(converted),
@@ -264,6 +272,7 @@ def _to_json(cleaned: CleanedPattern, *, with_converted: bool) -> PatternOut:
         )
         if with_converted
         else None,
+        ignored_replacements=list(replaced.ignored),
     )
 
 
@@ -292,6 +301,8 @@ class _Converted:
 
     cleaned: CleanedPattern
     cleanup_on: bool
+    replaced: Replaced
+    """The cleaned pattern after the `replace` pairs: the pattern shown and printed."""
 
 
 def _cleanup(
@@ -327,7 +338,28 @@ def _cleanup(
     )
 
 
-def _converted(
+def _replacement(value: str) -> tuple[Thread, Thread]:
+    """One `FROM:TO` value of the `replace` field, as two DMC threads."""
+    parts = value.split(":")
+    try:
+        if len(parts) != 2 or not all(part.strip() for part in parts):
+            raise KeyError(value)
+        return dmc_thread(parts[0]), dmc_thread(parts[1])
+    except KeyError:
+        raise RequestValidationError(
+            [
+                {
+                    "loc": ("body", "replace"),
+                    "msg": f"{value!r} is not FROM:TO with two DMC codes",
+                    "type": "value_error",
+                    "input": value,
+                }
+            ]
+        ) from None
+
+
+# Each parameter is a form field FastAPI reads; grouping them would hide them from /docs.
+def _converted(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     image: Annotated[UploadFile, File(description="The image to convert")],
     width: Annotated[int, Form(ge=_WIDTH.min, le=_WIDTH.max, description="Width in stitches")],
     max_colours: Annotated[
@@ -338,12 +370,17 @@ def _converted(
     fabric_count: Annotated[
         float, Form(gt=0, allow_inf_nan=False, description="Stitches per inch")
     ] = 14.0,
+    replace: Annotated[
+        list[str] | None,
+        Form(description="Thread swaps FROM:TO (DMC codes), repeated, applied in order"),
+    ] = None,
 ) -> _Converted:
     """The conversion inputs both routes share: validated, decoded and converted here, so
     `POST /patterns` and `POST /patterns/pdf` accept and refuse exactly the same requests.
 
     The settings come back with the pattern rather than through a second `Depends(_cleanup)`
     in a route: a dependency met twice reports each of its validation errors twice."""
+    replacements = [_replacement(value) for value in replace or []]
     upload = image.file.read(MAX_UPLOAD_BYTES + 1)
     if len(upload) > MAX_UPLOAD_BYTES:
         raise _BodyTooLarge
@@ -357,7 +394,12 @@ def _converted(
     pattern = convert_image(
         decoded, width=width, max_colours=max_colours, fabric_count=fabric_count
     )
-    return _Converted(cleaned=cleanup(pattern), cleanup_on=cleanup.on)
+    cleaned = cleanup(pattern)
+    return _Converted(
+        cleaned=cleaned,
+        cleanup_on=cleanup.on,
+        replaced=replace_threads(cleaned.pattern, replacements),
+    )
 
 
 @app.get("/limits")
@@ -373,7 +415,7 @@ def create_pattern(
 ) -> PatternOut:
     """Convert an image into a DMC cross-stitch pattern, with the pattern before cleanup
     when any cleanup setting is on."""
-    return _to_json(converted.cleaned, with_converted=converted.cleanup_on)
+    return _to_json(converted.cleaned, converted.replaced, with_converted=converted.cleanup_on)
 
 
 @app.post("/patterns/pdf", response_class=Response)
@@ -390,7 +432,7 @@ def create_pattern_pdf(
     """
     return Response(
         render_pdf(
-            converted.cleaned.pattern, variant=variant, paper=paper, orientation=orientation
+            converted.replaced.pattern, variant=variant, paper=paper, orientation=orientation
         ),
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="pattern.pdf"'},

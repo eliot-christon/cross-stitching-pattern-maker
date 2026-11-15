@@ -20,6 +20,7 @@ from cross_stitch.pattern import (
     convert_image,
     isolated_stitches,
     merge_similar_threads,
+    replace_threads,
 )
 from cross_stitch.threads import dmc_thread
 
@@ -717,6 +718,198 @@ def test_every_converted_key_entry_carries_the_ink_of_its_colour() -> None:
     _inks_match_the_threads(body["converted"]["key"])
     inks = {entry["symbol_ink"] for entry in body["converted"]["key"]}
     assert inks == {"black", "white"}
+
+
+# --- replace: thread swaps after cleanup ---------------------------------------------------
+
+
+def _replace_fields(image: Image.Image, max_colours: int, *swaps: str, **extra: str) -> Any:
+    """Form fields with one repeated `replace` field per swap, in order."""
+    fields: dict[str, Any] = _fields_for(image, max_colours, **extra)
+    if swaps:
+        fields["replace"] = list(swaps)
+    return fields
+
+
+def _post_replace(route: str, swaps: tuple[str, ...], **extra: str) -> Any:
+    files = {"image": ("image.png", _png(_stripes()), "image/png")}
+    fields = _replace_fields(_stripes(), 4, *swaps, **extra)
+    return client.post(route, data=fields, files=files)
+
+
+def _replaced_body(*swaps: str, **extra: str) -> dict[str, Any]:
+    response = _post_replace("/patterns", swaps, **extra)
+    assert response.status_code == 200, response.text
+    body: dict[str, Any] = response.json()
+    return body
+
+
+def _core_replaced(*swaps: tuple[str, str]) -> Pattern:
+    """The core's stripes pattern, no cleanup, with the swaps applied."""
+    cleaned = clean_pattern(
+        _core_converted(_stripes(), 4), merge_distance=0.0, min_stitches=0, confetti_size=0
+    )
+    pairs = [(dmc_thread(source), dmc_thread(target)) for source, target in swaps]
+    return replace_threads(cleaned.pattern, pairs).pattern
+
+
+def _counts(body: dict[str, Any]) -> list[tuple[str, int]]:
+    return [(entry["code"], entry["stitches"]) for entry in body["key"]]
+
+
+def test_replace_swaps_the_thread_and_gives_the_core_pattern() -> None:
+    expected = _core_replaced(("310", "3865"))
+    body = _replaced_body("310:3865")
+
+    assert ("3865", 200) in _counts(body)
+    assert "310" not in [entry["code"] for entry in body["key"]]
+    assert body["ignored_replacements"] == []
+    assert body["key"] == _key_json(expected)
+    assert body["grid"] == _grid_json(expected)
+    assert body["total_stitches"] == 800
+
+
+def test_replace_onto_a_thread_in_the_key_merges_and_comes_first() -> None:
+    body = _replaced_body("310:Blanc")
+    assert len(body["key"]) == 3
+    assert _counts(body)[0] == ("Blanc", 400)
+    assert body["total_stitches"] == 800
+    assert sum(entry["stitches"] for entry in body["key"]) == 800
+    assert body["key"] == _key_json(_core_replaced(("310", "Blanc")))
+
+
+def test_replace_fields_apply_in_the_order_sent() -> None:
+    body = _replaced_body("310:321", "321:797")
+    assert _counts(body)[0] == ("797", 600)
+    assert sorted(code for code, _ in _counts(body)) == ["797", "Blanc"]
+    assert body["key"] == _key_json(_core_replaced(("310", "321"), ("321", "797")))
+
+    reverse = _replaced_body("321:797", "310:321")
+    assert reverse["key"] == _key_json(_core_replaced(("321", "797"), ("310", "321")))
+    assert reverse["key"] != body["key"]
+
+
+def test_a_replace_of_a_thread_not_in_the_pattern_is_reported_and_changes_nothing() -> None:
+    plain = _stripes_response()
+    body = _replaced_body("3865:310")
+    assert body["ignored_replacements"] == [0]
+    assert {**body, "ignored_replacements": []} == plain
+
+
+def test_only_the_replace_positions_that_did_nothing_are_reported() -> None:
+    body = _replaced_body("3865:310", "310:321", "310:797")
+    assert body["ignored_replacements"] == [0, 2]
+    assert _counts(body)[0] == ("321", 400)
+
+
+def test_a_request_without_replace_reports_none_ignored() -> None:
+    body = _stripes_response()
+    assert body["ignored_replacements"] == []
+    assert _body(_lone_pixel(), 2)["ignored_replacements"] == []
+
+
+def test_replace_codes_are_case_insensitive_and_keep_their_stored_spelling() -> None:
+    body = _replaced_body("blanc:b5200")
+    codes = [entry["code"] for entry in body["key"]]
+    assert "B5200" in codes
+    assert "Blanc" not in codes
+    assert body["ignored_replacements"] == []
+    assert body["key"] == _key_json(_core_replaced(("Blanc", "B5200")))
+
+
+@pytest.mark.parametrize("value", ["310", "310:", ":310", "310:3865:321", "XYZ:310", "310:XYZ"])
+def test_a_malformed_replace_gives_the_same_422_naming_it_on_both_routes(value: str) -> None:
+    by_json = _post_replace("/patterns", (value,))
+    by_pdf = _post_replace("/patterns/pdf", (value,))
+    assert by_json.status_code == by_pdf.status_code == 422
+    assert by_json.json() == by_pdf.json()
+    errors = by_json.json()["detail"]
+    assert any("replace" in error["loc"] for error in errors)
+    assert any(value in error["msg"] for error in errors if "replace" in error["loc"])
+
+
+def test_one_bad_replace_among_good_ones_refuses_the_request() -> None:
+    assert _post_replace("/patterns", ("310:3865", "oops")).status_code == 422
+    assert _post_replace("/patterns/pdf", ("310:3865", "oops")).status_code == 422
+
+
+def test_replace_leaves_converted_as_the_raw_conversion_and_counts_isolation_after() -> None:
+    marks = {(1, 1): "321", (5, 7): "321"}
+    image = _field_image((7, 9), marks)
+    converted = _core_converted(image, 2)
+    cleaned = clean_pattern(converted, merge_distance=0.1, min_stitches=0, confetti_size=0)
+    final = replace_threads(cleaned.pattern, [(dmc_thread("797"), dmc_thread("321"))]).pattern
+    # The replacement reconnects the two lone stitches, so the count after differs.
+    assert (cleaned.isolated_before, cleaned.isolated_after) == (2, 2)
+    assert isolated_stitches(final) == 0
+
+    response = _post(_png(image), _replace_fields(image, 2, "797:321", merge_distance="0.1"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["converted"] == {
+        "grid": _grid_json(converted),
+        "key": _key_json(converted),
+        "total_stitches": converted.total_stitches,
+    }
+    assert body["isolated_stitches"] == {"before": 2, "after": 0}
+    assert body["grid"] == _grid_json(final)
+    assert body["key"] == _key_json(final)
+
+
+def test_replace_with_confetti_cleanup_applies_after_the_cleanup() -> None:
+    cleaned = _cleaned_cleanable()
+    source = cleaned.pattern.key[0].thread.code
+    assert source == "797"
+    final = replace_threads(cleaned.pattern, [(dmc_thread("797"), dmc_thread("3865"))]).pattern
+
+    image = _cleanable()
+    response = _post(_png(image), _replace_fields(image, 5, "797:3865", **CLEANUP_FORM))
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["grid"] == _grid_json(final)
+    assert body["key"] == _key_json(final)
+    assert body["isolated_stitches"] == {
+        "before": cleaned.isolated_before,
+        "after": isolated_stitches(final),
+    }
+    assert "3865" not in [entry["code"] for entry in body["converted"]["key"]]
+    assert body["converted"]["grid"] == _grid_json(_core_converted(image, 5))
+
+
+def test_the_pdf_is_what_the_core_renders_of_the_replaced_pattern() -> None:
+    expected = render_pdf(_core_replaced(("310", "3865")))
+    response = _post_replace("/patterns/pdf", ("310:3865",))
+    assert response.status_code == 200, response.text
+    assert response.content == expected
+    assert response.content != _stripes_pdf()
+
+
+def test_the_pdf_without_replace_is_unchanged() -> None:
+    response = _post_replace("/patterns/pdf", ())
+    assert response.status_code == 200, response.text
+    assert response.content == _core_pdf()
+
+
+def test_the_same_replace_request_twice_gives_identical_bodies() -> None:
+    assert _replaced_body("310:321", "321:797") == _replaced_body("310:321", "321:797")
+
+
+def _schema_properties(name: str) -> list[dict[str, Any]]:
+    schemas = app.openapi()["components"]["schemas"]
+    return [
+        schema["properties"][name]
+        for schema in schemas.values()
+        if name in schema.get("properties", {})
+    ]
+
+
+def test_replace_and_ignored_replacements_are_described_in_the_docs() -> None:
+    for name in ("replace", "ignored_replacements"):
+        properties = _schema_properties(name)
+        assert properties, name
+        assert all(prop.get("description") for prop in properties), name
 
 
 def test_the_pdf_cover_key_lists_the_json_symbols_in_key_order() -> None:
