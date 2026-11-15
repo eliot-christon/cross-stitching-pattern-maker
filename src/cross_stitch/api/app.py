@@ -15,7 +15,7 @@ import warnings
 from dataclasses import asdict, dataclass
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
@@ -42,7 +42,7 @@ from cross_stitch.pattern import (
     replace_threads,
     stitch_height,
 )
-from cross_stitch.threads import Thread, dmc_thread
+from cross_stitch.threads import Thread, dmc_thread, dmc_threads, similar_dmc
 
 __all__ = ["MAX_UPLOAD_BYTES", "app"]
 
@@ -89,6 +89,22 @@ class KeyEntryOut(BaseModel):
     """The chart symbol, from `cross_stitch.export.pattern_symbols` of this pattern."""
     symbol_ink: SymbolInk
     """The symbol's ink on this thread's colour, as the colour chart prints it."""
+
+
+class ThreadOut(BaseModel):
+    code: str
+    name: str
+    rgb: tuple[int, int, int]
+
+
+class SimilarThreadOut(ThreadOut):
+    distance: float
+    """CIEDE2000 distance from the thread asked about."""
+
+
+NEAREST_DEFAULT = 10
+"""How many nearest threads `GET /threads/{code}/nearest` gives unless asked otherwise."""
+NEAREST_MAX = 100
 
 
 class FinishedSizeOut(BaseModel):
@@ -407,6 +423,30 @@ def limits() -> LimitsOut:
     """What the tunable inputs of `POST /patterns` accept, keyed by form field, with a
     slider step and a starting value for each, and the largest image upload."""
     return _LIMITS
+
+
+@app.get("/threads")
+def threads() -> list[ThreadOut]:
+    """Every DMC thread, in the source table's order."""
+    return [ThreadOut(code=t.code, name=t.name, rgb=t.rgb) for t in dmc_threads()]
+
+
+@app.get("/threads/{code}/nearest")
+def nearest_threads(
+    code: str,
+    count: Annotated[
+        int, Query(ge=1, le=NEAREST_MAX, description="How many threads to return")
+    ] = NEAREST_DEFAULT,
+) -> list[SimilarThreadOut]:
+    """The DMC threads nearest to one thread (CIEDE2000), itself excluded, nearest first."""
+    try:
+        thread = dmc_thread(code)
+    except KeyError:
+        raise HTTPException(404, f"unknown DMC code: {code}") from None
+    return [
+        SimilarThreadOut(code=t.code, name=t.name, rgb=t.rgb, distance=distance)
+        for t, distance in similar_dmc(thread, count)
+    ]
 
 
 @app.post("/patterns")
