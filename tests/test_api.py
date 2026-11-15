@@ -7,10 +7,11 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
+from pypdf import PdfReader
 from starlette.formparsers import MultiPartParser
 
 from cross_stitch.api.app import MAX_COLOURS, MAX_UPLOAD_BYTES, app
-from cross_stitch.export import SYMBOLS, key_symbols, render_pdf, symbol_ink
+from cross_stitch.export import SYMBOLS, pattern_symbols, render_pdf, symbol_ink
 from cross_stitch.pattern import (
     EMPTY,
     CleanedPattern,
@@ -69,9 +70,13 @@ def test_golden_stripes_give_four_threads_of_200_stitches() -> None:
     assert all(len(row) == 40 for row in body["grid"])
 
 
-def test_golden_stripes_key_entries_carry_the_first_four_symbols_in_order() -> None:
+def test_stripes_key_entries_carry_the_symbols_the_core_assigns() -> None:
     body = _stripes_response()
-    assert [entry["symbol"] for entry in body["key"]] == list(SYMBOLS[:4])
+    pattern = convert_image(_stripes(), width=40, max_colours=4)
+    symbols = [entry["symbol"] for entry in body["key"]]
+    assert symbols == pattern_symbols(pattern)
+    assert len(set(symbols)) == 4
+    assert set(symbols) <= set(SYMBOLS)
 
 
 def test_the_symbol_list_covers_the_maximum_number_of_colours() -> None:
@@ -81,7 +86,7 @@ def test_the_symbol_list_covers_the_maximum_number_of_colours() -> None:
 def test_body_is_exactly_what_the_core_returns() -> None:
     body = _stripes_response(fabric_count="18")
     pattern = convert_image(_stripes(), width=40, max_colours=4, fabric_count=18)
-    symbols = key_symbols(pattern.key)
+    symbols = pattern_symbols(pattern)
     assert body["key"] == [
         {
             "code": entry.thread.code,
@@ -382,7 +387,7 @@ def _grid_json(pattern: Pattern) -> list[list[int | None]]:
 
 
 def _key_json(pattern: Pattern) -> list[dict[str, Any]]:
-    symbols = key_symbols(pattern.key)
+    symbols = pattern_symbols(pattern)
     return [
         {
             "code": entry.thread.code,
@@ -712,3 +717,23 @@ def test_every_converted_key_entry_carries_the_ink_of_its_colour() -> None:
     _inks_match_the_threads(body["converted"]["key"])
     inks = {entry["symbol_ink"] for entry in body["converted"]["key"]}
     assert inks == {"black", "white"}
+
+
+def test_the_pdf_cover_key_lists_the_json_symbols_in_key_order() -> None:
+    body = _stripes_response()
+    cover = next(page.extract_text() for page in PdfReader(io.BytesIO(_stripes_pdf())).pages)
+    lines = cover.splitlines()
+    previous = -1
+    for entry in body["key"]:
+        # A letter or digit would also match the code or the name on the same line.
+        assert ord(entry["symbol"]) > 0x7F, f"{entry['symbol']!r} cannot be found reliably"
+        row = next(
+            (
+                n
+                for n in range(previous + 1, len(lines))
+                if entry["code"] in lines[n] and entry["symbol"] in lines[n]
+            ),
+            None,
+        )
+        assert row is not None, f"{entry['code']} with {entry['symbol']} missing or out of order"
+        previous = row

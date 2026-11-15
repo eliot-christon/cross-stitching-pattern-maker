@@ -7,7 +7,8 @@
 - **then tone**: darker threads get symbols with more ink and lighter threads lighter
   ones, so a black-and-white chart reads like a greyscale picture of the result.
 
-`key_symbols` gives key entry i `SYMBOLS[i]`, by position only.
+The JSON response and every PDF chart read their symbols here, so a thread has one
+symbol in the key, both chart variants and the page.
 
 The list holds 100 single characters, as many as a pattern has colours at most. Every one
 is in a Unicode block the chart font (DejaVu Sans) covers: Basic Latin, Latin-1
@@ -17,16 +18,14 @@ list (no O beside 0 or a circle, no I beside l or 1, no X beside a multiplicatio
 Changing the list changes every chart, and `glyphs.json` must be measured again.
 """
 
-from collections.abc import Sequence
-
 import numpy as np
 import numpy.typing as npt
 
 from cross_stitch.colour import srgb_to_lab
 from cross_stitch.export.glyphs import ALIKE, glyph_table
-from cross_stitch.pattern import EMPTY, KeyEntry, Pattern
+from cross_stitch.pattern import EMPTY, Pattern
 
-__all__ = ["SYMBOLS", "key_symbols", "pattern_symbols"]
+__all__ = ["SYMBOLS", "pattern_symbols"]
 
 STRONG_SHARE = 0.01
 """Two entries are a strong pair when they share at least this share of all the borders
@@ -48,16 +47,6 @@ SYMBOLS: tuple[str, ...] = (
     # Lower-case letters unlike any capital, and the last few signs.
     *"aehrfd*<",
 )
-
-
-def key_symbols(key: Sequence[KeyEntry]) -> list[str]:
-    """The symbol of each key entry, in key order: entry i gets `SYMBOLS[i]`.
-
-    Raises `ValueError` for a key longer than the list, which is never padded or wrapped.
-    """
-    if len(key) > len(SYMBOLS):
-        raise ValueError(f"a key has at most {len(SYMBOLS)} entries; this one has {len(key)}")
-    return list(SYMBOLS[: len(key)])
 
 
 def _borders(grid: npt.NDArray[np.intp], entries: int) -> npt.NDArray[np.int64]:

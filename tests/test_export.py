@@ -33,7 +33,7 @@ from cross_stitch.export import (
     Paper,
     Variant,
     chart_capacity,
-    key_symbols,
+    pattern_symbols,
     render_pdf,
     symbol_ink,
 )
@@ -103,13 +103,6 @@ ALLOWED_RANGES = [
 EXCLUDED = {0x00A0, 0x00AD}  # no-break space, soft hyphen
 
 
-def _key(length: int) -> list[KeyEntry]:
-    """A key of `length` entries, each a different real DMC thread."""
-    threads = dmc_threads()
-    assert length <= len(threads)
-    return [KeyEntry(thread=threads[i], stitches=1000 - i, skeins=1) for i in range(length)]
-
-
 def _label(group: tuple[str, ...]) -> str:
     return " ".join(f"U+{ord(c):04X}" for c in group)
 
@@ -120,43 +113,6 @@ def test_the_list_has_exactly_100_symbols() -> None:
 
 def test_the_list_has_no_duplicates() -> None:
     assert len(set(SYMBOLS)) == len(SYMBOLS)
-
-
-def test_an_empty_key_has_no_symbols() -> None:
-    assert not key_symbols([])
-
-
-def test_a_one_entry_key_gets_the_first_symbol() -> None:
-    assert key_symbols(_key(1)) == [SYMBOLS[0]]
-
-
-def test_a_100_entry_key_gets_100_different_symbols() -> None:
-    symbols = key_symbols(_key(LIMIT))
-    assert len(symbols) == LIMIT
-    assert len(set(symbols)) == LIMIT
-    assert symbols == list(SYMBOLS)
-
-
-def test_a_101_entry_key_is_refused_naming_the_limit() -> None:
-    with pytest.raises(ValueError, match="100"):
-        key_symbols(_key(LIMIT + 1))
-
-
-def test_the_same_key_twice_gives_identical_symbols() -> None:
-    key = _key(37)
-    assert key_symbols(key) == key_symbols(key)
-
-
-@pytest.mark.parametrize("length", [1, 2, 3, 17, 99])
-def test_position_decides_the_symbols_not_the_thread(length: int) -> None:
-    assert key_symbols(_key(length)) == key_symbols(_key(LIMIT))[:length]
-
-
-def test_the_threads_do_not_change_the_symbols() -> None:
-    threads = dmc_threads()
-    first = [KeyEntry(thread=threads[i], stitches=10, skeins=1) for i in range(5)]
-    other = [KeyEntry(thread=threads[-1 - i], stitches=99, skeins=3) for i in range(5)]
-    assert key_symbols(first) == key_symbols(other)
 
 
 @pytest.mark.parametrize("index", range(LIMIT))
@@ -200,10 +156,9 @@ SHEET_POINTS: dict[str, tuple[float, float]] = {
     "A5": (420, 595),
 }
 
-# The first ten symbols are geometric shapes: none of them can occur in a label, a row or
-# column number, or any other ASCII text on a chart page.
-SHAPES = SYMBOLS[:10]
 MULTIPLICATION_SIGN = "\U000000d7"  # a symbol, but also a natural way to write "w x h"
+# Symbols no label, number or other text on a page can contain: they can be counted.
+COUNTABLE = [s for s in SYMBOLS if ord(s) > 0x7F and s != MULTIPLICATION_SIGN]
 
 LABEL = re.compile(r"Columns\s+(\d+)\s*-\s*(\d+),\s*rows\s+(\d+)\s*-\s*(\d+)")
 NON_GREY_OPERATORS = {b"k", b"K", b"sc", b"scn", b"SC", b"SCN"}
@@ -396,6 +351,15 @@ def _hundred_threads() -> Pattern:
     return pattern
 
 
+def _countable_symbols(pattern: Pattern) -> list[str]:
+    """The pattern's symbols, in key order, each checked to be countable in page text (an
+    assigned symbol can be a letter or digit, which labels and numbers contain too)."""
+    symbols = pattern_symbols(pattern)
+    for symbol in symbols:
+        assert symbol in COUNTABLE, f"U+{ord(symbol):04X} cannot be counted in page text"
+    return symbols
+
+
 @functools.cache
 def _font_glyphs() -> dict[int, int]:
     glyphs: dict[int, int] = TTFontFile(str(FONT_PATH)).charToGlyph
@@ -542,7 +506,8 @@ def test_a_1x1_pattern_is_one_chart_page() -> None:
     pattern = build_pattern(_cells([[0]]), [BLACK], 14.0)
     pdf = _read(render_pdf(pattern))
     assert pdf.labels == [(1, 1, 1, 1)]
-    assert pdf.charts[0].count(SYMBOLS[0]) == 1
+    [symbol] = _countable_symbols(pattern)
+    assert pdf.charts[0].count(symbol) == 1
 
 
 @pytest.mark.parametrize(("paper", "orientation"), LAYOUTS, ids=LAYOUT_IDS)
@@ -550,9 +515,11 @@ def test_a_pattern_of_exactly_one_page_capacity_is_one_chart_page(
     paper: Paper, orientation: Orientation
 ) -> None:
     columns, rows = chart_capacity(paper, orientation)
-    pdf = _read(render_pdf(_corners(columns, rows), paper=paper, orientation=orientation))
+    pattern = _corners(columns, rows)
+    pdf = _read(render_pdf(pattern, paper=paper, orientation=orientation))
     assert pdf.labels == [(1, columns, 1, rows)]
-    assert pdf.charts[0].count(SYMBOLS[0]) == 4
+    [symbol] = _countable_symbols(pattern)
+    assert pdf.charts[0].count(symbol) == 4
 
 
 @pytest.mark.parametrize(("paper", "orientation"), LAYOUTS, ids=LAYOUT_IDS)
@@ -626,9 +593,10 @@ def test_chart_pages_cover_every_cell_in_reading_order_with_its_own_symbol(
         (1, columns, first_row, rows + 1),
         (first_column, columns + 1, first_row, rows + 1),
     ]
+    first, second = _countable_symbols(pattern)
     for text, label in zip(pdf.charts, pdf.labels, strict=True):
-        assert text.count(SYMBOLS[0]) == _in_window(pattern, label, 0), label
-        assert text.count(SYMBOLS[1]) == _in_window(pattern, label, 1), label
+        assert text.count(first) == _in_window(pattern, label, 0), label
+        assert text.count(second) == _in_window(pattern, label, 1), label
 
 
 def test_a_bigger_sheet_needs_fewer_chart_pages() -> None:
@@ -710,7 +678,13 @@ def test_a_100_entry_key_is_on_the_cover_in_key_order(
         previous = row
     cover_text = "\n".join(pdf.covers)
     position = -1
-    for index, symbol in enumerate(key_symbols(pattern.key)):
+    countable = [
+        (index, symbol)
+        for index, symbol in enumerate(pattern_symbols(pattern))
+        if symbol in COUNTABLE
+    ]
+    assert len(countable) > 50
+    for index, symbol in countable:
         position = cover_text.find(symbol, position + 1)
         assert position >= 0, f"symbol {index} (U+{ord(symbol):04X}) missing or out of order"
 
@@ -737,8 +711,8 @@ def test_every_entry_of_a_100_entry_key_has_its_own_symbol_on_the_chart(
     # multiplication sign is left out too, in case a page writes a size as "w x h" with it.
     countable = [
         (index, symbol)
-        for index, symbol in enumerate(key_symbols(pattern.key))
-        if ord(symbol) > 0x7F and symbol != MULTIPLICATION_SIGN
+        for index, symbol in enumerate(pattern_symbols(pattern))
+        if symbol in COUNTABLE
     ]
     assert len(countable) > 50
     for text, label in zip(pdf.charts, pdf.labels, strict=True):
@@ -767,9 +741,10 @@ def test_each_half_shows_its_own_symbol_once_per_stitch(
     pdf = _read(render_pdf(pattern, paper=paper, orientation=orientation))
     assert len(pdf.charts) == 1
     chart = pdf.charts[0]
-    assert chart.count(SYMBOLS[0]) == pattern.key[0].stitches
-    assert chart.count(SYMBOLS[1]) == pattern.key[1].stitches
-    assert not [symbol for symbol in SHAPES[2:] if symbol in chart]
+    symbols = _countable_symbols(pattern)
+    assert chart.count(symbols[0]) == pattern.key[0].stitches
+    assert chart.count(symbols[1]) == pattern.key[1].stitches
+    assert not [symbol for symbol in COUNTABLE if symbol not in symbols and symbol in chart]
 
 
 def test_an_all_bare_pattern_renders_with_no_key_rows_and_no_symbols() -> None:
@@ -781,7 +756,7 @@ def test_an_all_bare_pattern_renders_with_no_key_rows_and_no_symbols() -> None:
     assert BLACK.name not in cover_text
     assert not _word(BLACK.code).search(cover_text)
     for text in pdf.covers + pdf.charts:
-        assert not [symbol for symbol in SHAPES if symbol in text]
+        assert not [symbol for symbol in COUNTABLE if symbol in text]
 
 
 def test_a_converted_image_shows_one_symbol_per_stitched_cell() -> None:
@@ -796,8 +771,9 @@ def test_a_converted_image_shows_one_symbol_per_stitched_cell() -> None:
     assert pattern.total_stitches == 16
     assert len(pattern.key) == 2
     chart = _read(render_pdf(pattern)).charts[0]
-    assert chart.count(SYMBOLS[0]) == pattern.key[0].stitches
-    assert chart.count(SYMBOLS[1]) == pattern.key[1].stitches
+    symbols = _countable_symbols(pattern)
+    assert chart.count(symbols[0]) == pattern.key[0].stitches
+    assert chart.count(symbols[1]) == pattern.key[1].stitches
 
 
 # Variants
@@ -844,6 +820,21 @@ def test_the_same_pattern_twice_gives_identical_bytes(
     first = render_pdf(_five_colours(), variant=variant, paper=paper, orientation=orientation)
     second = render_pdf(_five_colours(), variant=variant, paper=paper, orientation=orientation)
     assert first == second
+
+
+def test_both_variants_give_each_entry_the_same_symbol() -> None:
+    pattern = _five_colours()
+    colour = _read(render_pdf(pattern, variant="colour"))
+    bw = _read(render_pdf(pattern, variant="bw"))
+    colour_cover, bw_cover = "\n".join(colour.covers), "\n".join(bw.covers)
+    # Only symbols no label, name or number can contain can be counted in page text.
+    countable = [symbol for symbol in pattern_symbols(pattern) if symbol in COUNTABLE]
+    assert len(countable) >= 2
+    for symbol in countable:
+        assert symbol in colour_cover
+        assert colour_cover.count(symbol) == bw_cover.count(symbol)
+        for colour_text, bw_text in zip(colour.charts, bw.charts, strict=True):
+            assert colour_text.count(symbol) == bw_text.count(symbol)
 
 
 def test_the_two_variants_differ() -> None:
