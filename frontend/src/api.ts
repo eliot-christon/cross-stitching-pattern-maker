@@ -46,6 +46,12 @@ export interface Settings {
 /** The PDF chart endpoint: the same inputs as `PATTERNS_URL` plus the chart options. */
 export const PATTERN_PDF_URL = "/api/patterns/pdf";
 
+/** One thread swap, applied by the API after cleanup; a list applies in order. */
+export interface Replacement {
+  from: DmcThread;
+  to: DmcThread;
+}
+
 /** The chart options `POST /patterns/pdf` accepts, as its form fields spell them. */
 export interface ChartOptions {
   variant: "colour" | "bw";
@@ -94,6 +100,7 @@ async function post(
   image: File,
   settings: Settings,
   maxUploadBytes: number,
+  replacements: readonly Replacement[],
   extra: Record<string, string> = {},
 ): Promise<Sent> {
   if (image.size > maxUploadBytes) {
@@ -109,6 +116,10 @@ async function post(
   body.append("merge_distance", settings.mergeDistance);
   body.append("min_stitches", settings.minStitches);
   body.append("confetti_size", settings.confettiSize);
+  // Repeated `replace` fields, in order: the API applies them in sequence.
+  for (const { from, to } of replacements) {
+    body.append("replace", `${from.code}:${to.code}`);
+  }
   for (const [name, value] of Object.entries(extra)) {
     body.append(name, value);
   }
@@ -135,8 +146,11 @@ export async function downloadPdf(
   settings: Settings,
   options: ChartOptions,
   maxUploadBytes: number,
+  replacements: readonly Replacement[] = [],
 ): Promise<PdfResult> {
-  const sent = await post(PATTERN_PDF_URL, image, settings, maxUploadBytes, { ...options });
+  const sent = await post(PATTERN_PDF_URL, image, settings, maxUploadBytes, replacements, {
+    ...options,
+  });
   if (!sent.ok) {
     return sent;
   }
@@ -151,8 +165,9 @@ export async function convertImage(
   image: File,
   settings: Settings,
   maxUploadBytes: number,
+  replacements: readonly Replacement[] = [],
 ): Promise<ConvertResult> {
-  const sent = await post(PATTERNS_URL, image, settings, maxUploadBytes);
+  const sent = await post(PATTERNS_URL, image, settings, maxUploadBytes, replacements);
   if (!sent.ok) {
     return sent;
   }
@@ -198,4 +213,48 @@ function errorMessage(
     return detail.map((error) => `${String(error.loc.at(-1))}: ${error.msg}`).join("; ");
   }
   return `${failed} (HTTP ${status}).`;
+}
+
+/** The DMC table, from `GET /threads`. */
+export const THREADS_URL = "/api/threads";
+
+/** A DMC thread as `GET /threads` gives it. */
+export interface DmcThread {
+  code: string;
+  name: string;
+  rgb: [number, number, number];
+}
+
+/** A thread near another, with the CIEDE2000 `distance` the API computed. */
+export interface NearThread extends DmcThread {
+  distance: number;
+}
+
+export type ThreadsResult<T> = { ok: true; threads: T[] } | { ok: false; message: string };
+
+async function getList<T>(url: string, failed: string): Promise<ThreadsResult<T>> {
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch {
+    return { ok: false, message: UNREACHABLE };
+  }
+  const payload = await readJson(response);
+  if (response.ok && Array.isArray(payload)) {
+    return { ok: true, threads: payload as T[] };
+  }
+  return { ok: false, message: errorMessage(response.status, payload, failed) };
+}
+
+/** Every DMC thread, in the table's order. */
+export function getThreads(): Promise<ThreadsResult<DmcThread>> {
+  return getList<DmcThread>(THREADS_URL, "Loading the threads failed");
+}
+
+/** The threads nearest to `code`, nearest first, as the API ranks them. */
+export function getNearestThreads(code: string): Promise<ThreadsResult<NearThread>> {
+  return getList<NearThread>(
+    `${THREADS_URL}/${encodeURIComponent(code)}/nearest`,
+    "Loading the nearest threads failed",
+  );
 }
