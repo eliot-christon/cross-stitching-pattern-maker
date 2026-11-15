@@ -535,7 +535,7 @@ function Converter({ limits }: { limits: Limits }) {
             onChange={(value) => changeSetting("width", value)}
           />
           <SettingField
-            label="Max colours"
+            label="Colours"
             limits={ranges.max_colours}
             value={settings.maxColours}
             onChange={(value) => changeSetting("maxColours", value)}
