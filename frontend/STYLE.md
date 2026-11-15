@@ -23,6 +23,7 @@ under `prefers-color-scheme: dark`. Components use the tokens, never raw values.
 | `--danger` | error messages | `#9a3b2c` | `#eb9a86` |
 | `--danger-soft` | the faint card behind an error | `#f6e3dc` | `#3a2621` |
 | `--focus` | focus ring (the accent) | `#4d6a4f` | `#a3bf98` |
+| `--swatch-border` | the edge of a thread swatch, so white shows on light and black on dark | `rgb(46 41 34 / 0.35)` | `rgb(238 231 218 / 0.45)` |
 
 Contrast (WCAG ratio, at least 4.5:1 for every text pair):
 
@@ -86,6 +87,17 @@ CSS mask, so it follows the theme.
 - Status messages are a small muted line; errors use `--danger` text on a `--danger-soft`
   card. One status at a time.
 - Focus is always visible: a 2 px `--focus` ring with a 2 px offset.
+
+## The pattern's details
+
+- **Summary:** the sizes as small tiles in a wrapping grid (label in `--muted` above the
+  value; a second value, like the size in cm, smaller and muted).
+- **Thread key:** a table on a surface card from 800 px: swatch, symbol (in the chart
+  font stack), code in bold, name, then stitches and skeins right-aligned in tabular
+  figures. Below 800 px each entry is a card: swatch, symbol and code on the first line,
+  the name under them, then "Stitches n" and "Skeins n". It stays a table for assistive
+  tech (explicit roles, the header row visually hidden), whatever the layout.
+- **Swatches** show the thread's `rgb` exactly, with a `--swatch-border` edge.
 
 ## Sample screen
 

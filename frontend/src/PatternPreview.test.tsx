@@ -94,6 +94,33 @@ describe("PatternPreview", () => {
     ]);
   });
 
+  it("gives each swatch its entry's rgb as given, hidden from assistive tech", () => {
+    render(<PatternPreview pattern={makePattern()} />);
+
+    const swatches = keyRows()
+      .slice(1)
+      .map((row) => row.querySelector(".swatch"));
+
+    expect(swatches.map((swatch) => (swatch as HTMLElement | null)?.style.backgroundColor)).toEqual([
+      "rgb(199, 43, 59)",
+      "rgb(0, 0, 0)",
+    ]);
+    for (const swatch of swatches) {
+      expect(swatch).toHaveAttribute("aria-hidden", "true");
+    }
+  });
+
+  it("keeps the key a table with its column headers", () => {
+    render(<PatternPreview pattern={makePattern()} />);
+
+    const table = screen.getByRole("table", { name: "Thread key" });
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((header) => header.textContent),
+    ).toEqual(["Symbol", "Code", "Name", "Stitches", "Skeins"]);
+  });
+
   it("opens in the colour view and offers the symbol view", () => {
     render(<PatternPreview pattern={makePattern()} />);
 
