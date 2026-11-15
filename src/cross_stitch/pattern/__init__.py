@@ -16,6 +16,7 @@ from cross_stitch.pattern.model import (
     skeins_needed,
     stitches_per_skein,
 )
+from cross_stitch.pattern.replace import Replaced, replace_threads
 
 __all__ = [
     "EMPTY",
@@ -23,6 +24,7 @@ __all__ = [
     "CleanedPattern",
     "KeyEntry",
     "Pattern",
+    "Replaced",
     "build_pattern",
     "clean_pattern",
     "convert_image",
@@ -30,6 +32,7 @@ __all__ = [
     "merge_similar_threads",
     "prune_rare_threads",
     "remove_confetti",
+    "replace_threads",
     "skeins_needed",
     "stitch_height",
     "stitches_per_skein",
