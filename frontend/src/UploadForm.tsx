@@ -43,7 +43,6 @@ type LimitsState =
   | { kind: "ready"; limits: Limits }
   | { kind: "failed"; message: string };
 
-const DEFAULT_CHART: ChartOptions = { variant: "colour", paper: "A4", orientation: "portrait" };
 const PAPERS: ChartOptions["paper"][] = ["A2", "A3", "A4", "A5"];
 const PDF_NAME = "pattern.pdf";
 /** How long the inputs must stay unchanged before a conversion is sent. */
@@ -179,7 +178,16 @@ function Converter({ limits }: { limits: Limits }) {
   /** A change is waiting: the quiet delay is counting, or it expired while one ran. */
   const [pending, setPending] = useState(false);
   const [running, setRunning] = useState(false);
-  const [chart, setChart] = useState<ChartOptions>(DEFAULT_CHART);
+  const [chart, setChart] = useState<ChartOptions>(() => ({
+    variant: "colour",
+    paper: "A4",
+    orientation: "portrait",
+    split: "cells",
+    pagesAcross: String(ranges.pages_across.default),
+    pagesDown: String(ranges.pages_down.default),
+    overlap: String(ranges.overlap.default),
+    centreLines: false,
+  }));
   const [download, setDownload] = useState<Download>({ kind: "idle" });
   /** The key entry whose thread the picker is replacing, if it is open. */
   const [picking, setPicking] = useState<KeyEntry | null>(null);
@@ -474,6 +482,50 @@ function Converter({ limits }: { limits: Limits }) {
                   <option value="portrait">Portrait</option>
                   <option value="landscape">Landscape</option>
                 </select>
+              </label>
+            </div>
+            <div className="form chart-layout">
+              <label className="field">
+                <span className="field-label">Split</span>
+                <select
+                  value={chart.split}
+                  onChange={(event) =>
+                    setChart({ ...chart, split: event.target.value as ChartOptions["split"] })
+                  }
+                >
+                  <option value="cells">By cell size (3 mm)</option>
+                  <option value="pages">By pages</option>
+                </select>
+              </label>
+              {chart.split === "pages" && (
+                <>
+                  <SettingField
+                    label="Pages across"
+                    limits={ranges.pages_across}
+                    value={chart.pagesAcross}
+                    onChange={(value) => setChart({ ...chart, pagesAcross: value })}
+                  />
+                  <SettingField
+                    label="Pages down"
+                    limits={ranges.pages_down}
+                    value={chart.pagesDown}
+                    onChange={(value) => setChart({ ...chart, pagesDown: value })}
+                  />
+                </>
+              )}
+              <SettingField
+                label="Repeated rows and columns"
+                limits={ranges.overlap}
+                value={chart.overlap}
+                onChange={(value) => setChart({ ...chart, overlap: value })}
+              />
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={chart.centreLines}
+                  onChange={(event) => setChart({ ...chart, centreLines: event.target.checked })}
+                />
+                <span>Centre lines in the PDF</span>
               </label>
             </div>
             <button

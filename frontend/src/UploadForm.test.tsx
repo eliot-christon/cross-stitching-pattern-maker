@@ -66,6 +66,9 @@ const LIMITS: Limits = {
     merge_distance: { min: 0, max: 10, step: 0.5, default: 0 },
     min_stitches: { min: 0, max: 1000, step: 1, default: 0 },
     confetti_size: { min: 0, max: 10, step: 1, default: 0 },
+    pages_across: { min: 1, max: 20, step: 1, default: 2 },
+    pages_down: { min: 1, max: 20, step: 1, default: 2 },
+    overlap: { min: 0, max: 5, step: 1, default: 2 },
   },
 };
 
@@ -1347,5 +1350,105 @@ describe("thread replacements", () => {
     expect(image instanceof File ? image.name : null).toBe(other.name);
     expect(last?.getAll("replace")).toEqual(["310:3865"]);
     expect(replacementItems()).toHaveLength(1);
+  });
+});
+
+describe("PDF chart layout", () => {
+  function pdfResponse(): Response {
+    return new Response("%PDF-1.4 chart", {
+      status: 200,
+      headers: { "Content-Type": "application/pdf" },
+    });
+  }
+
+  function stubSave() {
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static override createObjectURL = vi.fn(() => "blob:chart");
+        static override revokeObjectURL = vi.fn();
+      },
+    );
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  }
+
+  async function preview() {
+    chooseFile();
+    await wait(QUIET_MS);
+    await settle();
+    expect(keyShows(A_CODE)).toBe(true);
+  }
+
+  function lastPdf(fetchMock: ReturnType<typeof stubApi>): FormData | undefined {
+    return posted(fetchMock, "/api/patterns/pdf").at(-1);
+  }
+
+  it("starts at the reported overlap, centre lines off, and no pages fields", async () => {
+    stubApi();
+    await renderLive();
+    await preview();
+
+    expect(numberField("Repeated rows and columns")).toHaveValue(2);
+    expect(screen.getByRole("checkbox", { name: "Centre lines in the PDF" })).not.toBeChecked();
+    expect(screen.queryByRole("spinbutton", { name: "Pages across" })).not.toBeInTheDocument();
+  });
+
+  it("shows the pages fields only for a split by pages", async () => {
+    stubApi();
+    await renderLive();
+    await preview();
+
+    setValue(screen.getByLabelText("Split"), "pages");
+    expect(numberField("Pages across")).toHaveValue(2);
+    expect(numberField("Pages down")).toHaveValue(2);
+
+    setValue(screen.getByLabelText("Split"), "cells");
+    expect(screen.queryByRole("spinbutton", { name: "Pages across" })).not.toBeInTheDocument();
+  });
+
+  it("asks for the default layout by default", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    await preview();
+
+    fireEvent.click(downloadButton());
+    await settle();
+
+    const body = lastPdf(fetchMock);
+    expect(body?.get("split")).toBe("cells");
+    expect(body?.get("overlap")).toBe("2");
+    expect(body?.get("centre_lines")).toBe("false");
+  });
+
+  it("asks for the layout chosen", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    await preview();
+
+    setValue(screen.getByLabelText("Split"), "pages");
+    setValue(numberField("Pages across"), "3");
+    setValue(numberField("Repeated rows and columns"), "0");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Centre lines in the PDF" }));
+    fireEvent.click(downloadButton());
+    await settle();
+
+    const body = lastPdf(fetchMock);
+    expect(
+      ["split", "pages_across", "pages_down", "overlap", "centre_lines"].map((n) => body?.get(n)),
+    ).toEqual(["pages", "3", "2", "0", "true"]);
+  });
+
+  it("shows a refused layout field from the API and keeps the preview", async () => {
+    stubApi({ pdf: () => Promise.resolve(refused("pages_across", "must be at most 20")) });
+    await renderLive();
+    await preview();
+
+    fireEvent.click(downloadButton());
+    await settle();
+
+    expect(screen.getByRole("alert")).toHaveTextContent("pages_across: must be at most 20");
+    expect(keyShows(A_CODE)).toBe(true);
   });
 });

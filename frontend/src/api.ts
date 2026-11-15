@@ -21,9 +21,16 @@ export interface Limits {
    * before reading it, and through a proxy that refusal arrives as a bare 502.
    */
   max_upload_bytes: number;
-  /** Keyed by the form field name of `POST /patterns`. */
+  /** Keyed by form field name: the conversion settings, then the PDF's layout settings. */
   settings: Record<
-    "width" | "max_colours" | "merge_distance" | "min_stitches" | "confetti_size",
+    | "width"
+    | "max_colours"
+    | "merge_distance"
+    | "min_stitches"
+    | "confetti_size"
+    | "pages_across"
+    | "pages_down"
+    | "overlap",
     SettingLimits
   >;
 }
@@ -57,6 +64,28 @@ export interface ChartOptions {
   variant: "colour" | "bw";
   paper: "A2" | "A3" | "A4" | "A5";
   orientation: "portrait" | "landscape";
+  /** "cells": a 3 mm cell, as many pages as needed; "pages": exactly across x down. */
+  split: "cells" | "pages";
+  /** Pages across and down in a "pages" split, as typed. */
+  pagesAcross: string;
+  pagesDown: string;
+  /** Rows and columns neighbouring pages repeat, as typed. */
+  overlap: string;
+  centreLines: boolean;
+}
+
+/** The form fields of `POST /patterns/pdf` for these options. */
+function chartFields(options: ChartOptions): Record<string, string> {
+  return {
+    variant: options.variant,
+    paper: options.paper,
+    orientation: options.orientation,
+    split: options.split,
+    pages_across: options.pagesAcross,
+    pages_down: options.pagesDown,
+    overlap: options.overlap,
+    centre_lines: options.centreLines ? "true" : "false",
+  };
 }
 
 export type ConvertResult = { ok: true; pattern: Pattern } | { ok: false; message: string };
@@ -148,9 +177,14 @@ export async function downloadPdf(
   maxUploadBytes: number,
   replacements: readonly Replacement[] = [],
 ): Promise<PdfResult> {
-  const sent = await post(PATTERN_PDF_URL, image, settings, maxUploadBytes, replacements, {
-    ...options,
-  });
+  const sent = await post(
+    PATTERN_PDF_URL,
+    image,
+    settings,
+    maxUploadBytes,
+    replacements,
+    chartFields(options),
+  );
   if (!sent.ok) {
     return sent;
   }
