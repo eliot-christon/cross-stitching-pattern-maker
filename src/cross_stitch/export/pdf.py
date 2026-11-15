@@ -33,21 +33,34 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
 
-from cross_stitch.export.geometry import CELL_MM, FONT_PATH, SYMBOL_CENTRING, SYMBOL_SIZE_PT
+from cross_stitch.export.geometry import (
+    CELL_MM,
+    FONT_PATH,
+    MAX_CELL_MM,
+    MIN_CELL_MM,
+    SYMBOL_CENTRING,
+    SYMBOL_SIZE_PT,
+)
 from cross_stitch.export.symbols import pattern_symbols
 from cross_stitch.pattern import EMPTY, KeyEntry, Pattern
 
 Variant = Literal["colour", "bw"]
 Paper = Literal["A2", "A3", "A4", "A5"]
 Orientation = Literal["portrait", "landscape"]
+Split = Literal["cells", "pages"]
 VARIANTS: tuple[Variant, ...] = get_args(Variant)
 PAPERS: tuple[Paper, ...] = get_args(Paper)
 ORIENTATIONS: tuple[Orientation, ...] = get_args(Orientation)
+SPLITS: tuple[Split, ...] = get_args(Split)
 
 _FONT = "DejaVuSans"
 
 OVERLAP = 2
-"""Columns (or rows) a chart page repeats from its left (or upper) neighbour."""
+"""Columns (or rows) a chart page repeats from its left (or upper) neighbour, by default."""
+MAX_OVERLAP = 5
+"""The most columns (or rows) a chart page may repeat from its neighbour."""
+MAX_PAGES = 20
+"""The most pages across (or down) a chart split by pages may take."""
 
 _PORTRAIT_SIZES: dict[Paper, tuple[float, float]] = {"A2": A2, "A3": A3, "A4": A4, "A5": A5}
 _CELL = CELL_MM * mm
@@ -88,30 +101,180 @@ def chart_capacity(paper: Paper, orientation: Orientation) -> tuple[int, int]:
     floored, so a sheet that holds a whole number of cells is not short of one by a float
     error (A4 portrait is exactly 60 columns).
     """
-    width, height = _page_size(paper, orientation)
-    columns = math.floor(round((width - 2 * _MARGIN - 2 * _GUTTER) / _CELL, 6))
-    rows = math.floor(round((height - 2 * _MARGIN - _HEADER - 2 * _GUTTER) / _CELL, 6))
+    area_width, area_height = _chart_area(paper, orientation)
+    columns = math.floor(round(area_width / _CELL, 6))
+    rows = math.floor(round(area_height / _CELL, 6))
     return columns, rows
 
 
-def render_pdf(
+def _chart_area(paper: Paper, orientation: Orientation) -> tuple[float, float]:
+    """Width and height, in points, a chart page gives its cells."""
+    width, height = _page_size(paper, orientation)
+    return width - 2 * _MARGIN - 2 * _GUTTER, height - 2 * _MARGIN - _HEADER - 2 * _GUTTER
+
+
+@dataclass(frozen=True)
+class Band:
+    """A run of columns (or rows) on one chart page."""
+
+    start: int
+    """First cell, 0-based."""
+    end: int
+    """One past the last cell."""
+    repeated: int
+    """Leading cells repeated from the previous band."""
+
+    @property
+    def size(self) -> int:
+        return self.end - self.start
+
+
+@dataclass(frozen=True)
+class ChartLayout:
+    """How a chart is cut into pages: the cell side and the column and row bands."""
+
+    cell_mm: float
+    columns: tuple[Band, ...]
+    rows: tuple[Band, ...]
+
+
+def chart_layout(  # pylint: disable=too-many-arguments
+    width: int,
+    height: int,
+    *,
+    paper: Paper = "A4",
+    orientation: Orientation = "portrait",
+    split: Split = "cells",
+    pages_across: int = 2,
+    pages_down: int = 2,
+    overlap: int = OVERLAP,
+) -> ChartLayout:
+    """Cut a `width` x `height` pattern into chart pages.
+
+    - `"cells"`: a `CELL_MM` cell on every paper; as many pages as the pattern needs
+      (`chart_capacity` cells each); `pages_across` and `pages_down` play no part.
+    - `"pages"`: exactly `pages_across` x `pages_down` pages, bands as equal as possible
+      (sizes differ by at most one, earlier bands take the extra cell), and the largest
+      cell that fits the biggest band, floored to 0.1 mm, at most `MAX_CELL_MM`.
+
+    Neighbouring pages share `overlap` columns or rows (0 to `MAX_OVERLAP`). Raises
+    `ValueError` for an unknown split, an overlap or page count out of range, or a pages
+    split that needs a cell under `MIN_CELL_MM` (the message names the fewest pages that
+    would do).
+    """
+    if split not in SPLITS:
+        raise ValueError(f"unknown split {split!r}; expected one of {SPLITS}")
+    if not 0 <= overlap <= MAX_OVERLAP:
+        raise ValueError(f"overlap must be 0-{MAX_OVERLAP}, got {overlap}")
+    if split == "cells":
+        columns, rows = chart_capacity(paper, orientation)
+        return ChartLayout(
+            CELL_MM, tuple(_bands(width, columns, overlap)), tuple(_bands(height, rows, overlap))
+        )
+    for name, pages in (("pages_across", pages_across), ("pages_down", pages_down)):
+        if not 1 <= pages <= MAX_PAGES:
+            raise ValueError(f"{name} must be 1-{MAX_PAGES}, got {pages}")
+    return _pages_layout(
+        (width, height), (pages_across, pages_down), overlap, _chart_area(paper, orientation)
+    )
+
+
+def _pages_layout(
+    size: tuple[int, int], pages: tuple[int, int], overlap: int, area: tuple[float, float]
+) -> ChartLayout:
+    """The `"pages"` split of `chart_layout`, its arguments checked."""
+    width, height = size
+    pages_across, pages_down = pages
+    area_width, area_height = area
+    cell_mm = min(
+        _fitting_cell_mm(width, pages_across, overlap, area_width),
+        _fitting_cell_mm(height, pages_down, overlap, area_height),
+        MAX_CELL_MM,
+    )
+    narrow = width < pages_across + overlap or height < pages_down + overlap
+    if narrow or cell_mm < MIN_CELL_MM:
+        across = _fewest_pages(width, overlap, area_width)
+        down = _fewest_pages(height, overlap, area_height)
+        raise ValueError(
+            f"{pages_across} x {pages_down} pages would need cells under {MIN_CELL_MM:.1f} mm "
+            f"or pages narrower than the overlap; this pattern needs at least {across} pages "
+            f"across and {down} down at {MIN_CELL_MM:.1f} mm"
+        )
+    return ChartLayout(
+        cell_mm,
+        tuple(_equal_bands(width, pages_across, overlap)),
+        tuple(_equal_bands(height, pages_down, overlap)),
+    )
+
+
+def _equal_sizes(length: int, count: int, overlap: int) -> list[int]:
+    """Band sizes covering `length` cells in `count` bands that share `overlap` cells."""
+    total = length + (count - 1) * overlap
+    base, extra = divmod(total, count)
+    return [base + 1 if k < extra else base for k in range(count)]
+
+
+def _equal_bands(length: int, count: int, overlap: int) -> Iterator[Band]:
+    start = 0
+    for k, size in enumerate(_equal_sizes(length, count, overlap)):
+        yield Band(start, start + size, overlap if k else 0)
+        start += size - overlap
+
+
+def _fitting_cell_mm(length: int, count: int, overlap: int, area: float) -> float:
+    """The largest cell, floored to 0.1 mm, at which the biggest band fits `area`."""
+    biggest = max(_equal_sizes(length, count, overlap))
+    return math.floor(round(area / mm / biggest * 10, 6)) / 10
+
+
+def _fewest_pages(length: int, overlap: int, area: float) -> int:
+    """The fewest bands at which a cell of `MIN_CELL_MM` fits."""
+    for count in range(1, length + 1):
+        if length >= count + overlap and _fitting_cell_mm(length, count, overlap, area) >= (
+            MIN_CELL_MM
+        ):
+            return count
+    return length
+
+
+# The layout settings are keyword-only and mirror the route's form fields one for one.
+def render_pdf(  # pylint: disable=too-many-arguments
     pattern: Pattern,
     *,
     variant: Variant = "colour",
     paper: Paper = "A4",
     orientation: Orientation = "portrait",
+    split: Split = "cells",
+    pages_across: int = 2,
+    pages_down: int = 2,
+    overlap: int = OVERLAP,
+    centre_lines: bool = False,
 ) -> bytes:
-    """The pattern as a PDF chart: cover page(s), then the chart pages."""
+    """The pattern as a PDF chart: cover page(s), then the chart pages.
+
+    The layout settings are those of `chart_layout`; `centre_lines` draws the centre
+    column and row through the chart (red in colour, dashed black in black and white).
+    """
     if variant not in VARIANTS:
         raise ValueError(f"unknown variant {variant!r}; expected one of {VARIANTS}")
     page_size = _page_size(paper, orientation)
+    layout = chart_layout(
+        pattern.width,
+        pattern.height,
+        paper=paper,
+        orientation=orientation,
+        split=split,
+        pages_across=pages_across,
+        pages_down=pages_down,
+        overlap=overlap,
+    )
     _register_font()
     buffer = io.BytesIO()
     canvas = Canvas(buffer, pagesize=page_size, invariant=True, pageCompression=True)
     canvas.setTitle("Cross-stitch chart")
     document = _Document(canvas, pattern, pattern_symbols(pattern), variant == "colour", page_size)
-    document.draw_cover()
-    document.draw_chart(chart_capacity(paper, orientation))
+    document.draw_cover(layout.cell_mm)
+    document.draw_chart(layout, centre_lines=centre_lines)
     canvas.save()
     return buffer.getvalue()
 
@@ -161,26 +324,13 @@ def _rgb_fraction(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
     return r / 255, g / 255, b / 255
 
 
-@dataclass(frozen=True)
-class _Band:
-    """A run of columns (or rows) on one chart page."""
-
-    start: int  # first cell, 0-based
-    end: int  # one past the last cell
-    repeated: int  # leading cells repeated from the previous band
-
-    @property
-    def size(self) -> int:
-        return self.end - self.start
-
-
-def _bands(length: int, capacity: int) -> Iterator[_Band]:
-    """Split `length` cells into bands of at most `capacity`, neighbours sharing OVERLAP."""
-    step = capacity - OVERLAP
+def _bands(length: int, capacity: int, overlap: int) -> Iterator[Band]:
+    """Split `length` cells into bands of at most `capacity`, neighbours sharing `overlap`."""
+    step = capacity - overlap
     count = 1 if length <= capacity else 1 + math.ceil((length - capacity) / step)
     for k in range(count):
         start = k * step
-        yield _Band(start, min(start + capacity, length), OVERLAP if k else 0)
+        yield Band(start, min(start + capacity, length), overlap if k else 0)
 
 
 @dataclass(frozen=True)
@@ -193,7 +343,7 @@ class _Document:
 
     # --- cover --------------------------------------------------------------------------
 
-    def draw_cover(self) -> None:
+    def draw_cover(self, cell_mm: float) -> None:
         canvas, pattern = self.canvas, self.pattern
         width, height = self.page_size
         top = height - _MARGIN
@@ -208,6 +358,7 @@ class _Document:
             f"Finished size: {pattern.width_in:.1f} x {pattern.height_in:.1f} in "
             f"({pattern.width_cm:.1f} x {pattern.height_cm:.1f} cm)",
             f"Total stitches: {pattern.total_stitches}",
+            f"Chart cell: {cell_mm:.1f} mm",
         ):
             canvas.drawString(_MARGIN, top - _INFO_SIZE, line)
             top -= _INFO_SIZE + 2 * mm
@@ -307,16 +458,18 @@ class _Document:
 
     # --- chart --------------------------------------------------------------------------
 
-    def draw_chart(self, capacity: tuple[int, int]) -> None:
-        columns, rows = capacity
-        row_bands = list(_bands(self.pattern.height, rows))
-        column_bands = list(_bands(self.pattern.width, columns))
+    def draw_chart(self, layout: ChartLayout, *, centre_lines: bool) -> None:
+        row_bands, column_bands = layout.rows, layout.columns
         pages = len(row_bands) * len(column_bands)
+        cell = _CELL if layout.cell_mm == CELL_MM else layout.cell_mm * mm
+        if pages > 1:
+            self._draw_section_plan(layout)
         width, height = self.page_size
-        for number, (row_band, column_band) in enumerate(
-            ((r, c) for r in row_bands for c in column_bands), start=1
+        for number, ((row, row_band), (column, column_band)) in enumerate(
+            ((r, c) for r in enumerate(row_bands) for c in enumerate(column_bands)), start=1
         ):
-            _ChartPage(self, column_band, row_band).draw()
+            name = section_name(column, row)
+            _ChartPage(self, column_band, row_band, cell, centre_lines, name).draw()
             self.canvas.setFillGray(0)
             self.canvas.setFont(_FONT, _INFO_SIZE)
             self.canvas.drawRightString(
@@ -324,14 +477,83 @@ class _Document:
             )
             self.canvas.showPage()
 
+    def _draw_section_plan(self, layout: ChartLayout) -> None:
+        """A page with the whole pattern, each section outlined and named on it."""
+        canvas, pattern = self.canvas, self.pattern
+        width, height = self.page_size
+        top = height - _MARGIN
+        canvas.setFillGray(0)
+        canvas.setFont(_FONT, _TITLE_SIZE)
+        canvas.drawString(_MARGIN, top - _TITLE_SIZE, "Section plan")
+        top -= _TITLE_SIZE + 6 * mm
+        scale = min((width - 2 * _MARGIN) / pattern.width, (top - _MARGIN) / pattern.height)
+        left, bottom = _MARGIN, top - pattern.height * scale
+        canvas.drawImage(
+            ImageReader(self._thumbnail()),
+            left,
+            bottom,
+            width=pattern.width * scale,
+            height=pattern.height * scale,
+        )
+        self._draw_plan_sections(layout, (left, top), scale)
+        canvas.showPage()
+
+    def _draw_plan_sections(
+        self, layout: ChartLayout, origin: tuple[float, float], scale: float
+    ) -> None:
+        """Each section outlined over the plan's thumbnail and named inside its outline."""
+        canvas = self.canvas
+        left, top = origin
+        canvas.setLineWidth(_BOLD_LINE)
+        canvas.setStrokeGray(0)
+        for row, row_band in enumerate(layout.rows):
+            for column, column_band in enumerate(layout.columns):
+                x0 = left + column_band.start * scale
+                y1 = top - row_band.start * scale
+                w, h = column_band.size * scale, row_band.size * scale
+                canvas.rect(x0, y1 - h, w, h, stroke=1, fill=0)
+                self._draw_plan_name(section_name(column, row), x0 + w / 2, y1 - h / 2)
+
+    def _draw_plan_name(self, name: str, x: float, y: float) -> None:
+        """A section's name on a white tab, so it reads over light and dark threads."""
+        canvas = self.canvas
+        size = _INFO_SIZE + 1
+        half_width = pdfmetrics.stringWidth(name, _FONT, size) / 2 + 1.5 * mm
+        half_height = size / 2 + 1 * mm
+        canvas.setFillGray(1)
+        canvas.setLineWidth(_THIN_LINE)
+        canvas.rect(
+            x - half_width, y - half_height, 2 * half_width, 2 * half_height, stroke=1, fill=1
+        )
+        canvas.setFillGray(0)
+        canvas.setFont(_FONT, size)
+        canvas.drawCentredString(x, y - size * 0.35, name)
+        canvas.setLineWidth(_BOLD_LINE)
+
+
+def section_name(column: int, row: int) -> str:
+    """The name of the chart section in column band `column` and row band `row` (0-based):
+    letters for the column (A, B, ... Z, AA, AB, ...), a number from 1 for the row."""
+    letters = ""
+    number = column + 1
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return f"{letters}{row + 1}"
+
 
 @dataclass(frozen=True)
 class _ChartPage:
     """One chart page: the cells of `columns` x `rows`, drawn from the top-left corner."""
 
     document: _Document
-    columns: _Band
-    rows: _Band
+    columns: Band
+    rows: Band
+    cell: float
+    """The cell side, in points."""
+    centre_lines: bool
+    name: str
+    """The section's name, as the section plan writes it."""
 
     @property
     def left(self) -> float:
@@ -343,11 +565,11 @@ class _ChartPage:
 
     def x(self, column: float) -> float:
         """Page x of the left edge of `column` (pattern coordinates)."""
-        return self.left + (column - self.columns.start) * _CELL
+        return self.left + (column - self.columns.start) * self.cell
 
     def y(self, row: float) -> float:
         """Page y of the top edge of `row` (pattern coordinates)."""
-        return self.top - (row - self.rows.start) * _CELL
+        return self.top - (row - self.rows.start) * self.cell
 
     def cells(self) -> npt.NDArray[np.intp]:
         grid = self.document.pattern.grid
@@ -360,7 +582,7 @@ class _ChartPage:
         canvas.drawString(
             _MARGIN,
             self.document.page_size[1] - _MARGIN - _INFO_SIZE,
-            f"Columns {self.columns.start + 1}-{self.columns.end}, "
+            f"{self.name} - Columns {self.columns.start + 1}-{self.columns.end}, "
             f"rows {self.rows.start + 1}-{self.rows.end}",
         )
         self._draw_overlap()
@@ -369,6 +591,8 @@ class _ChartPage:
         self._draw_grid_lines()
         self._draw_symbols()
         self._draw_numbers()
+        if self.centre_lines:
+            self._draw_centre_lines()
         self._draw_centre_arrows()
 
     def _draw_overlap(self) -> None:
@@ -377,18 +601,18 @@ class _ChartPage:
         canvas, colour = self.document.canvas, self.document.colour
         canvas.setFillGray(_OVERLAP_GREY)
         if self.columns.repeated:
-            span = self.columns.repeated * _CELL
+            span = self.columns.repeated * self.cell
             if colour:
                 canvas.rect(self.left, self.top, span, _GUTTER, stroke=0, fill=1)
             else:
-                height = self.rows.size * _CELL
+                height = self.rows.size * self.cell
                 canvas.rect(self.left, self.top - height, span, height, stroke=0, fill=1)
         if self.rows.repeated:
-            span = self.rows.repeated * _CELL
+            span = self.rows.repeated * self.cell
             if colour:
                 canvas.rect(self.left - _GUTTER, self.top - span, _GUTTER, span, stroke=0, fill=1)
             else:
-                width = self.columns.size * _CELL
+                width = self.columns.size * self.cell
                 canvas.rect(self.left, self.top - span, width, span, stroke=0, fill=1)
 
     def _draw_fills(self) -> None:
@@ -401,7 +625,12 @@ class _ChartPage:
             canvas.setFillColorRGB(*_rgb_fraction(entry.thread.rgb))
             path = canvas.beginPath()
             for row, column in positions:
-                path.rect(self.left + column * _CELL, self.top - (row + 1) * _CELL, _CELL, _CELL)
+                path.rect(
+                    self.left + column * self.cell,
+                    self.top - (row + 1) * self.cell,
+                    self.cell,
+                    self.cell,
+                )
             canvas.drawPath(path, stroke=0, fill=1)
 
     def _draw_grid_lines(self) -> None:
@@ -434,8 +663,10 @@ class _ChartPage:
         """Each stitched cell's symbol, centred, as text in the chart font."""
         document, cells = self.document, self.cells()
         text = document.canvas.beginText()
-        text.setFont(_FONT, _SYMBOL_SIZE)
-        rise = (_CELL - _SYMBOL_SIZE * SYMBOL_CENTRING) / 2
+        # Symbols scale with the cell; the default cell keeps the exact default size.
+        size = _SYMBOL_SIZE if self.cell == _CELL else _SYMBOL_SIZE * self.cell / _CELL
+        text.setFont(_FONT, size)
+        rise = (self.cell - size * SYMBOL_CENTRING) / 2
         for index, (entry, symbol) in enumerate(
             zip(document.pattern.key, document.symbols, strict=True)
         ):
@@ -444,11 +675,11 @@ class _ChartPage:
                 continue
             dark = document.colour and symbol_ink(entry.thread.rgb) == "white"
             text.setFillGray(1 if dark else 0)
-            half = pdfmetrics.stringWidth(symbol, _FONT, _SYMBOL_SIZE) / 2
+            half = pdfmetrics.stringWidth(symbol, _FONT, size) / 2
             for row, column in positions:
                 text.setTextOrigin(
-                    self.left + (column + 0.5) * _CELL - half,
-                    self.top - (row + 1) * _CELL + rise,
+                    self.left + (column + 0.5) * self.cell - half,
+                    self.top - (row + 1) * self.cell + rise,
                 )
                 text.textOut(symbol)
         document.canvas.drawText(text)
@@ -464,6 +695,30 @@ class _ChartPage:
         for row in range(self.rows.start + 1, self.rows.end + 1):
             if row % 10 == 0:
                 canvas.drawRightString(self.left - 1 * mm, self.y(row) - 0.7 * mm, str(row))
+
+    def _draw_centre_lines(self) -> None:
+        """The centre column and row across the cells, on the page that holds them."""
+        canvas, pattern = self.document.canvas, self.document.pattern
+        x0, x1 = self.x(self.columns.start), self.x(self.columns.end)
+        y0, y1 = self.y(self.rows.start), self.y(self.rows.end)
+        lines = []
+        centre_column = pattern.width / 2
+        if self.columns.start <= centre_column <= self.columns.end:
+            lines.append((self.x(centre_column), y0, self.x(centre_column), y1))
+        centre_row = pattern.height / 2
+        if self.rows.start <= centre_row <= self.rows.end:
+            lines.append((x0, self.y(centre_row), x1, self.y(centre_row)))
+        if not lines:
+            return
+        canvas.saveState()
+        canvas.setLineWidth(_BOLD_LINE)
+        if self.document.colour:
+            canvas.setStrokeColorRGB(1, 0, 0)
+        else:
+            canvas.setStrokeGray(0)
+            canvas.setDash(3, 2)
+        canvas.lines(lines)
+        canvas.restoreState()
 
     def _draw_centre_arrows(self) -> None:
         """Filled triangles in the bottom and right gutters, on the centre column and row."""

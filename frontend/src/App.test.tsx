@@ -12,6 +12,9 @@ const LIMITS = {
     merge_distance: LIMIT,
     min_stitches: LIMIT,
     confetti_size: LIMIT,
+    pages_across: { min: 1, max: 20, step: 1, default: 2 },
+    pages_down: { min: 1, max: 20, step: 1, default: 2 },
+    overlap: { min: 0, max: 5, step: 1, default: 2 },
   },
 };
 

@@ -554,6 +554,8 @@ def test_every_cleanup_setting_at_its_maximum_gives_the_core_pattern() -> None:
 
 
 SETTING_NAMES = ["width", "max_colours", "merge_distance", "min_stitches", "confetti_size"]
+# Taken by `POST /patterns/pdf` only; their bounds are tested in test_api_pdf.py.
+LAYOUT_NAMES = ["pages_across", "pages_down", "overlap"]
 
 
 def _limits() -> dict[str, Any]:
@@ -587,9 +589,12 @@ def test_the_limits_are_the_contract_the_frontend_relies_on() -> None:
             "merge_distance": {"min": 0, "max": 10, "step": 0.1, "default": 0},
             "min_stitches": {"min": 0, "max": 1000, "step": 1, "default": 0},
             "confetti_size": {"min": 0, "max": 10, "step": 1, "default": 0},
+            "pages_across": {"min": 1, "max": 20, "step": 1, "default": 2},
+            "pages_down": {"min": 1, "max": 20, "step": 1, "default": 2},
+            "overlap": {"min": 0, "max": 5, "step": 1, "default": 2},
         },
     }
-    assert list(_limits()["settings"]) == SETTING_NAMES
+    assert list(_limits()["settings"]) == SETTING_NAMES + LAYOUT_NAMES
 
 
 @pytest.mark.parametrize("name", SETTING_NAMES)
