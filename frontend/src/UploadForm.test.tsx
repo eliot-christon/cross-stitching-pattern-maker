@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   type RenderResult,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +26,7 @@ const PATTERN: Pattern = {
   finished_size: { width_in: 0.14, height_in: 0.07, width_cm: 0.36, height_cm: 0.18 },
   isolated_stitches: { before: 2, after: 0 },
   converted: null,
+  ignored_replacements: [],
 };
 
 /** A second conversion, told apart from PATTERN on screen by its thread codes. */
@@ -48,6 +50,7 @@ const PATTERN_B: Pattern = {
   finished_size: { width_in: 0.21, height_in: 0.07, width_cm: 0.54, height_cm: 0.18 },
   isolated_stitches: { before: 1, after: 0 },
   converted: null,
+  ignored_replacements: [],
 };
 
 /** A thread only PATTERN's key holds, and one only PATTERN_B's holds. */
@@ -1135,5 +1138,214 @@ describe("UploadForm PDF download", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("paper: bad paper");
     expect(screen.getByRole("table", { name: "Thread key" })).toBeInTheDocument();
+  });
+});
+
+describe("thread replacements", () => {
+  const TABLE = [
+    { code: "310", name: "Black", rgb: [0, 0, 0] },
+    { code: "321", name: "Red", rgb: [199, 43, 59] },
+    { code: "3865", name: "Winter White", rgb: [249, 247, 241] },
+    { code: "3371", name: "Black Brown", rgb: [30, 17, 8] },
+  ];
+  const NEAREST = [
+    { code: "3371", name: "Black Brown", rgb: [30, 17, 8], distance: 4.2 },
+    { code: "3865", name: "Winter White", rgb: [249, 247, 241], distance: 90 },
+  ];
+
+  /** stubApi, plus the thread table and nearest threads the picker asks for. */
+  function stubWithThreads(handlers: { patterns?: Handler; pdf?: Handler } = {}) {
+    const inner = stubApi(handlers);
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/threads") {
+        return Promise.resolve(json(200, TABLE));
+      }
+      if (url.startsWith("/api/threads/")) {
+        return Promise.resolve(json(200, NEAREST));
+      }
+      return inner(url, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  /** The `replace` fields of each conversion posted, in order. */
+  function sentReplacements(fetchMock: ReturnType<typeof stubApi>): string[][] {
+    return posted(fetchMock, "/api/patterns").map((body) => body.getAll("replace") as string[]);
+  }
+
+  /** Open the picker on the key entry `code` and choose the thread named `name`. */
+  async function replace(code: string, name: string) {
+    fireEvent.click(screen.getByRole("cell", { name: code }));
+    await settle();
+    const picker = screen.getByRole("dialog");
+    fireEvent.click(within(picker).getAllByText(name)[0] as HTMLElement);
+    await settle();
+  }
+
+  async function preview() {
+    chooseFile();
+    await wait(QUIET_MS);
+    await settle();
+    expect(keyShows(A_CODE)).toBe(true);
+  }
+
+  function replacementItems(): HTMLElement[] {
+    const section = screen.queryByRole("region", { name: "Replacements" });
+    return section === null ? [] : within(section).getAllByRole("listitem");
+  }
+
+  it("sends a picked replacement after the quiet delay and lists it", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+
+    await replace("310", "Winter White");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await wait(QUIET_MS - 1);
+    expect(sentReplacements(fetchMock)).toEqual([[]]);
+    await wait(1);
+    await settle();
+
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"]]);
+    expect(replacementItems()).toHaveLength(1);
+    expect(replacementItems()[0]).toHaveTextContent(/310.*Black.*3865.*Winter White/);
+  });
+
+  it("sends nothing when a pair is undone and picked again within the quiet delay", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+    await replace("310", "Winter White");
+    await wait(10 * QUIET_MS);
+
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"]]);
+  });
+
+  it("sends no replace field once the only pair is undone, and hides the list", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"], []]);
+    expect(screen.queryByRole("region", { name: "Replacements" })).not.toBeInTheDocument();
+  });
+
+  it("sends one request with no replace field after a reset of two pairs", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await replace("321", "Black Brown");
+    await wait(QUIET_MS);
+    await settle();
+    expect(sentReplacements(fetchMock).at(-1)).toEqual(["310:3865", "321:3371"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset replacements" }));
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865", "321:3371"], []]);
+  });
+
+  it("marks the pair the response ignored, and keeps the mark on it after an undo", async () => {
+    stubWithThreads({
+      patterns: () => Promise.resolve(json(200, { ...PATTERN, ignored_replacements: [1] })),
+    });
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await replace("321", "Black Brown");
+    await wait(QUIET_MS);
+    await settle();
+
+    const [first, second] = replacementItems();
+    expect(first).not.toHaveTextContent(/not in the pattern/);
+    expect(second).toHaveTextContent(/321.*not in the pattern/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+
+    expect(replacementItems()).toHaveLength(1);
+    expect(replacementItems()[0]).toHaveTextContent(/321.*not in the pattern/);
+  });
+
+  it("sends the pairs with a width change", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    setValue(numberField(WIDTH), "55");
+    await wait(QUIET_MS);
+    await settle();
+
+    const last = posted(fetchMock, "/api/patterns").at(-1);
+    expect(last?.get("width")).toBe("55");
+    expect(last?.getAll("replace")).toEqual(["310:3865"]);
+  });
+
+  it("asks for the PDF with the pairs that produced the preview", async () => {
+    const fetchMock = stubWithThreads({
+      pdf: () =>
+        Promise.resolve(
+          new Response("%PDF-1.4 chart", {
+            status: 200,
+            headers: { "Content-Type": "application/pdf" },
+          }),
+        ),
+    });
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static override createObjectURL = vi.fn(() => "blob:chart");
+        static override revokeObjectURL = vi.fn();
+      },
+    );
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(downloadButton());
+    await settle();
+
+    const pdfs = posted(fetchMock, "/api/patterns/pdf");
+    expect(pdfs).toHaveLength(1);
+    expect(pdfs[0]?.getAll("replace")).toEqual(["310:3865"]);
+  });
+
+  it("keeps the pairs when another image is chosen and sends them with it", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    const other = chooseFile("other.png");
+    await wait(QUIET_MS);
+    await settle();
+
+    const last = posted(fetchMock, "/api/patterns").at(-1);
+    const image = last?.get("image");
+    expect(image instanceof File ? image.name : null).toBe(other.name);
+    expect(last?.getAll("replace")).toEqual(["310:3865"]);
+    expect(replacementItems()).toHaveLength(1);
   });
 });
