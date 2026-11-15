@@ -100,3 +100,19 @@ def test_the_pattern_route_ignores_layout_fields() -> None:
 
     assert with_overlap.status_code == 200
     assert with_overlap.json() == plain.json()
+
+
+def test_the_fabric_colour_gives_the_bytes_the_core_renders() -> None:
+    response = _post_pdf({"fabric_colour": "#C81E3C"})
+
+    assert response.status_code == 200
+    pattern = convert_image(_image(), width=40, max_colours=4)
+    assert response.content == render_pdf(pattern, fabric_rgb=(200, 30, 60))
+
+
+@pytest.mark.parametrize("value", ["red", "#c81e3", "c81e3c", "#c81e3cff", "#gggggg"])
+def test_a_fabric_colour_not_written_as_hex_is_refused_naming_it(value: str) -> None:
+    response = _post_pdf({"fabric_colour": value})
+
+    assert response.status_code == 422
+    assert any("fabric_colour" in error["loc"] for error in response.json()["detail"])

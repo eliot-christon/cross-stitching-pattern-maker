@@ -573,6 +573,12 @@ def _layout(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     )
 
 
+def _hex_rgb(colour: str) -> tuple[int, int, int]:
+    """A `#rrggbb` colour, already checked by its form field, as (r, g, b)."""
+    value = int(colour[1:], 16)
+    return (value >> 16, (value >> 8) & 0xFF, value & 0xFF)
+
+
 @app.post("/patterns/pdf", response_class=Response)
 def create_pattern_pdf(
     converted: Annotated[_Converted, Depends(_converted)],
@@ -581,6 +587,13 @@ def create_pattern_pdf(
     centre_lines: Annotated[
         bool, Form(description="Draw the centre column and row through the chart")
     ] = False,
+    fabric_colour: Annotated[
+        str,
+        Form(
+            pattern=r"^#[0-9a-fA-F]{6}$",
+            description="Fabric colour as #rrggbb, for bare fabric in the thumbnails",
+        ),
+    ] = "#ffffff",
 ) -> Response:
     """Convert an image as `POST /patterns` does and return it as a printable PDF chart.
 
@@ -590,7 +603,11 @@ def create_pattern_pdf(
     """
     try:
         pdf = render_pdf(
-            converted.replaced.pattern, variant=variant, centre_lines=centre_lines, **layout
+            converted.replaced.pattern,
+            variant=variant,
+            centre_lines=centre_lines,
+            fabric_rgb=_hex_rgb(fabric_colour),
+            **layout,
         )
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
