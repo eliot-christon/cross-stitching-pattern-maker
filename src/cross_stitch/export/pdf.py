@@ -12,7 +12,7 @@ and column, and a label stating the columns and rows it shows.
 The cell side is `CELL_MM` on every paper; a bigger sheet holds more cells per page
 (`chart_capacity`). In the colour variant cells are filled with their thread's colour and
 the symbol is black or white, whichever reads better on it (`symbol_ink`); the
-black-and-white variant uses grey levels only. Symbols come from `key_symbols`, numbers
+black-and-white variant uses grey levels only. Symbols come from `pattern_symbols`, numbers
 only from the `Pattern`. The same pattern and settings always give the same bytes.
 """
 
@@ -34,7 +34,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
 
 from cross_stitch.export.geometry import CELL_MM, FONT_PATH, SYMBOL_CENTRING, SYMBOL_SIZE_PT
-from cross_stitch.export.symbols import key_symbols
+from cross_stitch.export.symbols import pattern_symbols
 from cross_stitch.pattern import EMPTY, KeyEntry, Pattern
 
 Variant = Literal["colour", "bw"]
@@ -109,7 +109,7 @@ def render_pdf(
     buffer = io.BytesIO()
     canvas = Canvas(buffer, pagesize=page_size, invariant=True, pageCompression=True)
     canvas.setTitle("Cross-stitch chart")
-    document = _Document(canvas, pattern, key_symbols(pattern.key), variant == "colour", page_size)
+    document = _Document(canvas, pattern, pattern_symbols(pattern), variant == "colour", page_size)
     document.draw_cover()
     document.draw_chart(chart_capacity(paper, orientation))
     canvas.save()

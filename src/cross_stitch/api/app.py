@@ -26,7 +26,7 @@ from cross_stitch.export import (
     Paper,
     SymbolInk,
     Variant,
-    key_symbols,
+    pattern_symbols,
     render_pdf,
     symbol_ink,
 )
@@ -81,7 +81,7 @@ class KeyEntryOut(BaseModel):
     stitches: int
     skeins: int
     symbol: str
-    """The chart symbol, from `cross_stitch.export.key_symbols`."""
+    """The chart symbol, from `cross_stitch.export.pattern_symbols` of this pattern."""
     symbol_ink: SymbolInk
     """The symbol's ink on this thread's colour, as the colour chart prints it."""
 
@@ -234,7 +234,7 @@ def _key_json(pattern: Pattern) -> list[KeyEntryOut]:
             symbol=symbol,
             symbol_ink=symbol_ink(entry.thread.rgb),
         )
-        for entry, symbol in zip(pattern.key, key_symbols(pattern.key), strict=True)
+        for entry, symbol in zip(pattern.key, pattern_symbols(pattern), strict=True)
     ]
 
 
