@@ -117,7 +117,7 @@ describe("ThreadPicker", () => {
     expect(choiceCodes("All threads")).not.toContain("310");
   });
 
-  it("hands the chosen code back once, and closes on Escape", async () => {
+  it("hands the chosen thread back once, and closes on Escape", async () => {
     stubApi(WHITES, () => json(200, NEAREST));
     const onPick = vi.fn();
     const onClose = vi.fn();
@@ -125,7 +125,12 @@ describe("ThreadPicker", () => {
 
     fireEvent.click(await screen.findByText("Black Brown"));
     expect(onPick).toHaveBeenCalledTimes(1);
-    expect(onPick).toHaveBeenCalledWith("3371");
+    expect(onPick).toHaveBeenCalledWith({
+      code: "3371",
+      name: "Black Brown",
+      rgb: [30, 17, 8],
+      distance: 4.2,
+    });
 
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);

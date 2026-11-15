@@ -28,6 +28,7 @@ const PATTERN = {
   finished_size: { width_in: 0.14, height_in: 0.07, width_cm: 0.36, height_cm: 0.18 },
   isolated_stitches: { before: 2, after: 0 },
   converted: null,
+  ignored_replacements: [],
 };
 
 /** What the viewer area says before there is a pattern to show. */

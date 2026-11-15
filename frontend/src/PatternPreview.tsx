@@ -1,10 +1,15 @@
-import type { Pattern } from "./pattern";
+import type { KeyEntry, Pattern } from "./pattern";
 import { PatternViewer } from "./PatternViewer";
 
 /** The key's columns after the swatch, as their headers read. */
 const COLUMNS = ["Symbol", "Code", "Name", "Stitches", "Skeins"] as const;
 
-export function PatternPreview({ pattern }: { pattern: Pattern }) {
+export function PatternPreview(props: {
+  pattern: Pattern;
+  /** Called with a key entry the user chose to replace, by click or Enter. */
+  onReplace?: (entry: KeyEntry) => void;
+}) {
+  const { pattern, onReplace } = props;
   const { width, height, finished_size: size } = pattern;
 
   return (
@@ -52,7 +57,24 @@ export function PatternPreview({ pattern }: { pattern: Pattern }) {
         </thead>
         <tbody>
           {pattern.key.map((entry) => (
-            <tr key={entry.code} role="row" className="key-entry">
+            <tr
+              key={entry.code}
+              role="row"
+              className={onReplace === undefined ? "key-entry" : "key-entry key-entry-pick"}
+              tabIndex={onReplace === undefined ? undefined : 0}
+              title={onReplace === undefined ? undefined : `Replace ${entry.code} ${entry.name}`}
+              onClick={onReplace === undefined ? undefined : () => onReplace(entry)}
+              onKeyDown={
+                onReplace === undefined
+                  ? undefined
+                  : (event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onReplace(entry);
+                      }
+                    }
+              }
+            >
               <td role="cell" className="key-swatch">
                 <span
                   aria-hidden="true"

@@ -5,24 +5,30 @@ import {
   downloadPdf,
   getLimits,
   type ChartOptions,
+  type DmcThread,
   type Limits,
+  type Replacement,
   type SettingLimits,
   type Settings,
 } from "./api";
-import type { Pattern } from "./pattern";
+import type { KeyEntry, Pattern } from "./pattern";
 import { StitchedHeart, StitchRule } from "./motif";
 import { PatternPreview } from "./PatternPreview";
+import { ThreadPicker } from "./ThreadPicker";
 
 /** The image and settings a preview was made from: the PDF is asked for with these. */
 interface Source {
   image: File;
   settings: Settings;
+  replacements: readonly Replacement[];
 }
 
 /** The form as it stands: the image chosen (if any) and the settings as typed. */
 interface Inputs {
   image: File | null;
   settings: Settings;
+  /** Thread swaps, in the order chosen: the API applies them in sequence. */
+  replacements: readonly Replacement[];
 }
 
 interface Preview {
@@ -48,7 +54,14 @@ function sameSource(a: Source | null, b: Source): boolean {
     return false;
   }
   const keys = Object.keys(b.settings) as (keyof Settings)[];
-  return keys.every((key) => a.settings[key] === b.settings[key]);
+  return (
+    keys.every((key) => a.settings[key] === b.settings[key]) &&
+    a.replacements.length === b.replacements.length &&
+    a.replacements.every(
+      (pair, i) =>
+        pair.from.code === b.replacements[i]?.from.code && pair.to.code === b.replacements[i]?.to.code,
+    )
+  );
 }
 
 /** Hand the browser a file to save, through a temporary object URL. */
@@ -159,6 +172,7 @@ function Converter({ limits }: { limits: Limits }) {
       minStitches: String(ranges.min_stitches.default),
       confettiSize: String(ranges.confetti_size.default),
     },
+    replacements: [],
   }));
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -167,6 +181,10 @@ function Converter({ limits }: { limits: Limits }) {
   const [running, setRunning] = useState(false);
   const [chart, setChart] = useState<ChartOptions>(DEFAULT_CHART);
   const [download, setDownload] = useState<Download>({ kind: "idle" });
+  /** The key entry whose thread the picker is replacing, if it is open. */
+  const [picking, setPicking] = useState<KeyEntry | null>(null);
+  /** The replacements the latest response reported as finding nothing to replace. */
+  const [inactive, setInactive] = useState<ReadonlySet<Replacement>>(new Set());
 
   // What the timers and the request callbacks read: they outlive the render that set them.
   const latest = useRef(inputs);
@@ -215,11 +233,11 @@ function Converter({ limits }: { limits: Limits }) {
   function sendIfChanged() {
     due.current = false;
     setPending(false);
-    const { image, settings } = latest.current;
+    const { image, settings, replacements } = latest.current;
     if (image === null) {
       return;
     }
-    const source = { image, settings };
+    const source = { image, settings, replacements };
     if (sameSource(lastSent.current, source)) {
       return;
     }
@@ -230,7 +248,12 @@ function Converter({ limits }: { limits: Limits }) {
     lastSent.current = source;
     inFlight.current = true;
     setRunning(true);
-    const result = await convertImage(source.image, source.settings, limits.max_upload_bytes);
+    const result = await convertImage(
+      source.image,
+      source.settings,
+      limits.max_upload_bytes,
+      source.replacements,
+    );
     if (!mounted.current) {
       return;
     }
@@ -241,6 +264,9 @@ function Converter({ limits }: { limits: Limits }) {
       if (result.ok) {
         setPreview({ pattern: result.pattern, source });
         setError(null);
+        // Marks follow the pair objects, so they stay on the right pairs after an undo.
+        const ignored = result.pattern.ignored_replacements ?? [];
+        setInactive(new Set(source.replacements.filter((_, i) => ignored.includes(i))));
         // A failed download's message was about the previous preview.
         setDownload((current) => (current.kind === "failed" ? { kind: "idle" } : current));
       } else {
@@ -260,6 +286,19 @@ function Converter({ limits }: { limits: Limits }) {
   function changeSetting(key: keyof Settings, value: string) {
     change({ ...latest.current, settings: { ...latest.current.settings, [key]: value } });
     schedule();
+  }
+
+  function changeReplacements(replacements: readonly Replacement[]) {
+    change({ ...latest.current, replacements });
+    schedule();
+  }
+
+  function replaceWith(to: DmcThread) {
+    if (picking !== null) {
+      const from = { code: picking.code, name: picking.name, rgb: picking.rgb };
+      changeReplacements([...latest.current.replacements, { from, to }]);
+    }
+    setPicking(null);
   }
 
   function chooseImage(image: File | null) {
@@ -284,6 +323,7 @@ function Converter({ limits }: { limits: Limits }) {
       source.settings,
       chart,
       limits.max_upload_bytes,
+      source.replacements,
     );
     // The chart of an image no longer chosen is not saved: it is not the preview shown.
     if (!mounted.current || source.image !== latest.current.image) {
@@ -353,6 +393,41 @@ function Converter({ limits }: { limits: Limits }) {
             onChange={(value) => changeSetting("confettiSize", value)}
           />
         </form>
+
+        {inputs.replacements.length > 0 && (
+          <section aria-label="Replacements" className="panel-section">
+            <h2>Replacements</h2>
+            <ol className="replacements">
+              {inputs.replacements.map((pair, index) => (
+                <li
+                  // A pair may be chosen twice; its place keeps the key unique.
+                  // oxlint-disable-next-line react/no-array-index-key
+                  key={`${index}-${pair.from.code}-${pair.to.code}`}
+                  className={inactive.has(pair) ? "replacement inactive" : "replacement"}
+                >
+                  <ThreadLabel thread={pair.from} />
+                  <span aria-hidden="true">→</span>
+                  <span className="visually-hidden">replaced by</span>
+                  <ThreadLabel thread={pair.to} />
+                  {inactive.has(pair) && <span className="replacement-note">not in the pattern</span>}
+                  <button
+                    type="button"
+                    className="button"
+                    aria-label={`Undo ${pair.from.code} to ${pair.to.code}`}
+                    onClick={() =>
+                      changeReplacements(latest.current.replacements.filter((p) => p !== pair))
+                    }
+                  >
+                    Undo
+                  </button>
+                </li>
+              ))}
+            </ol>
+            <button type="button" className="button" onClick={() => changeReplacements([])}>
+              Reset replacements
+            </button>
+          </section>
+        )}
 
         {preview !== null && (
           <section aria-label="PDF chart" className="panel-section">
@@ -430,7 +505,7 @@ function Converter({ limits }: { limits: Limits }) {
           </p>
         )}
         {preview !== null ? (
-          <PatternPreview pattern={preview.pattern} />
+          <PatternPreview pattern={preview.pattern} onReplace={setPicking} />
         ) : (
           <div className="empty-state">
             <StitchedHeart size={56} />
@@ -442,6 +517,28 @@ function Converter({ limits }: { limits: Limits }) {
           </div>
         )}
       </section>
+      {picking !== null && (
+        <ThreadPicker
+          from={{ code: picking.code, name: picking.name, rgb: picking.rgb }}
+          onPick={replaceWith}
+          onClose={() => setPicking(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/** A thread as the replacements list shows it: swatch, code and name. */
+function ThreadLabel({ thread }: { thread: DmcThread }) {
+  return (
+    <span className="thread-label">
+      <span
+        aria-hidden="true"
+        className="swatch"
+        style={{ backgroundColor: `rgb(${thread.rgb.join(", ")})` }}
+      />
+      <span className="thread-label-code">{thread.code}</span>
+      <span className="thread-label-name">{thread.name}</span>
+    </span>
   );
 }

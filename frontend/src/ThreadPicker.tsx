@@ -70,11 +70,15 @@ function fromResult<T>(result: ThreadsResult<T>): Load<T> {
     : { kind: "failed", message: result.message };
 }
 
-function Choice(props: { thread: DmcThread; detail?: string; onPick: (code: string) => void }) {
+function Choice(props: {
+  thread: DmcThread;
+  detail?: string;
+  onPick: (thread: DmcThread) => void;
+}) {
   const { thread, detail, onPick } = props;
   return (
     <li>
-      <button type="button" className="thread-choice" onClick={() => onPick(thread.code)}>
+      <button type="button" className="thread-choice" onClick={() => onPick(thread)}>
         <span
           aria-hidden="true"
           className="swatch"
@@ -94,7 +98,7 @@ function Choice(props: { thread: DmcThread; detail?: string; onPick: (code: stri
  */
 export function ThreadPicker(props: {
   from: PickedFrom;
-  onPick: (code: string) => void;
+  onPick: (thread: DmcThread) => void;
   onClose: () => void;
 }) {
   const { from, onPick, onClose } = props;

@@ -20,6 +20,7 @@ function makePattern(overrides: Partial<Pattern> = {}): Pattern {
     finished_size: { width_in: 9.99, height_in: 5.04, width_cm: 25.4, height_cm: 12.7 },
     isolated_stitches: { before: 0, after: 0 },
     converted: null,
+    ignored_replacements: [],
     ...overrides,
   };
 }
@@ -355,5 +356,18 @@ describe("PatternPreview before and after cleanup", () => {
     expect(codes).toEqual(["321", "310"]);
     expect(screen.queryByText("Blanc")).not.toBeInTheDocument();
     expect(screen.getByText("123 stitches in total")).toBeInTheDocument();
+  });
+});
+
+describe("PatternPreview key entries", () => {
+  it("ask to replace their thread on click and on Enter", () => {
+    const onReplace = vi.fn();
+    render(<PatternPreview pattern={makePattern()} onReplace={onReplace} />);
+    const rows = keyRows();
+
+    fireEvent.click(within(rows[2] as HTMLElement).getByRole("cell", { name: "310" }));
+    fireEvent.keyDown(rows[1] as HTMLElement, { key: "Enter" });
+
+    expect(onReplace.mock.calls.map(([entry]) => (entry as KeyEntry).code)).toEqual(["310", "321"]);
   });
 });

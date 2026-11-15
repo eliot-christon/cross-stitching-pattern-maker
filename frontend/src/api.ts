@@ -46,6 +46,12 @@ export interface Settings {
 /** The PDF chart endpoint: the same inputs as `PATTERNS_URL` plus the chart options. */
 export const PATTERN_PDF_URL = "/api/patterns/pdf";
 
+/** One thread swap, applied by the API after cleanup; a list applies in order. */
+export interface Replacement {
+  from: DmcThread;
+  to: DmcThread;
+}
+
 /** The chart options `POST /patterns/pdf` accepts, as its form fields spell them. */
 export interface ChartOptions {
   variant: "colour" | "bw";
@@ -94,6 +100,7 @@ async function post(
   image: File,
   settings: Settings,
   maxUploadBytes: number,
+  replacements: readonly Replacement[],
   extra: Record<string, string> = {},
 ): Promise<Sent> {
   if (image.size > maxUploadBytes) {
@@ -109,6 +116,10 @@ async function post(
   body.append("merge_distance", settings.mergeDistance);
   body.append("min_stitches", settings.minStitches);
   body.append("confetti_size", settings.confettiSize);
+  // Repeated `replace` fields, in order: the API applies them in sequence.
+  for (const { from, to } of replacements) {
+    body.append("replace", `${from.code}:${to.code}`);
+  }
   for (const [name, value] of Object.entries(extra)) {
     body.append(name, value);
   }
@@ -135,8 +146,11 @@ export async function downloadPdf(
   settings: Settings,
   options: ChartOptions,
   maxUploadBytes: number,
+  replacements: readonly Replacement[] = [],
 ): Promise<PdfResult> {
-  const sent = await post(PATTERN_PDF_URL, image, settings, maxUploadBytes, { ...options });
+  const sent = await post(PATTERN_PDF_URL, image, settings, maxUploadBytes, replacements, {
+    ...options,
+  });
   if (!sent.ok) {
     return sent;
   }
@@ -151,8 +165,9 @@ export async function convertImage(
   image: File,
   settings: Settings,
   maxUploadBytes: number,
+  replacements: readonly Replacement[] = [],
 ): Promise<ConvertResult> {
-  const sent = await post(PATTERNS_URL, image, settings, maxUploadBytes);
+  const sent = await post(PATTERNS_URL, image, settings, maxUploadBytes, replacements);
   if (!sent.ok) {
     return sent;
   }

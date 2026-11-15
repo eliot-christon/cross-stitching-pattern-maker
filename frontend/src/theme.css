@@ -830,3 +830,65 @@ input[type="file"]::file-selector-button {
   font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
 }
+
+/* Key entries open the thread picker. */
+
+.key tr.key-entry-pick {
+  cursor: pointer;
+}
+
+.key tr.key-entry-pick:hover td {
+  background: var(--sunk);
+}
+
+/* The replacements list in the settings panel. */
+
+.replacements {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.replacement {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+.replacement .button {
+  margin-left: auto;
+  padding: var(--space-1) var(--space-3);
+}
+
+.replacement.inactive {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.replacement-note {
+  font-size: var(--text-xs);
+  font-style: italic;
+}
+
+.thread-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.thread-label .swatch {
+  width: 1rem;
+  height: 1rem;
+}
+
+.thread-label-code {
+  font-weight: 600;
+}
