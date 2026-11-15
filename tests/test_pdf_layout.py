@@ -1,6 +1,7 @@
 """Chart layout settings of `render_pdf`: split by cells or by pages, overlap, centre lines,
 section names and the section plan."""
 
+import io
 import re
 
 import pytest
@@ -17,6 +18,8 @@ from pdf_helpers import (
     _speckled,
     _two_colour,
 )
+from PIL import Image
+from pypdf import PdfReader
 
 from cross_stitch.export import chart_layout, render_pdf, section_name
 
@@ -247,3 +250,40 @@ def test_the_black_and_white_plan_page_is_grey_only() -> None:
     assert not operators & NON_GREY_OPERATORS
     assert b"rg" not in operators
     assert b"RG" not in operators
+
+
+# --------------------------------------------------------------------------- fabric colour
+
+
+def _cover_thumbnail(data: bytes) -> Image.Image:
+    """The thumbnail on the cover: the first image of the first page, one pixel per cell."""
+    image = PdfReader(io.BytesIO(data)).get_page(0).images[0].image
+    assert image is not None
+    return image
+
+
+def test_bare_cells_of_the_cover_thumbnail_take_the_fabric_colour() -> None:
+    pattern = _corners(20, 10)
+    thumbnail = _cover_thumbnail(render_pdf(pattern, fabric_rgb=(200, 30, 60)))
+
+    assert thumbnail.size == (20, 10)
+    assert thumbnail.convert("RGB").getpixel((5, 5)) == (200, 30, 60)
+    assert thumbnail.convert("RGB").getpixel((0, 0)) == (0, 0, 0)
+
+
+def test_the_black_and_white_thumbnail_shows_the_fabric_in_grey() -> None:
+    thumbnail = _cover_thumbnail(
+        render_pdf(_corners(20, 10), variant="bw", fabric_rgb=(200, 30, 60))
+    )
+    grey = round(0.299 * 200 + 0.587 * 30 + 0.114 * 60)
+    assert thumbnail.convert("L").getpixel((5, 5)) == grey
+
+
+def test_white_fabric_is_the_default_and_leaves_the_chart_pages_as_they_are() -> None:
+    pattern = _corners(70, 10)
+    assert render_pdf(pattern) == render_pdf(pattern, fabric_rgb=(255, 255, 255))
+    coloured = _read(render_pdf(pattern, fabric_rgb=(20, 20, 20)))
+    plain = _read(render_pdf(pattern))
+    assert [p.extract_text() for p in _chart_pages(coloured)] == [
+        p.extract_text() for p in _chart_pages(plain)
+    ]

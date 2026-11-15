@@ -55,6 +55,9 @@ SPLITS: tuple[Split, ...] = get_args(Split)
 
 _FONT = "DejaVuSans"
 
+FABRIC_WHITE = (255, 255, 255)
+"""The fabric colour a chart assumes unless told otherwise."""
+
 OVERLAP = 2
 """Columns (or rows) a chart page repeats from its left (or upper) neighbour, by default."""
 MAX_OVERLAP = 5
@@ -261,13 +264,15 @@ def render_pdf(
     *,
     variant: Variant = "colour",
     centre_lines: bool = False,
+    fabric_rgb: tuple[int, int, int] = FABRIC_WHITE,
     **settings: Unpack[LayoutSettings],
 ) -> bytes:
     """The pattern as a PDF chart: cover page(s), then the chart pages.
 
     The layout `settings` are those of `chart_layout`, with its defaults; `centre_lines`
     draws the centre column and row through the chart (red in colour, dashed black in
-    black and white).
+    black and white). The cover and section plan thumbnails show bare fabric in
+    `fabric_rgb` (its grey in black and white); chart pages leave it unprinted.
     """
     if variant not in VARIANTS:
         raise ValueError(f"unknown variant {variant!r}; expected one of {VARIANTS}")
@@ -277,7 +282,9 @@ def render_pdf(
     buffer = io.BytesIO()
     canvas = Canvas(buffer, pagesize=page_size, invariant=True, pageCompression=True)
     canvas.setTitle("Cross-stitch chart")
-    document = _Document(canvas, pattern, pattern_symbols(pattern), variant == "colour", page_size)
+    document = _Document(
+        canvas, pattern, pattern_symbols(pattern), variant == "colour", page_size, fabric_rgb
+    )
     document.draw_cover(layout.cell_mm)
     document.draw_chart(layout, centre_lines=centre_lines)
     canvas.save()
@@ -345,6 +352,7 @@ class _Document:
     symbols: list[str]
     colour: bool
     page_size: tuple[float, float]
+    fabric_rgb: tuple[int, int, int]
 
     # --- cover --------------------------------------------------------------------------
 
@@ -395,10 +403,11 @@ class _Document:
         return bottom
 
     def _thumbnail(self) -> Image.Image:
-        """One pixel per cell: the thread colour (its grey in black and white), bare white."""
+        """One pixel per cell: the thread colour (its grey in black and white), bare fabric
+        in the fabric's colour."""
         pattern = self.pattern
         palette = np.array(
-            [entry.thread.rgb for entry in pattern.key] + [(255, 255, 255)], dtype=np.float64
+            [entry.thread.rgb for entry in pattern.key] + [self.fabric_rgb], dtype=np.float64
         )
         pixels = palette[np.where(pattern.grid == EMPTY, len(pattern.key), pattern.grid)]
         if self.colour:
