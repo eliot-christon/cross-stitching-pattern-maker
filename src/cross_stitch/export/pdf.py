@@ -21,7 +21,6 @@ import math
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
-from pathlib import Path
 from typing import Literal, get_args
 
 import numpy as np
@@ -34,6 +33,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
 
+from cross_stitch.export.geometry import CELL_MM, FONT_PATH, SYMBOL_CENTRING, SYMBOL_SIZE_PT
 from cross_stitch.export.symbols import key_symbols
 from cross_stitch.pattern import EMPTY, KeyEntry, Pattern
 
@@ -44,12 +44,8 @@ VARIANTS: tuple[Variant, ...] = get_args(Variant)
 PAPERS: tuple[Paper, ...] = get_args(Paper)
 ORIENTATIONS: tuple[Orientation, ...] = get_args(Orientation)
 
-FONT_PATH = Path(__file__).with_name("DejaVuSans.ttf")
-"""The chart font, DejaVu Sans, shipped with the package (see `FONT_SOURCE.md`)."""
 _FONT = "DejaVuSans"
 
-CELL_MM = 3.0
-"""Side of one chart cell on paper, the same for every paper size."""
 OVERLAP = 2
 """Columns (or rows) a chart page repeats from its left (or upper) neighbour."""
 
@@ -59,7 +55,7 @@ _MARGIN = 10 * mm
 _HEADER = 8 * mm  # the label line above the grid
 _GUTTER = 5 * mm  # numbers on the top and left, centre arrows on the bottom and right
 
-_SYMBOL_SIZE = 6.5
+_SYMBOL_SIZE = SYMBOL_SIZE_PT
 _NUMBER_SIZE = 6.0
 _THIN_LINE = 0.25
 _BOLD_LINE = 1.0
@@ -439,7 +435,7 @@ class _ChartPage:
         document, cells = self.document, self.cells()
         text = document.canvas.beginText()
         text.setFont(_FONT, _SYMBOL_SIZE)
-        rise = (_CELL - _SYMBOL_SIZE * 0.7) / 2
+        rise = (_CELL - _SYMBOL_SIZE * SYMBOL_CENTRING) / 2
         for index, (entry, symbol) in enumerate(
             zip(document.pattern.key, document.symbols, strict=True)
         ):
