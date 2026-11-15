@@ -12,7 +12,7 @@ and column, and a label stating the columns and rows it shows.
 The cell side is `CELL_MM` on every paper; a bigger sheet holds more cells per page
 (`chart_capacity`). In the colour variant cells are filled with their thread's colour and
 the symbol is black or white, whichever reads better on it (`symbol_ink`); the
-black-and-white variant uses grey levels only. Symbols come from `key_symbols`, numbers
+black-and-white variant uses grey levels only. Symbols come from `pattern_symbols`, numbers
 only from the `Pattern`. The same pattern and settings always give the same bytes.
 """
 
@@ -21,7 +21,6 @@ import math
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
-from pathlib import Path
 from typing import Literal, get_args
 
 import numpy as np
@@ -34,7 +33,8 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
 
-from cross_stitch.export.symbols import key_symbols
+from cross_stitch.export.geometry import CELL_MM, FONT_PATH, SYMBOL_CENTRING, SYMBOL_SIZE_PT
+from cross_stitch.export.symbols import pattern_symbols
 from cross_stitch.pattern import EMPTY, KeyEntry, Pattern
 
 Variant = Literal["colour", "bw"]
@@ -44,12 +44,8 @@ VARIANTS: tuple[Variant, ...] = get_args(Variant)
 PAPERS: tuple[Paper, ...] = get_args(Paper)
 ORIENTATIONS: tuple[Orientation, ...] = get_args(Orientation)
 
-FONT_PATH = Path(__file__).with_name("DejaVuSans.ttf")
-"""The chart font, DejaVu Sans, shipped with the package (see `FONT_SOURCE.md`)."""
 _FONT = "DejaVuSans"
 
-CELL_MM = 3.0
-"""Side of one chart cell on paper, the same for every paper size."""
 OVERLAP = 2
 """Columns (or rows) a chart page repeats from its left (or upper) neighbour."""
 
@@ -59,7 +55,7 @@ _MARGIN = 10 * mm
 _HEADER = 8 * mm  # the label line above the grid
 _GUTTER = 5 * mm  # numbers on the top and left, centre arrows on the bottom and right
 
-_SYMBOL_SIZE = 6.5
+_SYMBOL_SIZE = SYMBOL_SIZE_PT
 _NUMBER_SIZE = 6.0
 _THIN_LINE = 0.25
 _BOLD_LINE = 1.0
@@ -113,7 +109,7 @@ def render_pdf(
     buffer = io.BytesIO()
     canvas = Canvas(buffer, pagesize=page_size, invariant=True, pageCompression=True)
     canvas.setTitle("Cross-stitch chart")
-    document = _Document(canvas, pattern, key_symbols(pattern.key), variant == "colour", page_size)
+    document = _Document(canvas, pattern, pattern_symbols(pattern), variant == "colour", page_size)
     document.draw_cover()
     document.draw_chart(chart_capacity(paper, orientation))
     canvas.save()
@@ -439,7 +435,7 @@ class _ChartPage:
         document, cells = self.document, self.cells()
         text = document.canvas.beginText()
         text.setFont(_FONT, _SYMBOL_SIZE)
-        rise = (_CELL - _SYMBOL_SIZE * 0.7) / 2
+        rise = (_CELL - _SYMBOL_SIZE * SYMBOL_CENTRING) / 2
         for index, (entry, symbol) in enumerate(
             zip(document.pattern.key, document.symbols, strict=True)
         ):
