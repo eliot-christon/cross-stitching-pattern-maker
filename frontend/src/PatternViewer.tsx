@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { centreLines, tenCellLines } from "./chartAids";
 import { gridPixels } from "./grid";
@@ -295,7 +295,17 @@ function Segmented<T extends string>(props: {
  * The pattern on one canvas, zoomable and pannable: Colours or Symbols, and, when the
  * response has the pattern before cleanup, Before / After in Colours.
  */
-export function PatternViewer({ pattern }: { pattern: Pattern }) {
+export type ViewerShows = "pattern" | "pdf";
+
+export function PatternViewer(props: {
+  pattern: Pattern;
+  /** The PDF view, behind a Pattern / PDF switch; none, no switch. */
+  pdfView?: ReactNode;
+  onShowChange?: (shows: ViewerShows) => void;
+}) {
+  const { pattern, pdfView, onShowChange } = props;
+  const [shows, setShows] = useState<ViewerShows>("pattern");
+  const pdf = pdfView !== undefined && shows === "pdf";
   const [mode, setMode] = useState<ViewMode>("colours");
   const [showBefore, setShowBefore] = useState(false);
   const [centreLinesOn, setCentreLinesOn] = useState(false);
@@ -470,6 +480,22 @@ export function PatternViewer({ pattern }: { pattern: Pattern }) {
   return (
     <div className="viewer">
       <div className="viewer-toolbar">
+        {pdfView !== undefined && (
+          <Segmented
+            legend="Show"
+            name="viewer-shows"
+            options={[
+              { value: "pattern", label: "Pattern" },
+              { value: "pdf", label: "PDF" },
+            ]}
+            value={shows}
+            onChange={(value) => {
+              setShows(value);
+              onShowChange?.(value);
+            }}
+          />
+        )}
+        <div className="viewer-controls" hidden={pdf}>
         <Segmented
           legend="View"
           name="viewer-mode"
@@ -529,9 +555,12 @@ export function PatternViewer({ pattern }: { pattern: Pattern }) {
             Fit
           </button>
         </div>
+        </div>
       </div>
+      {pdf && pdfView}
       <div
         ref={boxRef}
+        hidden={pdf}
         className="viewer-box"
         role="group"
         tabIndex={0}
@@ -544,7 +573,7 @@ export function PatternViewer({ pattern }: { pattern: Pattern }) {
       >
         <canvas ref={canvasRef} role="img" aria-label={label} />
       </div>
-      {mode !== "colours" && !readable && (
+      {!pdf && mode !== "colours" && !readable && (
         <p className="viewer-hint">Zoom in to read the symbols.</p>
       )}
     </div>

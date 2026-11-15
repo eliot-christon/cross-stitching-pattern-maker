@@ -80,6 +80,10 @@ CSS mask, so it follows the theme.
   key) scrolls inside its own box.
 - Page gutter: `--space-4` on phones, `--space-6` on desktop; maximum content width 1600 px.
 
+- The viewer area switches between the pattern and the PDF chart (Pattern / PDF, a
+  segmented control first in the viewer's toolbar); the PDF is the browser's own viewer,
+  framed like the pattern viewer (`--sunk`, `--radius-lg`, `--border`).
+
 ## Controls
 
 - Each setting: its label above, then the slider and a narrow number field on one row.

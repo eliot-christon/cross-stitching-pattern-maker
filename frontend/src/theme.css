@@ -902,3 +902,48 @@ input[type="file"]::file-selector-button {
 .chart-layout .toggle {
   justify-self: start;
 }
+
+/* The PDF view: the browser's own PDF viewer in the viewer's place. */
+
+.viewer-controls {
+  display: contents;
+}
+
+.viewer-controls[hidden] {
+  display: none;
+}
+
+.pdf-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.pdf-view-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 2rem;
+}
+
+.pdf-view-open {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: var(--text-sm);
+}
+
+.pdf-view-frame,
+.pdf-view-empty {
+  width: 100%;
+  height: clamp(320px, 75vh, 1000px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--sunk);
+}
+
+.pdf-view-empty {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}

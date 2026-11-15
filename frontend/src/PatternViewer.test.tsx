@@ -325,3 +325,36 @@ describe("PatternViewer", () => {
     expect(recording.texts).toEqual(["Z", "A"]);
   });
 });
+
+describe("PatternViewer with a PDF view", () => {
+  it("offers no Pattern / PDF switch without a PDF view", () => {
+    render(<PatternViewer pattern={makePattern(4, 4)} />);
+
+    expect(screen.queryByRole("radio", { name: "PDF" })).not.toBeInTheDocument();
+  });
+
+  it("swaps the canvas and its controls for the PDF view, and back", () => {
+    const onShowChange = vi.fn();
+    render(
+      <PatternViewer
+        pattern={makePattern(4, 4)}
+        pdfView={<p>the pdf view</p>}
+        onShowChange={onShowChange}
+      />,
+    );
+
+    expect(screen.getByRole("radio", { name: "Pattern" })).toBeChecked();
+    expect(screen.getByRole("img")).toBeInTheDocument();
+    expect(screen.queryByText("the pdf view")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "PDF" }));
+    expect(screen.getByText("the pdf view")).toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Zoom in" })).not.toBeInTheDocument();
+    expect(onShowChange).toHaveBeenLastCalledWith("pdf");
+
+    fireEvent.click(screen.getByRole("radio", { name: "Pattern" }));
+    expect(screen.getByRole("img")).toBeInTheDocument();
+    expect(onShowChange).toHaveBeenLastCalledWith("pattern");
+  });
+});
