@@ -892,3 +892,13 @@ input[type="file"]::file-selector-button {
 .thread-label-code {
   font-weight: 600;
 }
+
+/* The PDF's layout choices under the paper choices. */
+
+.chart-layout {
+  margin-top: var(--space-3);
+}
+
+.chart-layout .toggle {
+  justify-self: start;
+}
