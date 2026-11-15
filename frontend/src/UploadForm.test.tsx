@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   type RenderResult,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,13 +19,14 @@ const PATTERN: Pattern = {
   fabric_count: 14,
   grid: [[0, 1]],
   key: [
-    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "A" },
-    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol: "B" },
+    { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "A", symbol_ink: "white" },
+    { code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol: "B", symbol_ink: "white" },
   ],
   total_stitches: 2,
   finished_size: { width_in: 0.14, height_in: 0.07, width_cm: 0.36, height_cm: 0.18 },
   isolated_stitches: { before: 2, after: 0 },
   converted: null,
+  ignored_replacements: [],
 };
 
 /** A second conversion, told apart from PATTERN on screen by its thread codes. */
@@ -40,14 +42,15 @@ const PATTERN_B: Pattern = {
       rgb: [250, 246, 240],
       stitches: 2,
       skeins: 1,
-      symbol: "A",
+      symbol: "A", symbol_ink: "black",
     },
-    { code: "666", name: "Bright Red", rgb: [227, 29, 66], stitches: 1, skeins: 1, symbol: "B" },
+    { code: "666", name: "Bright Red", rgb: [227, 29, 66], stitches: 1, skeins: 1, symbol: "B", symbol_ink: "white" },
   ],
   total_stitches: 3,
   finished_size: { width_in: 0.21, height_in: 0.07, width_cm: 0.54, height_cm: 0.18 },
   isolated_stitches: { before: 1, after: 0 },
   converted: null,
+  ignored_replacements: [],
 };
 
 /** A thread only PATTERN's key holds, and one only PATTERN_B's holds. */
@@ -63,6 +66,9 @@ const LIMITS: Limits = {
     merge_distance: { min: 0, max: 10, step: 0.5, default: 0 },
     min_stitches: { min: 0, max: 1000, step: 1, default: 0 },
     confetti_size: { min: 0, max: 10, step: 1, default: 0 },
+    pages_across: { min: 1, max: 20, step: 1, default: 2 },
+    pages_down: { min: 1, max: 20, step: 1, default: 2 },
+    overlap: { min: 0, max: 5, step: 1, default: 2 },
   },
 };
 
@@ -1135,5 +1141,572 @@ describe("UploadForm PDF download", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("paper: bad paper");
     expect(screen.getByRole("table", { name: "Thread key" })).toBeInTheDocument();
+  });
+});
+
+describe("thread replacements", () => {
+  const TABLE = [
+    { code: "310", name: "Black", rgb: [0, 0, 0] },
+    { code: "321", name: "Red", rgb: [199, 43, 59] },
+    { code: "3865", name: "Winter White", rgb: [249, 247, 241] },
+    { code: "3371", name: "Black Brown", rgb: [30, 17, 8] },
+  ];
+  const NEAREST = [
+    { code: "3371", name: "Black Brown", rgb: [30, 17, 8], distance: 4.2 },
+    { code: "3865", name: "Winter White", rgb: [249, 247, 241], distance: 90 },
+  ];
+
+  /** stubApi, plus the thread table and nearest threads the picker asks for. */
+  function stubWithThreads(handlers: { patterns?: Handler; pdf?: Handler } = {}) {
+    const inner = stubApi(handlers);
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/threads") {
+        return Promise.resolve(json(200, TABLE));
+      }
+      if (url.startsWith("/api/threads/")) {
+        return Promise.resolve(json(200, NEAREST));
+      }
+      return inner(url, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  /** The `replace` fields of each conversion posted, in order. */
+  function sentReplacements(fetchMock: ReturnType<typeof stubApi>): string[][] {
+    return posted(fetchMock, "/api/patterns").map((body) => body.getAll("replace") as string[]);
+  }
+
+  /** Open the picker on the key entry `code` and choose the thread named `name`. */
+  async function replace(code: string, name: string) {
+    fireEvent.click(screen.getByRole("cell", { name: code }));
+    await settle();
+    const picker = screen.getByRole("dialog");
+    fireEvent.click(within(picker).getAllByText(name)[0] as HTMLElement);
+    await settle();
+  }
+
+  async function preview() {
+    chooseFile();
+    await wait(QUIET_MS);
+    await settle();
+    expect(keyShows(A_CODE)).toBe(true);
+  }
+
+  function replacementItems(): HTMLElement[] {
+    const section = screen.queryByRole("region", { name: "Replacements" });
+    return section === null ? [] : within(section).getAllByRole("listitem");
+  }
+
+  it("sends a picked replacement after the quiet delay and lists it", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+
+    await replace("310", "Winter White");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await wait(QUIET_MS - 1);
+    expect(sentReplacements(fetchMock)).toEqual([[]]);
+    await wait(1);
+    await settle();
+
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"]]);
+    expect(replacementItems()).toHaveLength(1);
+    expect(replacementItems()[0]).toHaveTextContent(/310.*Black.*3865.*Winter White/);
+  });
+
+  it("sends nothing when a pair is undone and picked again within the quiet delay", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+    await replace("310", "Winter White");
+    await wait(10 * QUIET_MS);
+
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"]]);
+  });
+
+  it("sends no replace field once the only pair is undone, and hides the list", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"], []]);
+    expect(screen.queryByRole("region", { name: "Replacements" })).not.toBeInTheDocument();
+  });
+
+  it("sends one request with no replace field after a reset of two pairs", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await replace("321", "Black Brown");
+    await wait(QUIET_MS);
+    await settle();
+    expect(sentReplacements(fetchMock).at(-1)).toEqual(["310:3865", "321:3371"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset replacements" }));
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865", "321:3371"], []]);
+  });
+
+  it("marks the pair the response ignored, and keeps the mark on it after an undo", async () => {
+    stubWithThreads({
+      patterns: () => Promise.resolve(json(200, { ...PATTERN, ignored_replacements: [1] })),
+    });
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await replace("321", "Black Brown");
+    await wait(QUIET_MS);
+    await settle();
+
+    const [first, second] = replacementItems();
+    expect(first).not.toHaveTextContent(/not in the pattern/);
+    expect(second).toHaveTextContent(/321.*not in the pattern/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+
+    expect(replacementItems()).toHaveLength(1);
+    expect(replacementItems()[0]).toHaveTextContent(/321.*not in the pattern/);
+  });
+
+  it("sends the pairs with a width change", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    setValue(numberField(WIDTH), "55");
+    await wait(QUIET_MS);
+    await settle();
+
+    const last = posted(fetchMock, "/api/patterns").at(-1);
+    expect(last?.get("width")).toBe("55");
+    expect(last?.getAll("replace")).toEqual(["310:3865"]);
+  });
+
+  it("asks for the PDF with the pairs that produced the preview", async () => {
+    const fetchMock = stubWithThreads({
+      pdf: () =>
+        Promise.resolve(
+          new Response("%PDF-1.4 chart", {
+            status: 200,
+            headers: { "Content-Type": "application/pdf" },
+          }),
+        ),
+    });
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static override createObjectURL = vi.fn(() => "blob:chart");
+        static override revokeObjectURL = vi.fn();
+      },
+    );
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(downloadButton());
+    await settle();
+
+    const pdfs = posted(fetchMock, "/api/patterns/pdf");
+    expect(pdfs).toHaveLength(1);
+    expect(pdfs[0]?.getAll("replace")).toEqual(["310:3865"]);
+  });
+
+  it("keeps the pairs when another image is chosen and sends them with it", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    const other = chooseFile("other.png");
+    await wait(QUIET_MS);
+    await settle();
+
+    const last = posted(fetchMock, "/api/patterns").at(-1);
+    const image = last?.get("image");
+    expect(image instanceof File ? image.name : null).toBe(other.name);
+    expect(last?.getAll("replace")).toEqual(["310:3865"]);
+    expect(replacementItems()).toHaveLength(1);
+  });
+});
+
+describe("PDF chart layout", () => {
+  function pdfResponse(): Response {
+    return new Response("%PDF-1.4 chart", {
+      status: 200,
+      headers: { "Content-Type": "application/pdf" },
+    });
+  }
+
+  function stubSave() {
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static override createObjectURL = vi.fn(() => "blob:chart");
+        static override revokeObjectURL = vi.fn();
+      },
+    );
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  }
+
+  async function preview() {
+    chooseFile();
+    await wait(QUIET_MS);
+    await settle();
+    expect(keyShows(A_CODE)).toBe(true);
+  }
+
+  function lastPdf(fetchMock: ReturnType<typeof stubApi>): FormData | undefined {
+    return posted(fetchMock, "/api/patterns/pdf").at(-1);
+  }
+
+  it("starts at the reported overlap, centre lines off, and no pages fields", async () => {
+    stubApi();
+    await renderLive();
+    await preview();
+
+    expect(numberField("Repeated rows and columns")).toHaveValue(2);
+    expect(screen.getByRole("checkbox", { name: "Centre lines in the PDF" })).not.toBeChecked();
+    expect(screen.queryByRole("spinbutton", { name: "Pages across" })).not.toBeInTheDocument();
+  });
+
+  it("shows the pages fields only for a split by pages", async () => {
+    stubApi();
+    await renderLive();
+    await preview();
+
+    setValue(screen.getByLabelText("Split"), "pages");
+    expect(numberField("Pages across")).toHaveValue(2);
+    expect(numberField("Pages down")).toHaveValue(2);
+
+    setValue(screen.getByLabelText("Split"), "cells");
+    expect(screen.queryByRole("spinbutton", { name: "Pages across" })).not.toBeInTheDocument();
+  });
+
+  it("asks for the default layout by default", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    await preview();
+
+    fireEvent.click(downloadButton());
+    await settle();
+
+    const body = lastPdf(fetchMock);
+    expect(body?.get("split")).toBe("cells");
+    expect(body?.get("overlap")).toBe("2");
+    expect(body?.get("centre_lines")).toBe("false");
+  });
+
+  it("asks for the layout chosen", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    await preview();
+
+    setValue(screen.getByLabelText("Split"), "pages");
+    setValue(numberField("Pages across"), "3");
+    setValue(numberField("Repeated rows and columns"), "0");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Centre lines in the PDF" }));
+    fireEvent.click(downloadButton());
+    await settle();
+
+    const body = lastPdf(fetchMock);
+    expect(
+      ["split", "pages_across", "pages_down", "overlap", "centre_lines"].map((n) => body?.get(n)),
+    ).toEqual(["pages", "3", "2", "0", "true"]);
+  });
+
+  it("shows a refused layout field from the API and keeps the preview", async () => {
+    stubApi({ pdf: () => Promise.resolve(refused("pages_across", "must be at most 20")) });
+    await renderLive();
+    await preview();
+
+    fireEvent.click(downloadButton());
+    await settle();
+
+    expect(screen.getByRole("alert")).toHaveTextContent("pages_across: must be at most 20");
+    expect(keyShows(A_CODE)).toBe(true);
+  });
+});
+
+describe("PDF view", () => {
+  let made = 0;
+  let revoked: string[] = [];
+
+  function pdfResponse(): Response {
+    return new Response("%PDF-1.4 chart", {
+      status: 200,
+      headers: { "Content-Type": "application/pdf" },
+    });
+  }
+
+  /** Object URLs counted (blob:pdf-1, blob:pdf-2, ...) and their revocations recorded. */
+  function stubUrls() {
+    made = 0;
+    revoked = [];
+    vi.stubGlobal(
+      "URL",
+      class extends URL {
+        static override createObjectURL = vi.fn(() => {
+          made += 1;
+          return `blob:pdf-${String(made)}`;
+        });
+        static override revokeObjectURL = vi.fn((url: string) => {
+          revoked.push(url);
+        });
+      },
+    );
+    return vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  }
+
+  async function preview() {
+    chooseFile();
+    await wait(QUIET_MS);
+    await settle();
+    expect(keyShows(A_CODE)).toBe(true);
+  }
+
+  function pdfRequests(fetchMock: ReturnType<typeof stubApi>): FormData[] {
+    return posted(fetchMock, "/api/patterns/pdf");
+  }
+
+  function frameUrl(): string | null {
+    return screen.queryByTitle("PDF chart preview")?.getAttribute("src") ?? null;
+  }
+
+  function showPdf() {
+    fireEvent.click(screen.getByRole("radio", { name: "PDF" }));
+  }
+
+  it("asks for nothing while the pattern is shown", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    await renderLive();
+    await preview();
+
+    await wait(2000);
+
+    expect(pdfRequests(fetchMock)).toHaveLength(0);
+  });
+
+  it("asks at once when shown, then shows the PDF with a link to it", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    await renderLive();
+    await preview();
+
+    showPdf();
+    await settle();
+
+    const requests = pdfRequests(fetchMock);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.get("width")).toBe("100");
+    expect(requests[0]?.get("paper")).toBe("A4");
+    expect(frameUrl()).toBe("blob:pdf-1");
+    expect(screen.getByRole("link", { name: "Open in a new tab" })).toHaveAttribute(
+      "href",
+      "blob:pdf-1",
+    );
+  });
+
+  it("follows a chart change after the quiet delay and revokes the old PDF", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    setValue(screen.getByLabelText("Paper"), "A3");
+    await wait(QUIET_MS - 1);
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    expect(frameUrl()).toBe("blob:pdf-1");
+    expect(screen.getByText("Making the PDF...")).toBeInTheDocument();
+
+    await wait(1);
+    await settle();
+
+    expect(pdfRequests(fetchMock).at(-1)?.get("paper")).toBe("A3");
+    expect(frameUrl()).toBe("blob:pdf-2");
+    expect(revoked).toContain("blob:pdf-1");
+  });
+
+  it("waits for a conversion, then asks once with the new settings", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    setValue(numberField(WIDTH), "55");
+    await wait(QUIET_MS - 1);
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    await wait(1);
+    await settle();
+
+    expect(pdfRequests(fetchMock)).toHaveLength(2);
+    expect(pdfRequests(fetchMock).at(-1)?.get("width")).toBe("55");
+  });
+
+  it("sends one follow-up for changes made while a PDF is being made", async () => {
+    const calls = controlled();
+    const fetchMock = stubApi({ pdf: calls.handler });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+
+    setValue(screen.getByLabelText("Paper"), "A3");
+    await wait(QUIET_MS);
+    setValue(screen.getByLabelText("Paper"), "A5");
+    await wait(QUIET_MS);
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+
+    await calls.answer(0, pdfResponse());
+    expect(pdfRequests(fetchMock)).toHaveLength(2);
+    expect(pdfRequests(fetchMock).at(-1)?.get("paper")).toBe("A5");
+  });
+
+  it("asks again only when something changed while the pattern was shown", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Pattern" }));
+    showPdf();
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    expect(frameUrl()).toBe("blob:pdf-1");
+
+    fireEvent.click(screen.getByRole("radio", { name: "Pattern" }));
+    setValue(screen.getByLabelText("Paper"), "A3");
+    await wait(2000);
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+
+    showPdf();
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it("shows the API's message on a failure and keeps the PDF shown", async () => {
+    let answers = 0;
+    stubApi({
+      pdf: () => {
+        answers += 1;
+        return Promise.resolve(answers === 1 ? pdfResponse() : refused("pages_across", "too many"));
+      },
+    });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    setValue(screen.getByLabelText("Paper"), "A3");
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(screen.getByText("pages_across: too many")).toBeInTheDocument();
+    expect(frameUrl()).toBe("blob:pdf-1");
+  });
+
+  it("downloads the PDF shown without asking again, and asks once the choices changed", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    const click = stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    fireEvent.click(downloadButton());
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    expect(click).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Pattern" }));
+    setValue(screen.getByLabelText("Paper"), "A3");
+    fireEvent.click(downloadButton());
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(2);
+  });
+
+  it("waits to be asked for a pattern over the bound", async () => {
+    const big = {
+      ...PATTERN,
+      width: 501,
+      height: 500,
+      grid: Array.from({ length: 500 }, () => Array.from({ length: 501 }, () => 0)),
+    };
+    const fetchMock = stubApi({
+      patterns: () => Promise.resolve(json(200, big)),
+      pdf: () => Promise.resolve(pdfResponse()),
+    });
+    stubUrls();
+    await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate preview" }));
+    await settle();
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    expect(frameUrl()).toBe("blob:pdf-1");
+
+    setValue(screen.getByLabelText("Paper"), "A3");
+    await wait(2000);
+    expect(pdfRequests(fetchMock)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Generate preview" })).toBeInTheDocument();
+    expect(frameUrl()).toBe("blob:pdf-1");
+  });
+
+  it("revokes the PDF shown when another image is chosen and on unmount", async () => {
+    stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubUrls();
+    const view = await renderLive();
+    await preview();
+    showPdf();
+    await settle();
+
+    chooseFile("other.png");
+    expect(revoked).toContain("blob:pdf-1");
+
+    await wait(QUIET_MS);
+    await settle();
+    showPdf();
+    await settle();
+    const shown = frameUrl();
+    view.unmount();
+    expect(revoked).toContain(shown);
   });
 });

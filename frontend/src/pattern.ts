@@ -10,6 +10,8 @@ export interface KeyEntry {
   skeins: number;
   /** The chart symbol the backend gave this entry; shown as is, never reassigned. */
   symbol: string;
+  /** The symbol's ink on this thread's colour, as the colour PDF prints it. */
+  symbol_ink: "black" | "white";
 }
 
 export interface FinishedSize {
@@ -48,4 +50,6 @@ export interface Pattern {
   isolated_stitches: IsolatedStitches;
   /** The pattern before cleanup, or `null` when every cleanup setting is 0. */
   converted: ConvertedPattern | null;
+  /** 0-based positions of the replacements sent that found nothing to replace. */
+  ignored_replacements: number[];
 }

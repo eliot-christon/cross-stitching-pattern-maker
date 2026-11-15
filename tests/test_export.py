@@ -8,18 +8,42 @@ as text, so counting a symbol in the page's extracted text counts its cells.
 import functools
 import io
 import re
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import numpy.typing as npt
 import pytest
+from pdf_helpers import (
+    BLACK,
+    COLOUR_TOLERANCE,
+    COUNTABLE,
+    LAYOUT_IDS,
+    LAYOUTS,
+    NON_GREY_OPERATORS,
+    RED,
+    SHEET_POINTS,
+    _cells,
+    _chart_pages,
+    _corners,
+    _countable_symbols,
+    _embedded,
+    _fills,
+    _five_colours,
+    _hundred_threads,
+    _in_window,
+    _is_key_row,
+    _number,
+    _numbers,
+    _parts,
+    _read,
+    _speckled,
+    _two_colour,
+    _word,
+)
 from PIL import Image
-from pypdf import PageObject, PdfReader
-from pypdf.generic import ArrayObject, ContentStream, DictionaryObject
+from pypdf import PdfReader
 from reportlab.pdfbase.ttfonts import TTFontFile
 
 from cross_stitch.export import (
@@ -33,11 +57,12 @@ from cross_stitch.export import (
     Paper,
     Variant,
     chart_capacity,
-    key_symbols,
+    pattern_symbols,
     render_pdf,
+    symbol_ink,
 )
-from cross_stitch.pattern import EMPTY, KeyEntry, Pattern, build_pattern, convert_image
-from cross_stitch.threads import dmc_thread, dmc_threads
+from cross_stitch.pattern import EMPTY, build_pattern, convert_image
+from cross_stitch.threads import dmc_threads
 
 LIMIT = 100
 
@@ -102,13 +127,6 @@ ALLOWED_RANGES = [
 EXCLUDED = {0x00A0, 0x00AD}  # no-break space, soft hyphen
 
 
-def _key(length: int) -> list[KeyEntry]:
-    """A key of `length` entries, each a different real DMC thread."""
-    threads = dmc_threads()
-    assert length <= len(threads)
-    return [KeyEntry(thread=threads[i], stitches=1000 - i, skeins=1) for i in range(length)]
-
-
 def _label(group: tuple[str, ...]) -> str:
     return " ".join(f"U+{ord(c):04X}" for c in group)
 
@@ -119,43 +137,6 @@ def test_the_list_has_exactly_100_symbols() -> None:
 
 def test_the_list_has_no_duplicates() -> None:
     assert len(set(SYMBOLS)) == len(SYMBOLS)
-
-
-def test_an_empty_key_has_no_symbols() -> None:
-    assert not key_symbols([])
-
-
-def test_a_one_entry_key_gets_the_first_symbol() -> None:
-    assert key_symbols(_key(1)) == [SYMBOLS[0]]
-
-
-def test_a_100_entry_key_gets_100_different_symbols() -> None:
-    symbols = key_symbols(_key(LIMIT))
-    assert len(symbols) == LIMIT
-    assert len(set(symbols)) == LIMIT
-    assert symbols == list(SYMBOLS)
-
-
-def test_a_101_entry_key_is_refused_naming_the_limit() -> None:
-    with pytest.raises(ValueError, match="100"):
-        key_symbols(_key(LIMIT + 1))
-
-
-def test_the_same_key_twice_gives_identical_symbols() -> None:
-    key = _key(37)
-    assert key_symbols(key) == key_symbols(key)
-
-
-@pytest.mark.parametrize("length", [1, 2, 3, 17, 99])
-def test_position_decides_the_symbols_not_the_thread(length: int) -> None:
-    assert key_symbols(_key(length)) == key_symbols(_key(LIMIT))[:length]
-
-
-def test_the_threads_do_not_change_the_symbols() -> None:
-    threads = dmc_threads()
-    first = [KeyEntry(thread=threads[i], stitches=10, skeins=1) for i in range(5)]
-    other = [KeyEntry(thread=threads[-1 - i], stitches=99, skeins=3) for i in range(5)]
-    assert key_symbols(first) == key_symbols(other)
 
 
 @pytest.mark.parametrize("index", range(LIMIT))
@@ -181,218 +162,6 @@ def test_every_symbol_is_in_a_block_the_font_covers(index: int) -> None:
 
 
 # --- PDF chart ---------------------------------------------------------------------------
-
-BLACK = dmc_thread("310")  # (0, 0, 0)
-RED = dmc_thread("666")  # Bright Red (227, 29, 66)
-BLUE = dmc_thread("797")  # Royal Blue (19, 71, 125)
-GREEN = dmc_thread("700")  # Green Bright (7, 115, 27)
-WHITE = dmc_thread("Blanc")  # White (252, 251, 248), not pure white
-
-LAYOUTS: list[tuple[Paper, Orientation]] = [(p, o) for p in PAPERS for o in ORIENTATIONS]
-LAYOUT_IDS = [f"{paper}-{orientation}" for paper, orientation in LAYOUTS]
-
-# ISO 216 sheet sizes in PDF points (1/72 inch), portrait (width, height).
-SHEET_POINTS: dict[str, tuple[float, float]] = {
-    "A2": (1191, 1684),
-    "A3": (842, 1191),
-    "A4": (595, 842),
-    "A5": (420, 595),
-}
-
-# The first ten symbols are geometric shapes: none of them can occur in a label, a row or
-# column number, or any other ASCII text on a chart page.
-SHAPES = SYMBOLS[:10]
-MULTIPLICATION_SIGN = "\U000000d7"  # a symbol, but also a natural way to write "w x h"
-
-LABEL = re.compile(r"Columns\s+(\d+)\s*-\s*(\d+),\s*rows\s+(\d+)\s*-\s*(\d+)")
-NON_GREY_OPERATORS = {b"k", b"K", b"sc", b"scn", b"SC", b"SCN"}
-COLOUR_TOLERANCE = 0.003
-
-Label = tuple[int, int, int, int]
-"""A chart page's (first column, last column, first row, last row), 1-based, inclusive."""
-
-
-@dataclass(frozen=True)
-class _Pdf:
-    reader: PdfReader
-    covers: list[str]  # extracted text of each cover page, in page order
-    charts: list[str]  # extracted text of each chart page, in page order
-    labels: list[Label]  # the label of each chart page, in page order
-
-
-@dataclass(frozen=True)
-class _Parts:
-    operations: list[tuple[Any, bytes]]  # the page's and its form XObjects' operators
-    images: list[DictionaryObject]  # image XObjects
-    fonts: list[DictionaryObject]  # font dictionaries
-
-
-def _read(data: bytes) -> _Pdf:
-    """Parse a rendered PDF: cover pages first, then chart pages, each with one label."""
-    reader = PdfReader(io.BytesIO(data))
-    covers: list[str] = []
-    charts: list[str] = []
-    labels: list[Label] = []
-    for number, page in enumerate(reader.pages):
-        text = page.extract_text()
-        found = LABEL.findall(text)
-        if not found:
-            assert not charts, f"page {number + 1} has no label but follows a chart page"
-            covers.append(text)
-            continue
-        assert len(found) == 1, f"page {number + 1} has {len(found)} labels"
-        first_column, last_column, first_row, last_row = (int(value) for value in found[0])
-        charts.append(text)
-        labels.append((first_column, last_column, first_row, last_row))
-    assert covers, "the PDF has no cover page"
-    return _Pdf(reader=reader, covers=covers, charts=charts, labels=labels)
-
-
-def _chart_pages(pdf: _Pdf) -> list[PageObject]:
-    return [pdf.reader.pages[i] for i in range(len(pdf.covers), len(pdf.reader.pages))]
-
-
-def _dict(value: object) -> DictionaryObject:
-    resolved = value.get_object() if hasattr(value, "get_object") else value
-    assert isinstance(resolved, DictionaryObject), type(resolved)
-    return resolved
-
-
-def _parts(reader: PdfReader, page: PageObject) -> _Parts:
-    """Every operator a page draws (its content and its form XObjects, nested), with the
-    image XObjects and fonts its resources hold."""
-    contents = page.get_contents()
-    operations = [] if contents is None else list(ContentStream(contents, reader).operations)
-    images: list[DictionaryObject] = []
-    fonts: list[DictionaryObject] = []
-    pending = [_dict(page["/Resources"])] if "/Resources" in page else []
-    while pending:
-        current = pending.pop()
-        if "/Font" in current:
-            font_table = _dict(current["/Font"])
-            fonts.extend(_dict(font_table[name]) for name in font_table)
-        if "/XObject" not in current:
-            continue
-        xobjects = _dict(current["/XObject"])
-        for name in xobjects:
-            xobject = _dict(xobjects[name])
-            subtype = str(xobject["/Subtype"])
-            if subtype == "/Image":
-                images.append(xobject)
-            elif subtype == "/Form":
-                operations.extend(ContentStream(xobject, reader).operations)
-                if "/Resources" in xobject:
-                    pending.append(_dict(xobject["/Resources"]))
-    return _Parts(operations=operations, images=images, fonts=fonts)
-
-
-def _fills(pdf: _Pdf) -> list[tuple[float, ...]]:
-    """The operands of every `rg` (non-stroking RGB colour) on the chart pages."""
-    return [
-        tuple(float(value) for value in operands)
-        for page in _chart_pages(pdf)
-        for operands, operator in _parts(pdf.reader, page).operations
-        if operator == b"rg"
-    ]
-
-
-def _embedded(font: DictionaryObject) -> bool:
-    """Whether a font dictionary (simple or Type 0) carries its font file."""
-    if "/DescendantFonts" in font:
-        descendants = font["/DescendantFonts"]
-        assert isinstance(descendants, ArrayObject)
-        font = _dict(descendants[0])
-    if "/FontDescriptor" not in font:
-        return False
-    descriptor = _dict(font["/FontDescriptor"])
-    return any(key in descriptor for key in ("/FontFile", "/FontFile2", "/FontFile3"))
-
-
-def _numbers(text: str) -> set[int]:
-    return {int(digits) for digits in re.findall(r"\d+", text)}
-
-
-def _word(token: str) -> re.Pattern[str]:
-    """`token` standing alone: not inside a longer run of letters or digits."""
-    return re.compile(rf"(?<![0-9A-Za-z]){re.escape(token)}(?![0-9A-Za-z])")
-
-
-def _number(fragment: str) -> re.Pattern[str]:
-    """The number `fragment` (a regex) standing alone: no digit or decimal point around it."""
-    return re.compile(rf"(?<![\d.]){fragment}(?!\.?\d)")
-
-
-def _is_key_row(line: str, entry: KeyEntry) -> bool:
-    return (
-        entry.thread.name in line
-        and _word(entry.thread.code).search(line) is not None
-        and _word(str(entry.stitches)).search(line) is not None
-        and _word(str(entry.skeins)).search(line) is not None
-    )
-
-
-def _in_window(pattern: Pattern, label: Label, index: int) -> int:
-    """How many cells of key entry `index` lie inside a chart page's stated range."""
-    first_column, last_column, first_row, last_row = label
-    window = pattern.grid[first_row - 1 : last_row, first_column - 1 : last_column]
-    return int(np.count_nonzero(window == index))
-
-
-def _cells(rows: list[list[int]] | npt.NDArray[np.intp]) -> npt.NDArray[np.intp]:
-    return np.asarray(rows, dtype=np.intp)
-
-
-def _two_colour(width: int, height: int, split: int) -> Pattern:
-    """Columns left of `split` in black, the rest in red; `split` > width / 2, so black is
-    entry 0 and red entry 1."""
-    assert split > width - split
-    row = np.where(np.arange(width) < split, 0, 1)
-    return build_pattern(_cells(np.tile(row, (height, 1))), [BLACK, RED], 14.0)
-
-
-def _corners(width: int, height: int) -> Pattern:
-    """Bare fabric except the four corner cells, in black: cheap to render at any size."""
-    cells = np.full((height, width), EMPTY, dtype=np.intp)
-    cells[[0, 0, -1, -1], [0, -1, 0, -1]] = 0
-    return build_pattern(cells, [BLACK], 14.0)
-
-
-def _speckled(width: int, height: int) -> Pattern:
-    """About 20% black (entry 0) and 10% red (entry 1) cells at seeded random places, the
-    rest bare: an irregular layout, so a page that shows a shifted range miscounts."""
-    draw = np.random.default_rng(7).random((height, width))
-    cells = np.full((height, width), EMPTY, dtype=np.intp)
-    cells[draw < 0.2] = 0
-    cells[(draw >= 0.2) & (draw < 0.3)] = 1
-    pattern = build_pattern(cells, [BLACK, RED], 14.0)
-    assert [entry.thread for entry in pattern.key] == [BLACK, RED]
-    return pattern
-
-
-def _five_colours() -> Pattern:
-    """12 x 8: red 36, blue 24, green 12, black 8, white 4 stitches, 12 bare cells."""
-    bare = EMPTY
-    rows = [
-        *[[0] * 12] * 3,
-        *[[1] * 12] * 2,
-        [2] * 12,
-        [3] * 8 + [bare] * 4,
-        [4] * 4 + [bare] * 8,
-    ]
-    pattern = build_pattern(_cells(rows), [RED, BLUE, GREEN, BLACK, WHITE], 14.0)
-    assert [entry.thread for entry in pattern.key] == [RED, BLUE, GREEN, BLACK, WHITE]
-    return pattern
-
-
-def _hundred_threads() -> Pattern:
-    """101 x 50, the first 100 DMC threads: thread i fills 100 - i cells (5050 in all), so
-    the key is those threads in source order."""
-    threads = dmc_threads()[:LIMIT]
-    counts = [LIMIT - i for i in range(LIMIT)]
-    cells = np.repeat(np.arange(LIMIT, dtype=np.intp), counts).reshape(50, 101)
-    pattern = build_pattern(cells, threads, 14.0)
-    assert [entry.thread for entry in pattern.key] == list(threads)
-    return pattern
 
 
 @functools.cache
@@ -541,7 +310,8 @@ def test_a_1x1_pattern_is_one_chart_page() -> None:
     pattern = build_pattern(_cells([[0]]), [BLACK], 14.0)
     pdf = _read(render_pdf(pattern))
     assert pdf.labels == [(1, 1, 1, 1)]
-    assert pdf.charts[0].count(SYMBOLS[0]) == 1
+    [symbol] = _countable_symbols(pattern)
+    assert pdf.charts[0].count(symbol) == 1
 
 
 @pytest.mark.parametrize(("paper", "orientation"), LAYOUTS, ids=LAYOUT_IDS)
@@ -549,9 +319,11 @@ def test_a_pattern_of_exactly_one_page_capacity_is_one_chart_page(
     paper: Paper, orientation: Orientation
 ) -> None:
     columns, rows = chart_capacity(paper, orientation)
-    pdf = _read(render_pdf(_corners(columns, rows), paper=paper, orientation=orientation))
+    pattern = _corners(columns, rows)
+    pdf = _read(render_pdf(pattern, paper=paper, orientation=orientation))
     assert pdf.labels == [(1, columns, 1, rows)]
-    assert pdf.charts[0].count(SYMBOLS[0]) == 4
+    [symbol] = _countable_symbols(pattern)
+    assert pdf.charts[0].count(symbol) == 4
 
 
 @pytest.mark.parametrize(("paper", "orientation"), LAYOUTS, ids=LAYOUT_IDS)
@@ -625,9 +397,10 @@ def test_chart_pages_cover_every_cell_in_reading_order_with_its_own_symbol(
         (1, columns, first_row, rows + 1),
         (first_column, columns + 1, first_row, rows + 1),
     ]
+    first, second = _countable_symbols(pattern)
     for text, label in zip(pdf.charts, pdf.labels, strict=True):
-        assert text.count(SYMBOLS[0]) == _in_window(pattern, label, 0), label
-        assert text.count(SYMBOLS[1]) == _in_window(pattern, label, 1), label
+        assert text.count(first) == _in_window(pattern, label, 0), label
+        assert text.count(second) == _in_window(pattern, label, 1), label
 
 
 def test_a_bigger_sheet_needs_fewer_chart_pages() -> None:
@@ -709,7 +482,13 @@ def test_a_100_entry_key_is_on_the_cover_in_key_order(
         previous = row
     cover_text = "\n".join(pdf.covers)
     position = -1
-    for index, symbol in enumerate(key_symbols(pattern.key)):
+    countable = [
+        (index, symbol)
+        for index, symbol in enumerate(pattern_symbols(pattern))
+        if symbol in COUNTABLE
+    ]
+    assert len(countable) > 50
+    for index, symbol in countable:
         position = cover_text.find(symbol, position + 1)
         assert position >= 0, f"symbol {index} (U+{ord(symbol):04X}) missing or out of order"
 
@@ -736,8 +515,8 @@ def test_every_entry_of_a_100_entry_key_has_its_own_symbol_on_the_chart(
     # multiplication sign is left out too, in case a page writes a size as "w x h" with it.
     countable = [
         (index, symbol)
-        for index, symbol in enumerate(key_symbols(pattern.key))
-        if ord(symbol) > 0x7F and symbol != MULTIPLICATION_SIGN
+        for index, symbol in enumerate(pattern_symbols(pattern))
+        if symbol in COUNTABLE
     ]
     assert len(countable) > 50
     for text, label in zip(pdf.charts, pdf.labels, strict=True):
@@ -766,9 +545,10 @@ def test_each_half_shows_its_own_symbol_once_per_stitch(
     pdf = _read(render_pdf(pattern, paper=paper, orientation=orientation))
     assert len(pdf.charts) == 1
     chart = pdf.charts[0]
-    assert chart.count(SYMBOLS[0]) == pattern.key[0].stitches
-    assert chart.count(SYMBOLS[1]) == pattern.key[1].stitches
-    assert not [symbol for symbol in SHAPES[2:] if symbol in chart]
+    symbols = _countable_symbols(pattern)
+    assert chart.count(symbols[0]) == pattern.key[0].stitches
+    assert chart.count(symbols[1]) == pattern.key[1].stitches
+    assert not [symbol for symbol in COUNTABLE if symbol not in symbols and symbol in chart]
 
 
 def test_an_all_bare_pattern_renders_with_no_key_rows_and_no_symbols() -> None:
@@ -780,7 +560,7 @@ def test_an_all_bare_pattern_renders_with_no_key_rows_and_no_symbols() -> None:
     assert BLACK.name not in cover_text
     assert not _word(BLACK.code).search(cover_text)
     for text in pdf.covers + pdf.charts:
-        assert not [symbol for symbol in SHAPES if symbol in text]
+        assert not [symbol for symbol in COUNTABLE if symbol in text]
 
 
 def test_a_converted_image_shows_one_symbol_per_stitched_cell() -> None:
@@ -795,8 +575,9 @@ def test_a_converted_image_shows_one_symbol_per_stitched_cell() -> None:
     assert pattern.total_stitches == 16
     assert len(pattern.key) == 2
     chart = _read(render_pdf(pattern)).charts[0]
-    assert chart.count(SYMBOLS[0]) == pattern.key[0].stitches
-    assert chart.count(SYMBOLS[1]) == pattern.key[1].stitches
+    symbols = _countable_symbols(pattern)
+    assert chart.count(symbols[0]) == pattern.key[0].stitches
+    assert chart.count(symbols[1]) == pattern.key[1].stitches
 
 
 # Variants
@@ -845,6 +626,21 @@ def test_the_same_pattern_twice_gives_identical_bytes(
     assert first == second
 
 
+def test_both_variants_give_each_entry_the_same_symbol() -> None:
+    pattern = _five_colours()
+    colour = _read(render_pdf(pattern, variant="colour"))
+    bw = _read(render_pdf(pattern, variant="bw"))
+    colour_cover, bw_cover = "\n".join(colour.covers), "\n".join(bw.covers)
+    # Only symbols no label, name or number can contain can be counted in page text.
+    countable = [symbol for symbol in pattern_symbols(pattern) if symbol in COUNTABLE]
+    assert len(countable) >= 2
+    for symbol in countable:
+        assert symbol in colour_cover
+        assert colour_cover.count(symbol) == bw_cover.count(symbol)
+        for colour_text, bw_text in zip(colour.charts, bw.charts, strict=True):
+            assert colour_text.count(symbol) == bw_text.count(symbol)
+
+
 def test_the_two_variants_differ() -> None:
     pattern = _five_colours()
     assert render_pdf(pattern, variant="colour") != render_pdf(pattern, variant="bw")
@@ -881,3 +677,20 @@ PINNED_CAPACITIES: dict[tuple[str, str], tuple[int, int]] = {
 @pytest.mark.parametrize(("paper", "orientation"), LAYOUTS, ids=LAYOUT_IDS)
 def test_each_layout_holds_its_pinned_capacity(paper: Paper, orientation: Orientation) -> None:
     assert chart_capacity(paper, orientation) == PINNED_CAPACITIES[(paper, orientation)]
+
+
+# Rec. 601 luminance 0.299 R + 0.587 G + 0.114 B: below 140 the symbol is white, else black.
+@pytest.mark.parametrize(
+    ("rgb", "ink"),
+    [
+        ((0, 0, 0), "white"),  # DMC 310
+        ((252, 251, 248), "black"),  # DMC Blanc
+        ((199, 43, 59), "white"),  # DMC 321, luminance about 91.5
+        ((140, 140, 140), "black"),  # exactly 140
+        ((139, 139, 139), "white"),  # just below
+    ],
+)
+def test_symbol_ink_follows_the_luminance_of_the_thread(
+    rgb: tuple[int, int, int], ink: str
+) -> None:
+    assert symbol_ink(rgb) == ink

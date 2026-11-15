@@ -7,6 +7,8 @@ import {
   convertImage,
   downloadPdf,
   getLimits,
+  getNearestThreads,
+  getThreads,
   type Limits,
 } from "./api";
 import type { Pattern } from "./pattern";
@@ -28,11 +30,12 @@ const PATTERN: Pattern = {
   height: 1,
   fabric_count: 16,
   grid: [[0, null]],
-  key: [{ code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol: "A" }],
+  key: [{ code: "310", name: "Black", rgb: [0, 0, 0], stitches: 1, skeins: 1, symbol: "A", symbol_ink: "white" }],
   total_stitches: 1,
   finished_size: { width_in: 0.125, height_in: 0.0625, width_cm: 0.3175, height_cm: 0.15875 },
   isolated_stitches: { before: 1, after: 1 },
   converted: null,
+  ignored_replacements: [],
 };
 
 function image(size?: number): File {
@@ -217,6 +220,9 @@ describe("getLimits", () => {
       merge_distance: { min: 0, max: 10, step: 0.5, default: 0 },
       min_stitches: { min: 0, max: 1000, step: 1, default: 0 },
       confetti_size: { min: 0, max: 10, step: 1, default: 0 },
+      pages_across: { min: 1, max: 20, step: 1, default: 2 },
+      pages_down: { min: 1, max: 20, step: 1, default: 2 },
+      overlap: { min: 0, max: 5, step: 1, default: 2 },
     },
   };
 
@@ -258,7 +264,16 @@ describe("getLimits", () => {
 });
 
 describe("downloadPdf", () => {
-  const OPTIONS = { variant: "bw", paper: "A3", orientation: "landscape" } as const;
+  const OPTIONS = {
+    variant: "bw",
+    paper: "A3",
+    orientation: "landscape",
+    split: "cells",
+    pagesAcross: "2",
+    pagesDown: "2",
+    overlap: "2",
+    centreLines: false,
+  } as const;
 
   function pdf(): Response {
     // A string body: jsdom's Blob is not the one Node's Response reads.
@@ -340,5 +355,159 @@ describe("downloadPdf", () => {
       ok: false,
       message: "Cannot reach the server. Is the API running?",
     });
+  });
+});
+
+describe("thread table and nearest threads", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetch(response: Response | Error) {
+    const fetchMock = vi.fn((_url: string) =>
+      response instanceof Error ? Promise.reject(response) : Promise.resolve(response),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  function jsonResponse(status: number, body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  it("asks /api/threads for the table and returns the list", async () => {
+    const table = [{ code: "310", name: "Black", rgb: [0, 0, 0] }];
+    const fetchMock = stubFetch(jsonResponse(200, table));
+
+    const result = await getThreads();
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/threads");
+    expect(result).toEqual({ ok: true, threads: table });
+  });
+
+  it("asks for a code's nearest threads, encoding the code", async () => {
+    const fetchMock = stubFetch(jsonResponse(200, []));
+    await getNearestThreads("B5200");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/threads/B5200/nearest");
+
+    const second = stubFetch(jsonResponse(200, []));
+    await getNearestThreads("a/b c");
+    expect(second.mock.calls[0]?.[0]).toBe("/api/threads/a%2Fb%20c/nearest");
+  });
+
+  it("gives the API's message for an unknown code, and the unreachable one offline", async () => {
+    stubFetch(jsonResponse(404, { detail: "unknown DMC code: 'XYZ'" }));
+    expect(await getNearestThreads("XYZ")).toEqual({
+      ok: false,
+      message: "unknown DMC code: 'XYZ'",
+    });
+
+    stubFetch(new TypeError("offline"));
+    const offline = await getThreads();
+    expect(offline.ok).toBe(false);
+    expect(offline.ok ? "" : offline.message).toMatch(/cannot reach the server/i);
+  });
+});
+
+describe("replacements on the wire", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const settings = {
+    width: "40",
+    maxColours: "4",
+    fabricCount: "14",
+    mergeDistance: "0",
+    minStitches: "0",
+    confettiSize: "0",
+  };
+  const black = { code: "310", name: "Black", rgb: [0, 0, 0] as [number, number, number] };
+  const winter = { code: "3865", name: "Winter White", rgb: [249, 247, 241] as [number, number, number] };
+  const ivory = { code: "3866", name: "Mocha Brown Ultra Very Light", rgb: [250, 246, 240] as [number, number, number] };
+
+  function capture() {
+    const bodies: FormData[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        bodies.push(init?.body as FormData);
+        return Promise.resolve(new Response("{}", { status: 500 }));
+      }),
+    );
+    return bodies;
+  }
+
+  it("sends the pairs as repeated replace fields, in order, on both routes", async () => {
+    const bodies = capture();
+    const image = new File(["x"], "a.png", { type: "image/png" });
+    const pairs = [
+      { from: black, to: winter },
+      { from: winter, to: ivory },
+    ];
+
+    await convertImage(image, settings, 1000, pairs);
+    await downloadPdf(image, settings, { variant: "colour", paper: "A4", orientation: "portrait", split: "cells", pagesAcross: "2", pagesDown: "2", overlap: "2", centreLines: false }, 1000, pairs);
+    await convertImage(image, settings, 1000, []);
+
+    expect(bodies.map((body) => body.getAll("replace"))).toEqual([
+      ["310:3865", "3865:3866"],
+      ["310:3865", "3865:3866"],
+      [],
+    ]);
+  });
+});
+
+describe("chart layout on the wire", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const settings = {
+    width: "40",
+    maxColours: "4",
+    fabricCount: "14",
+    mergeDistance: "0",
+    minStitches: "0",
+    confettiSize: "0",
+  };
+  const layoutFields = ["split", "pages_across", "pages_down", "overlap", "centre_lines"];
+
+  function capture() {
+    const bodies: FormData[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        bodies.push(init?.body as FormData);
+        return Promise.resolve(new Response("{}", { status: 500 }));
+      }),
+    );
+    return bodies;
+  }
+
+  it("sends the layout choices with the PDF request, and none with the conversion", async () => {
+    const bodies = capture();
+    const image = new File(["x"], "a.png", { type: "image/png" });
+    const options = {
+      variant: "colour",
+      paper: "A4",
+      orientation: "portrait",
+      split: "pages",
+      pagesAcross: "3",
+      pagesDown: "2",
+      overlap: "0",
+      centreLines: true,
+    } as const;
+
+    await downloadPdf(image, settings, options, 1000);
+    await convertImage(image, settings, 1000);
+
+    const [pdfBody, conversion] = bodies;
+    expect(layoutFields.map((name) => pdfBody?.get(name))).toEqual(["pages", "3", "2", "0", "true"]);
+    expect(pdfBody?.get("variant")).toBe("colour");
+    expect(layoutFields.map((name) => conversion?.get(name))).toEqual([null, null, null, null, null]);
   });
 });

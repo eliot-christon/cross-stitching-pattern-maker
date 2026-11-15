@@ -21,9 +21,16 @@ export interface Limits {
    * before reading it, and through a proxy that refusal arrives as a bare 502.
    */
   max_upload_bytes: number;
-  /** Keyed by the form field name of `POST /patterns`. */
+  /** Keyed by form field name: the conversion settings, then the PDF's layout settings. */
   settings: Record<
-    "width" | "max_colours" | "merge_distance" | "min_stitches" | "confetti_size",
+    | "width"
+    | "max_colours"
+    | "merge_distance"
+    | "min_stitches"
+    | "confetti_size"
+    | "pages_across"
+    | "pages_down"
+    | "overlap",
     SettingLimits
   >;
 }
@@ -46,11 +53,39 @@ export interface Settings {
 /** The PDF chart endpoint: the same inputs as `PATTERNS_URL` plus the chart options. */
 export const PATTERN_PDF_URL = "/api/patterns/pdf";
 
+/** One thread swap, applied by the API after cleanup; a list applies in order. */
+export interface Replacement {
+  from: DmcThread;
+  to: DmcThread;
+}
+
 /** The chart options `POST /patterns/pdf` accepts, as its form fields spell them. */
 export interface ChartOptions {
   variant: "colour" | "bw";
   paper: "A2" | "A3" | "A4" | "A5";
   orientation: "portrait" | "landscape";
+  /** "cells": a 3 mm cell, as many pages as needed; "pages": exactly across x down. */
+  split: "cells" | "pages";
+  /** Pages across and down in a "pages" split, as typed. */
+  pagesAcross: string;
+  pagesDown: string;
+  /** Rows and columns neighbouring pages repeat, as typed. */
+  overlap: string;
+  centreLines: boolean;
+}
+
+/** The form fields of `POST /patterns/pdf` for these options. */
+function chartFields(options: ChartOptions): Record<string, string> {
+  return {
+    variant: options.variant,
+    paper: options.paper,
+    orientation: options.orientation,
+    split: options.split,
+    pages_across: options.pagesAcross,
+    pages_down: options.pagesDown,
+    overlap: options.overlap,
+    centre_lines: options.centreLines ? "true" : "false",
+  };
 }
 
 export type ConvertResult = { ok: true; pattern: Pattern } | { ok: false; message: string };
@@ -94,6 +129,7 @@ async function post(
   image: File,
   settings: Settings,
   maxUploadBytes: number,
+  replacements: readonly Replacement[],
   extra: Record<string, string> = {},
 ): Promise<Sent> {
   if (image.size > maxUploadBytes) {
@@ -109,6 +145,10 @@ async function post(
   body.append("merge_distance", settings.mergeDistance);
   body.append("min_stitches", settings.minStitches);
   body.append("confetti_size", settings.confettiSize);
+  // Repeated `replace` fields, in order: the API applies them in sequence.
+  for (const { from, to } of replacements) {
+    body.append("replace", `${from.code}:${to.code}`);
+  }
   for (const [name, value] of Object.entries(extra)) {
     body.append(name, value);
   }
@@ -135,8 +175,16 @@ export async function downloadPdf(
   settings: Settings,
   options: ChartOptions,
   maxUploadBytes: number,
+  replacements: readonly Replacement[] = [],
 ): Promise<PdfResult> {
-  const sent = await post(PATTERN_PDF_URL, image, settings, maxUploadBytes, { ...options });
+  const sent = await post(
+    PATTERN_PDF_URL,
+    image,
+    settings,
+    maxUploadBytes,
+    replacements,
+    chartFields(options),
+  );
   if (!sent.ok) {
     return sent;
   }
@@ -151,8 +199,9 @@ export async function convertImage(
   image: File,
   settings: Settings,
   maxUploadBytes: number,
+  replacements: readonly Replacement[] = [],
 ): Promise<ConvertResult> {
-  const sent = await post(PATTERNS_URL, image, settings, maxUploadBytes);
+  const sent = await post(PATTERNS_URL, image, settings, maxUploadBytes, replacements);
   if (!sent.ok) {
     return sent;
   }
@@ -198,4 +247,48 @@ function errorMessage(
     return detail.map((error) => `${String(error.loc.at(-1))}: ${error.msg}`).join("; ");
   }
   return `${failed} (HTTP ${status}).`;
+}
+
+/** The DMC table, from `GET /threads`. */
+export const THREADS_URL = "/api/threads";
+
+/** A DMC thread as `GET /threads` gives it. */
+export interface DmcThread {
+  code: string;
+  name: string;
+  rgb: [number, number, number];
+}
+
+/** A thread near another, with the CIEDE2000 `distance` the API computed. */
+export interface NearThread extends DmcThread {
+  distance: number;
+}
+
+export type ThreadsResult<T> = { ok: true; threads: T[] } | { ok: false; message: string };
+
+async function getList<T>(url: string, failed: string): Promise<ThreadsResult<T>> {
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch {
+    return { ok: false, message: UNREACHABLE };
+  }
+  const payload = await readJson(response);
+  if (response.ok && Array.isArray(payload)) {
+    return { ok: true, threads: payload as T[] };
+  }
+  return { ok: false, message: errorMessage(response.status, payload, failed) };
+}
+
+/** Every DMC thread, in the table's order. */
+export function getThreads(): Promise<ThreadsResult<DmcThread>> {
+  return getList<DmcThread>(THREADS_URL, "Loading the threads failed");
+}
+
+/** The threads nearest to `code`, nearest first, as the API ranks them. */
+export function getNearestThreads(code: string): Promise<ThreadsResult<NearThread>> {
+  return getList<NearThread>(
+    `${THREADS_URL}/${encodeURIComponent(code)}/nearest`,
+    "Loading the nearest threads failed",
+  );
 }

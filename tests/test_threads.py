@@ -29,6 +29,7 @@ from cross_stitch.threads import (
     nearest_dmc,
     nearest_dmc_lab,
     nearest_indices,
+    similar_dmc,
 )
 
 type Rgb = tuple[int, int, int]
@@ -421,3 +422,62 @@ def test_nearest_dmc_lab_rejects_anything_but_n_by_3(lab: npt.NDArray[np.float64
 def test_nearest_dmc_rejects_rgb_outside_0_255(rgb: list[Rgb]) -> None:
     with pytest.raises(ValueError):
         nearest_dmc(rgb)
+
+
+def _brute_force_similar(code: str) -> list[tuple[str, float]]:
+    """Every other DMC thread by CIEDE2000 from `code`, then by source row."""
+    threads = dmc_threads()
+    target = srgb_to_lab([dmc_thread(code).rgb])[0]
+    rows = [
+        (float(delta_e_2000(target, srgb_to_lab([other.rgb])[0])), row, other.code)
+        for row, other in enumerate(threads)
+        if other.code != dmc_thread(code).code
+    ]
+    return [(other, distance) for distance, _, other in sorted(rows)]
+
+
+def _codes_and_distances(result: tuple[tuple[Thread, float], ...]) -> list[tuple[str, float]]:
+    return [(thread.code, distance) for thread, distance in result]
+
+
+@pytest.mark.parametrize(("code", "count"), [("310", 5), ("Blanc", 10)])
+def test_similar_dmc_matches_a_brute_force_ranking(code: str, count: int) -> None:
+    result = _codes_and_distances(similar_dmc(dmc_thread(code), count))
+    expected = _brute_force_similar(code)[:count]
+
+    assert [c for c, _ in result] == [c for c, _ in expected]
+    assert [d for _, d in result] == pytest.approx([d for _, d in expected], abs=1e-9)
+    assert code not in [c for c, _ in result]
+    distances = [d for _, d in result]
+    assert distances == sorted(distances)
+    assert all(d > 0 for d in distances)
+
+
+def test_every_threads_single_nearest_matches_the_brute_force() -> None:
+    threads = dmc_threads()
+    labs = srgb_to_lab([t.rgb for t in threads])
+    for row, thread in enumerate(threads):
+        distances = delta_e_2000(labs[row], labs)
+        distances[row] = np.inf
+        best = int(np.argmin(distances))
+        assert similar_dmc(thread, 1)[0][0] == threads[best], thread.code
+
+
+@pytest.mark.parametrize("count", [488, 1000])
+def test_a_count_past_the_table_gives_every_other_thread_once(count: int) -> None:
+    result = similar_dmc(dmc_thread("310"), count)
+    codes = [thread.code for thread, _ in result]
+
+    assert len(codes) == len(dmc_threads()) - 1
+    assert len(set(codes)) == len(codes)
+    assert "310" not in codes
+
+
+@pytest.mark.parametrize("count", [0, -1])
+def test_a_count_below_one_is_refused(count: int) -> None:
+    with pytest.raises(ValueError, match="count"):
+        similar_dmc(dmc_thread("310"), count)
+
+
+def test_similar_dmc_is_deterministic() -> None:
+    assert similar_dmc(dmc_thread("321"), 7) == similar_dmc(dmc_thread("321"), 7)

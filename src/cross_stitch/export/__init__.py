@@ -1,32 +1,53 @@
 """Chart output: the symbol of each key entry and the printable PDF chart."""
 
+from cross_stitch.export.geometry import CELL_MM, FONT_PATH
 from cross_stitch.export.pdf import (
-    CELL_MM,
-    FONT_PATH,
+    MAX_OVERLAP,
+    MAX_PAGES,
     ORIENTATIONS,
     OVERLAP,
     PAPERS,
+    SPLITS,
     VARIANTS,
+    Band,
+    ChartLayout,
+    LayoutSettings,
     Orientation,
     Paper,
+    Split,
+    SymbolInk,
     Variant,
     chart_capacity,
+    chart_layout,
     render_pdf,
+    section_name,
+    symbol_ink,
 )
-from cross_stitch.export.symbols import SYMBOLS, key_symbols
+from cross_stitch.export.symbols import SYMBOLS, pattern_symbols
 
 __all__ = [
     "CELL_MM",
     "FONT_PATH",
+    "MAX_OVERLAP",
+    "MAX_PAGES",
     "ORIENTATIONS",
     "OVERLAP",
     "PAPERS",
+    "SPLITS",
     "SYMBOLS",
     "VARIANTS",
+    "Band",
+    "ChartLayout",
+    "LayoutSettings",
     "Orientation",
     "Paper",
+    "Split",
+    "SymbolInk",
     "Variant",
     "chart_capacity",
-    "key_symbols",
+    "chart_layout",
+    "pattern_symbols",
     "render_pdf",
+    "section_name",
+    "symbol_ink",
 ]
