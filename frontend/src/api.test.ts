@@ -7,6 +7,8 @@ import {
   convertImage,
   downloadPdf,
   getLimits,
+  getNearestThreads,
+  getThreads,
   type Limits,
 } from "./api";
 import type { Pattern } from "./pattern";
@@ -340,5 +342,59 @@ describe("downloadPdf", () => {
       ok: false,
       message: "Cannot reach the server. Is the API running?",
     });
+  });
+});
+
+describe("thread table and nearest threads", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetch(response: Response | Error) {
+    const fetchMock = vi.fn((_url: string) =>
+      response instanceof Error ? Promise.reject(response) : Promise.resolve(response),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  function jsonResponse(status: number, body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  it("asks /api/threads for the table and returns the list", async () => {
+    const table = [{ code: "310", name: "Black", rgb: [0, 0, 0] }];
+    const fetchMock = stubFetch(jsonResponse(200, table));
+
+    const result = await getThreads();
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/threads");
+    expect(result).toEqual({ ok: true, threads: table });
+  });
+
+  it("asks for a code's nearest threads, encoding the code", async () => {
+    const fetchMock = stubFetch(jsonResponse(200, []));
+    await getNearestThreads("B5200");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/threads/B5200/nearest");
+
+    const second = stubFetch(jsonResponse(200, []));
+    await getNearestThreads("a/b c");
+    expect(second.mock.calls[0]?.[0]).toBe("/api/threads/a%2Fb%20c/nearest");
+  });
+
+  it("gives the API's message for an unknown code, and the unreachable one offline", async () => {
+    stubFetch(jsonResponse(404, { detail: "unknown DMC code: 'XYZ'" }));
+    expect(await getNearestThreads("XYZ")).toEqual({
+      ok: false,
+      message: "unknown DMC code: 'XYZ'",
+    });
+
+    stubFetch(new TypeError("offline"));
+    const offline = await getThreads();
+    expect(offline.ok).toBe(false);
+    expect(offline.ok ? "" : offline.message).toMatch(/cannot reach the server/i);
   });
 });

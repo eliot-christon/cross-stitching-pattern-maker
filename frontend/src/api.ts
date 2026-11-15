@@ -199,3 +199,47 @@ function errorMessage(
   }
   return `${failed} (HTTP ${status}).`;
 }
+
+/** The DMC table, from `GET /threads`. */
+export const THREADS_URL = "/api/threads";
+
+/** A DMC thread as `GET /threads` gives it. */
+export interface DmcThread {
+  code: string;
+  name: string;
+  rgb: [number, number, number];
+}
+
+/** A thread near another, with the CIEDE2000 `distance` the API computed. */
+export interface NearThread extends DmcThread {
+  distance: number;
+}
+
+export type ThreadsResult<T> = { ok: true; threads: T[] } | { ok: false; message: string };
+
+async function getList<T>(url: string, failed: string): Promise<ThreadsResult<T>> {
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch {
+    return { ok: false, message: UNREACHABLE };
+  }
+  const payload = await readJson(response);
+  if (response.ok && Array.isArray(payload)) {
+    return { ok: true, threads: payload as T[] };
+  }
+  return { ok: false, message: errorMessage(response.status, payload, failed) };
+}
+
+/** Every DMC thread, in the table's order. */
+export function getThreads(): Promise<ThreadsResult<DmcThread>> {
+  return getList<DmcThread>(THREADS_URL, "Loading the threads failed");
+}
+
+/** The threads nearest to `code`, nearest first, as the API ranks them. */
+export function getNearestThreads(code: string): Promise<ThreadsResult<NearThread>> {
+  return getList<NearThread>(
+    `${THREADS_URL}/${encodeURIComponent(code)}/nearest`,
+    "Loading the nearest threads failed",
+  );
+}
