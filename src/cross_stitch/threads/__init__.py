@@ -27,6 +27,7 @@ __all__ = [
     "nearest_dmc",
     "nearest_dmc_lab",
     "nearest_indices",
+    "similar_dmc",
 ]
 
 
@@ -96,3 +97,19 @@ def nearest_dmc_lab(lab: npt.ArrayLike) -> tuple[Thread, ...]:
 def nearest_dmc(rgb: npt.ArrayLike) -> tuple[Thread, ...]:
     """The nearest DMC thread for each 8-bit sRGB colour of an (N, 3) array."""
     return nearest_dmc_lab(srgb_to_lab(rgb))
+
+
+def similar_dmc(thread: Thread, count: int) -> tuple[tuple[Thread, float], ...]:
+    """The `count` DMC threads nearest to `thread` (CIEDE2000), with their distances.
+
+    `thread` itself is left out; the others come by distance ascending, ties to the earlier
+    source row. A `count` past the table gives every other thread once. Raises
+    `ValueError` for a `count` below 1.
+    """
+    if count < 1:
+        raise ValueError(f"count must be at least 1, got {count}")
+    threads = dmc_threads()
+    distances = delta_e_2000_matrix(srgb_to_lab([thread.rgb]), _dmc_lab())[0]
+    order = np.lexsort((np.arange(len(threads)), distances))
+    others = [int(i) for i in order if threads[i] != thread]
+    return tuple((threads[i], float(distances[i])) for i in others[:count])
