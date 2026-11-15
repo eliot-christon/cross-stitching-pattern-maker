@@ -21,7 +21,15 @@ from pydantic import BaseModel
 from starlette.formparsers import MultiPartParser
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from cross_stitch.export import Orientation, Paper, Variant, key_symbols, render_pdf
+from cross_stitch.export import (
+    Orientation,
+    Paper,
+    SymbolInk,
+    Variant,
+    key_symbols,
+    render_pdf,
+    symbol_ink,
+)
 from cross_stitch.pattern import (
     EMPTY,
     CleanedPattern,
@@ -74,6 +82,8 @@ class KeyEntryOut(BaseModel):
     skeins: int
     symbol: str
     """The chart symbol, from `cross_stitch.export.key_symbols`."""
+    symbol_ink: SymbolInk
+    """The symbol's ink on this thread's colour, as the colour chart prints it."""
 
 
 class FinishedSizeOut(BaseModel):
@@ -222,6 +232,7 @@ def _key_json(pattern: Pattern) -> list[KeyEntryOut]:
             stitches=entry.stitches,
             skeins=entry.skeins,
             symbol=symbol,
+            symbol_ink=symbol_ink(entry.thread.rgb),
         )
         for entry, symbol in zip(pattern.key, key_symbols(pattern.key), strict=True)
     ]
