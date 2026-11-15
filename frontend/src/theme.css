@@ -15,6 +15,7 @@
   --danger: #9a3b2c;
   --danger-soft: #f6e3dc;
   --focus: #4d6a4f;
+  --swatch-border: rgb(46 41 34 / 0.35);
 
   --font-text: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-heading: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia,
@@ -58,6 +59,7 @@
     --danger: #eb9a86;
     --danger-soft: #3a2621;
     --focus: #a3bf98;
+    --swatch-border: rgb(238 231 218 / 0.45);
 
     --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
     --shadow-md: 0 1px 2px rgb(0 0 0 / 0.3), 0 6px 20px rgb(0 0 0 / 0.25);
@@ -524,4 +526,198 @@ input[type="file"]::file-selector-button {
 
 .toggle:has(input:checked) {
   color: var(--text);
+}
+
+/* Under the viewer: the pattern's sizes and its thread key. */
+
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.summary > div {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.summary dt {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.summary dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.summary dd + dd {
+  font-weight: 400;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.key {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.key caption {
+  text-align: left;
+  font-family: var(--font-heading);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  padding: 0 0 var(--space-2);
+}
+
+.key th,
+.key td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+}
+
+.key thead td {
+  border-bottom: 1px solid var(--border);
+}
+
+.key th {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.key tbody tr + tr td {
+  border-top: 1px solid var(--border);
+}
+
+.key .key-count {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.key th:nth-child(5),
+.key th:nth-child(6) {
+  text-align: right;
+}
+
+.key .key-symbol {
+  font-family: "DejaVu Sans", "Segoe UI Symbol", sans-serif;
+  font-size: var(--text-lg);
+  line-height: 1;
+}
+
+.key .key-code {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.swatch {
+  display: inline-block;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--swatch-border);
+  vertical-align: middle;
+}
+
+/* Below 800 px each key entry is a card; the table stays a table for assistive tech. */
+@media (max-width: 799px) {
+  .key,
+  .key tbody {
+    display: block;
+    background: none;
+    border: 0;
+    box-shadow: none;
+    border-radius: 0;
+    overflow: visible;
+  }
+
+  .key caption {
+    display: block;
+  }
+
+  .key thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .key tr.key-entry {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "swatch symbol code"
+      "name name name"
+      "stitches skeins skeins";
+    align-items: center;
+    gap: var(--space-1) var(--space-3);
+    padding: var(--space-3);
+    margin-bottom: var(--space-2);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+
+  .key tbody tr + tr td {
+    border-top: 0;
+  }
+
+  .key tr.key-entry td {
+    display: block;
+    padding: 0;
+    text-align: left;
+  }
+
+  .key .key-swatch {
+    grid-area: swatch;
+  }
+
+  .key .key-symbol {
+    grid-area: symbol;
+  }
+
+  .key .key-code {
+    grid-area: code;
+  }
+
+  .key .key-name {
+    grid-area: name;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+
+  .key .key-count[data-label="Stitches"] {
+    grid-area: stitches;
+  }
+
+  .key .key-count[data-label="Skeins"] {
+    grid-area: skeins;
+  }
+
+  .key .key-count::before {
+    content: attr(data-label) " ";
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
 }
