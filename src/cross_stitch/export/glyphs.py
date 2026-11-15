@@ -161,10 +161,11 @@ def glyph_table() -> GlyphTable:
 
 
 if __name__ == "__main__":
+    from importlib import import_module
     from pathlib import Path
 
-    from cross_stitch.export.symbols import SYMBOLS
-
+    # `symbols` reads this table, so only the command that rewrites it loads the list.
+    listed: tuple[str, ...] = import_module("cross_stitch.export.symbols").SYMBOLS
     target = Path(__file__).with_name(_TABLE)
-    target.write_text(table_json(measure(SYMBOLS)), encoding="utf-8")
+    target.write_text(table_json(measure(listed)), encoding="utf-8")
     print(f"wrote {target}")
