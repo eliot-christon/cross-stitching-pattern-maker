@@ -1,8 +1,7 @@
 """Chart output: the symbol of each key entry and the printable PDF chart."""
 
+from cross_stitch.export.geometry import CELL_MM, FONT_PATH
 from cross_stitch.export.pdf import (
-    CELL_MM,
-    FONT_PATH,
     ORIENTATIONS,
     OVERLAP,
     PAPERS,
