@@ -273,7 +273,7 @@ def render_pdf(  # pylint: disable=too-many-arguments
     canvas = Canvas(buffer, pagesize=page_size, invariant=True, pageCompression=True)
     canvas.setTitle("Cross-stitch chart")
     document = _Document(canvas, pattern, pattern_symbols(pattern), variant == "colour", page_size)
-    document.draw_cover()
+    document.draw_cover(layout.cell_mm)
     document.draw_chart(layout, centre_lines=centre_lines)
     canvas.save()
     return buffer.getvalue()
@@ -343,7 +343,7 @@ class _Document:
 
     # --- cover --------------------------------------------------------------------------
 
-    def draw_cover(self) -> None:
+    def draw_cover(self, cell_mm: float) -> None:
         canvas, pattern = self.canvas, self.pattern
         width, height = self.page_size
         top = height - _MARGIN
@@ -358,6 +358,7 @@ class _Document:
             f"Finished size: {pattern.width_in:.1f} x {pattern.height_in:.1f} in "
             f"({pattern.width_cm:.1f} x {pattern.height_cm:.1f} cm)",
             f"Total stitches: {pattern.total_stitches}",
+            f"Chart cell: {cell_mm:.1f} mm",
         ):
             canvas.drawString(_MARGIN, top - _INFO_SIZE, line)
             top -= _INFO_SIZE + 2 * mm
@@ -461,17 +462,84 @@ class _Document:
         row_bands, column_bands = layout.rows, layout.columns
         pages = len(row_bands) * len(column_bands)
         cell = _CELL if layout.cell_mm == CELL_MM else layout.cell_mm * mm
+        if pages > 1:
+            self._draw_section_plan(layout)
         width, height = self.page_size
-        for number, (row_band, column_band) in enumerate(
-            ((r, c) for r in row_bands for c in column_bands), start=1
+        for number, ((row, row_band), (column, column_band)) in enumerate(
+            ((r, c) for r in enumerate(row_bands) for c in enumerate(column_bands)), start=1
         ):
-            _ChartPage(self, column_band, row_band, cell, centre_lines).draw()
+            name = section_name(column, row)
+            _ChartPage(self, column_band, row_band, cell, centre_lines, name).draw()
             self.canvas.setFillGray(0)
             self.canvas.setFont(_FONT, _INFO_SIZE)
             self.canvas.drawRightString(
                 width - _MARGIN, height - _MARGIN - _INFO_SIZE, f"Chart page {number} of {pages}"
             )
             self.canvas.showPage()
+
+    def _draw_section_plan(self, layout: ChartLayout) -> None:
+        """A page with the whole pattern, each section outlined and named on it."""
+        canvas, pattern = self.canvas, self.pattern
+        width, height = self.page_size
+        top = height - _MARGIN
+        canvas.setFillGray(0)
+        canvas.setFont(_FONT, _TITLE_SIZE)
+        canvas.drawString(_MARGIN, top - _TITLE_SIZE, "Section plan")
+        top -= _TITLE_SIZE + 6 * mm
+        scale = min((width - 2 * _MARGIN) / pattern.width, (top - _MARGIN) / pattern.height)
+        left, bottom = _MARGIN, top - pattern.height * scale
+        canvas.drawImage(
+            ImageReader(self._thumbnail()),
+            left,
+            bottom,
+            width=pattern.width * scale,
+            height=pattern.height * scale,
+        )
+        self._draw_plan_sections(layout, (left, top), scale)
+        canvas.showPage()
+
+    def _draw_plan_sections(
+        self, layout: ChartLayout, origin: tuple[float, float], scale: float
+    ) -> None:
+        """Each section outlined over the plan's thumbnail and named inside its outline."""
+        canvas = self.canvas
+        left, top = origin
+        canvas.setLineWidth(_BOLD_LINE)
+        canvas.setStrokeGray(0)
+        for row, row_band in enumerate(layout.rows):
+            for column, column_band in enumerate(layout.columns):
+                x0 = left + column_band.start * scale
+                y1 = top - row_band.start * scale
+                w, h = column_band.size * scale, row_band.size * scale
+                canvas.rect(x0, y1 - h, w, h, stroke=1, fill=0)
+                self._draw_plan_name(section_name(column, row), x0 + w / 2, y1 - h / 2)
+
+    def _draw_plan_name(self, name: str, x: float, y: float) -> None:
+        """A section's name on a white tab, so it reads over light and dark threads."""
+        canvas = self.canvas
+        size = _INFO_SIZE + 1
+        half_width = pdfmetrics.stringWidth(name, _FONT, size) / 2 + 1.5 * mm
+        half_height = size / 2 + 1 * mm
+        canvas.setFillGray(1)
+        canvas.setLineWidth(_THIN_LINE)
+        canvas.rect(
+            x - half_width, y - half_height, 2 * half_width, 2 * half_height, stroke=1, fill=1
+        )
+        canvas.setFillGray(0)
+        canvas.setFont(_FONT, size)
+        canvas.drawCentredString(x, y - size * 0.35, name)
+        canvas.setLineWidth(_BOLD_LINE)
+
+
+def section_name(column: int, row: int) -> str:
+    """The name of the chart section in column band `column` and row band `row` (0-based):
+    letters for the column (A, B, ... Z, AA, AB, ...), a number from 1 for the row."""
+    letters = ""
+    number = column + 1
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return f"{letters}{row + 1}"
 
 
 @dataclass(frozen=True)
@@ -484,6 +552,8 @@ class _ChartPage:
     cell: float
     """The cell side, in points."""
     centre_lines: bool
+    name: str
+    """The section's name, as the section plan writes it."""
 
     @property
     def left(self) -> float:
@@ -512,7 +582,7 @@ class _ChartPage:
         canvas.drawString(
             _MARGIN,
             self.document.page_size[1] - _MARGIN - _INFO_SIZE,
-            f"Columns {self.columns.start + 1}-{self.columns.end}, "
+            f"{self.name} - Columns {self.columns.start + 1}-{self.columns.end}, "
             f"rows {self.rows.start + 1}-{self.rows.end}",
         )
         self._draw_overlap()

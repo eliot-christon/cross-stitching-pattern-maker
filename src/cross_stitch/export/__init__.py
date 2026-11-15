@@ -19,6 +19,7 @@ from cross_stitch.export.pdf import (
     chart_capacity,
     chart_layout,
     render_pdf,
+    section_name,
     symbol_ink,
 )
 from cross_stitch.export.symbols import SYMBOLS, pattern_symbols
@@ -45,5 +46,6 @@ __all__ = [
     "chart_layout",
     "pattern_symbols",
     "render_pdf",
+    "section_name",
     "symbol_ink",
 ]

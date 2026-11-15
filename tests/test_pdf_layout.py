@@ -1,18 +1,24 @@
-"""Chart layout settings of `render_pdf`: split by cells or by pages, overlap, centre lines."""
+"""Chart layout settings of `render_pdf`: split by cells or by pages, overlap, centre lines,
+section names and the section plan."""
+
+import re
 
 import pytest
 from pdf_helpers import (
+    LABEL,
     NON_GREY_OPERATORS,
     _chart_pages,
     _corners,
     _countable_symbols,
+    _hundred_threads,
     _in_window,
     _parts,
     _read,
     _speckled,
+    _two_colour,
 )
 
-from cross_stitch.export import chart_layout, render_pdf
+from cross_stitch.export import chart_layout, render_pdf, section_name
 
 
 def _labels(data: bytes) -> list[tuple[int, int, int, int]]:
@@ -165,3 +171,79 @@ def test_black_and_white_centre_lines_stay_grey() -> None:
         assert b"RG" not in operators
         assert b"rg" not in operators
     assert with_lines != render_pdf(pattern, variant="bw")
+
+
+NAMES = ["A1", "B1", "C1", "A2", "B2", "C2"]
+
+
+def _headed(text: str, name: str) -> bool:
+    return re.search(rf"\b{name} - Columns\s+\d", text) is not None
+
+
+def test_chart_pages_are_headed_by_their_section_in_reading_order() -> None:
+    pdf = _read(render_pdf(_corners(130, 100)))
+
+    assert len(pdf.charts) == 6
+    for text, name in zip(pdf.charts, NAMES, strict=True):
+        assert _headed(text, name), name
+
+
+def test_a_section_plan_page_names_every_section_once_before_the_chart() -> None:
+    pdf = _read(render_pdf(_corners(130, 100)))
+
+    assert len(pdf.covers) == 2
+    plan = pdf.covers[1]
+    assert "Section plan" in plan
+    for name in NAMES:
+        assert len(re.findall(rf"\b{name}\b", plan)) == 1, name
+    assert not LABEL.search(plan)
+
+
+def test_a_one_section_chart_has_no_plan_page() -> None:
+    pdf = _read(render_pdf(_two_colour(10, 10, 6)))
+
+    assert len(pdf.reader.pages) == 2
+    assert _headed(pdf.charts[0], "A1")
+    assert "A1 - Columns 1-10, rows 1-10" in pdf.charts[0]
+    assert not any("Section plan" in text for text in pdf.covers + pdf.charts)
+
+
+def test_columns_past_z_are_named_aa() -> None:
+    pdf = _read(render_pdf(_corners(923, 3), paper="A5", overlap=5))
+
+    assert len(pdf.charts) == 27
+    assert _headed(pdf.charts[25], "Z1")
+    assert _headed(pdf.charts[26], "AA1")
+    assert section_name(27, 0) == "AB1"
+
+
+def test_the_plan_comes_after_the_last_thread_key_page() -> None:
+    pdf = _read(render_pdf(_hundred_threads(), paper="A5"))
+
+    assert len(pdf.covers) >= 3
+    assert "Section plan" in pdf.covers[-1]
+    assert "Thread key" in pdf.covers[-2]
+
+
+def test_a_pages_split_names_its_sections_the_same_way() -> None:
+    pdf = _read(render_pdf(_corners(130, 100), split="pages", pages_across=3, pages_down=2))
+
+    for text, name in zip(pdf.charts, NAMES, strict=True):
+        assert _headed(text, name), name
+    assert "Section plan" in pdf.covers[-1]
+
+
+def test_the_cover_states_the_chart_cell() -> None:
+    assert "Chart cell: 3.0 mm" in _read(render_pdf(_corners(100, 100))).covers[0]
+    pages = render_pdf(_corners(100, 100), split="pages")
+    assert "Chart cell: 3.5 mm" in _read(pages).covers[0]
+
+
+def test_the_black_and_white_plan_page_is_grey_only() -> None:
+    pdf = _read(render_pdf(_corners(130, 100), variant="bw"))
+    plan_page = pdf.reader.pages[len(pdf.covers) - 1]
+
+    operators = {op for _, op in _parts(pdf.reader, plan_page).operations}
+    assert not operators & NON_GREY_OPERATORS
+    assert b"rg" not in operators
+    assert b"RG" not in operators
