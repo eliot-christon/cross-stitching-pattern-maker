@@ -6,6 +6,7 @@ import {
   PATTERNS_URL,
   convertImage,
   downloadPdf,
+  getChartLayout,
   getLimits,
   getNearestThreads,
   getThreads,
@@ -566,5 +567,38 @@ describe("inspectImage", () => {
       ok: false,
       message: "the upload is not a decodable image",
     });
+  });
+});
+
+describe("getChartLayout", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the size and chart choices and gives the API's report", async () => {
+    const report = { layout: null, message: "too small", pages: [] };
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      Promise.resolve(new Response(JSON.stringify(report))),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const options = {
+      variant: "colour",
+      paper: "A3",
+      orientation: "landscape",
+      split: "pages",
+      pagesAcross: "3",
+      pagesDown: "2",
+      overlap: "1",
+      centreLines: false,
+      fabricColour: "#ffffff",
+    } as const;
+
+    expect(await getChartLayout(120, 80, options)).toEqual({ ok: true, report });
+    const call = fetchMock.mock.calls[0];
+    expect(call?.[0]).toBe("/api/chart/layout");
+    const body = call?.[1]?.body as FormData;
+    expect(["width", "height", "paper", "orientation", "split", "pages_across", "pages_down", "overlap"].map((n) => body.get(n))).toEqual(
+      ["120", "80", "A3", "landscape", "pages", "3", "2", "1"],
+    );
   });
 });

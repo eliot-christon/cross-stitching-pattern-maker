@@ -3,9 +3,11 @@ import { useEffect, useRef, useState } from "react";
 import {
   convertImage,
   downloadPdf,
+  getChartLayout,
   getLimits,
   inspectImage,
   replacementField,
+  type ChartLayoutReport,
   type ChartOptions,
   type DmcThread,
   type Limits,
@@ -26,6 +28,7 @@ import {
 import { DEFAULT_FABRIC, FABRICS } from "./fabric";
 import type { KeyEntry, Pattern } from "./pattern";
 import { StitchedHeart, StitchRule } from "./motif";
+import { PagePicker, SectionPreview } from "./PagePicker";
 import { PatternPreview } from "./PatternPreview";
 import { PDF_AUTO_PREVIEW_MAX_CELLS, PdfView, type PdfNote } from "./PdfView";
 import { FabricSwatch, Swatch } from "./swatch";
@@ -218,6 +221,8 @@ function Converter({ limits }: { limits: Limits }) {
   /** What the PDF requests read: the latest preview, choices and view state. */
   const pdfLatest = useRef<{ preview: Preview | null; chart: ChartOptions; busy: boolean; visible: boolean } | null>(null);
   const pdfSeen = useRef<{ preview: Preview | null; visible: boolean }>({ preview: null, visible: false });
+  /** How the PDF would cut the preview with the chart choices, from the API. */
+  const [layoutReport, setLayoutReport] = useState<ChartLayoutReport | null>(null);
   /** The replacements the latest response reported as finding nothing to replace. */
   const [inactive, setInactive] = useState<ReadonlySet<Replacement>>(new Set());
 
@@ -526,6 +531,40 @@ function Converter({ limits }: { limits: Limits }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preview, chart, busy, pdfVisible]);
 
+  const layoutWidth = preview?.pattern.width ?? 0;
+  const layoutHeight = preview?.pattern.height ?? 0;
+  const layoutKey = JSON.stringify([
+    layoutWidth,
+    layoutHeight,
+    chart.paper,
+    chart.orientation,
+    chart.split,
+    chart.pagesAcross,
+    chart.pagesDown,
+    chart.overlap,
+  ]);
+  const layoutChart = useRef(chart);
+  layoutChart.current = chart;
+  // Ask how the PDF would cut the preview once the layout choices have been quiet; an
+  // answer for choices since changed is dropped.
+  useEffect(() => {
+    if (layoutWidth === 0 || layoutHeight === 0) {
+      return;
+    }
+    let current = true;
+    const timer = setTimeout(() => {
+      void getChartLayout(layoutWidth, layoutHeight, layoutChart.current).then((result) => {
+        if (current && mounted.current && result.ok) {
+          setLayoutReport(result.report);
+        }
+      });
+    }, QUIET_MS);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [layoutKey, layoutWidth, layoutHeight]);
+
   let pdfNote: PdfNote = { kind: "none" };
   if (preview !== null) {
     const current = shows(shownPdf, { source: preview.source, chart });
@@ -698,20 +737,23 @@ function Converter({ limits }: { limits: Limits }) {
                 onChange={(split) => setChart({ ...chart, split })}
               />
               {chart.split === "pages" && (
-                <div className="stepper-pair">
-                  <Stepper
-                    label="Pages across"
-                    limits={ranges.pages_across}
-                    value={chart.pagesAcross}
-                    onChange={(value) => setChart({ ...chart, pagesAcross: value })}
-                  />
-                  <Stepper
-                    label="Pages down"
-                    limits={ranges.pages_down}
-                    value={chart.pagesDown}
-                    onChange={(value) => setChart({ ...chart, pagesDown: value })}
-                  />
-                </div>
+                <PagePicker
+                  report={layoutReport}
+                  orientation={chart.orientation}
+                  across={chart.pagesAcross}
+                  down={chart.pagesDown}
+                  onPick={(across, down) =>
+                    setChart({ ...chart, pagesAcross: String(across), pagesDown: String(down) })
+                  }
+                />
+              )}
+              <SectionPreview
+                pattern={preview.pattern}
+                layout={layoutReport?.layout ?? null}
+                fabric={chart.fabricColour}
+              />
+              {layoutReport !== null && layoutReport.layout === null && layoutReport.message !== null && (
+                <p className="field-hint">{layoutReport.message}</p>
               )}
               <Stepper
                 label="Repeated rows and columns"

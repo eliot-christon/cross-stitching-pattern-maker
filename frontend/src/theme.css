@@ -1260,3 +1260,95 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Pages picker: one sheet per page count, shaped like the paper as it is turned; the
+   pages of the split hovered (or chosen) filled in the accent. */
+.page-picker {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+}
+
+.page-picker-summary {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  min-height: 2.6em;
+}
+
+.page-grid {
+  display: grid;
+  gap: 3px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--sunk);
+  border: 1px solid var(--border);
+}
+
+.page-cell {
+  width: 14px;
+  height: 19px;
+  padding: 0;
+  border: 1px solid var(--stitch);
+  border-radius: 2px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.page-grid-landscape .page-cell {
+  width: 19px;
+  height: 14px;
+}
+
+.page-cell.in-range {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 35%, var(--surface));
+}
+
+.page-cell.is-chosen {
+  background: var(--accent);
+}
+
+/* A split the PDF refuses cannot be picked, but its sheets still belong to bigger ones. */
+.page-cell:disabled {
+  cursor: not-allowed;
+}
+
+.page-cell:disabled:not(.in-range) {
+  opacity: 0.3;
+  background: transparent;
+}
+
+.link-button {
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Section preview: the pattern with its pages outlined and named, as the PDF's plan. */
+.section-preview {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.section-preview canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.section-preview figcaption {
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
