@@ -48,7 +48,21 @@ export interface Settings {
   minStitches: string;
   /** Merge clusters of one thread up to this many cells into their surroundings; "0" is off. */
   confettiSize: string;
+  /** Reduce the image to one pixel per art pixel before converting it. */
+  pixelArt: boolean;
 }
+
+/** The image inspection endpoint: is the image pixel art, and of what size. */
+export const INSPECT_URL = "/api/images/inspect";
+
+/** An image's art pixels, as `POST /images/inspect` finds them. */
+export interface PixelArt {
+  width: number;
+  height: number;
+  colours: number;
+}
+
+export type InspectResult = { ok: true; pixelArt: PixelArt | null } | { ok: false; message: string };
 
 /** The PDF chart endpoint: the same inputs as `PATTERNS_URL` plus the chart options. */
 export const PATTERN_PDF_URL = "/api/patterns/pdf";
@@ -130,10 +144,31 @@ export async function getLimits(): Promise<LimitsResult> {
 }
 
 /**
- * Post the image and settings (and any extra fields), after the client-side size check
- * against `maxUploadBytes`, the API's reported limit.
+ * Post the image with `fill`'s fields, after the client-side size check against
+ * `maxUploadBytes`, the API's reported limit.
  */
-async function post(
+async function sendForm(
+  url: string,
+  image: File,
+  maxUploadBytes: number,
+  fill: (body: FormData) => void = () => {},
+): Promise<Sent> {
+  if (image.size > maxUploadBytes) {
+    const limit = formatBytes(maxUploadBytes);
+    return { ok: false, message: `The image is larger than ${limit}, the most the server accepts.` };
+  }
+  const body = new FormData();
+  body.append("image", image);
+  fill(body);
+  try {
+    return { ok: true, response: await fetch(url, { method: "POST", body }) };
+  } catch {
+    return { ok: false, message: UNREACHABLE };
+  }
+}
+
+/** Post the image and settings (and any extra fields) to a pattern route. */
+function post(
   url: string,
   image: File,
   settings: Settings,
@@ -141,19 +176,22 @@ async function post(
   replacements: readonly Replacement[],
   extra: Record<string, string> = {},
 ): Promise<Sent> {
-  if (image.size > maxUploadBytes) {
-    const limit = formatBytes(maxUploadBytes);
-    return { ok: false, message: `The image is larger than ${limit}, the most the server accepts.` };
-  }
+  return sendForm(url, image, maxUploadBytes, (body) => appendSettings(body, settings, replacements, extra));
+}
 
-  const body = new FormData();
-  body.append("image", image);
+function appendSettings(
+  body: FormData,
+  settings: Settings,
+  replacements: readonly Replacement[],
+  extra: Record<string, string>,
+) {
   body.append("width", settings.width);
   body.append("max_colours", settings.maxColours);
   body.append("fabric_count", settings.fabricCount);
   body.append("merge_distance", settings.mergeDistance);
   body.append("min_stitches", settings.minStitches);
   body.append("confetti_size", settings.confettiSize);
+  body.append("pixel_art", settings.pixelArt ? "true" : "false");
   // Repeated `replace` fields, in order: the API applies them in sequence.
   for (const pair of replacements) {
     body.append("replace", replacementField(pair));
@@ -161,12 +199,19 @@ async function post(
   for (const [name, value] of Object.entries(extra)) {
     body.append(name, value);
   }
+}
 
-  try {
-    return { ok: true, response: await fetch(url, { method: "POST", body }) };
-  } catch {
-    return { ok: false, message: UNREACHABLE };
+/** Whether the image is pixel art, and its size in art pixels and colours. */
+export async function inspectImage(image: File, maxUploadBytes: number): Promise<InspectResult> {
+  const sent = await sendForm(INSPECT_URL, image, maxUploadBytes);
+  if (!sent.ok) {
+    return sent;
   }
+  const payload = await readJson(sent.response);
+  if (sent.response.ok && typeof payload === "object" && payload !== null) {
+    return { ok: true, pixelArt: (payload as { pixel_art?: PixelArt | null }).pixel_art ?? null };
+  }
+  return { ok: false, message: errorMessage(sent.response.status, payload, "Inspecting the image failed") };
 }
 
 /** The JSON body of a response, or `undefined` when it has none. */

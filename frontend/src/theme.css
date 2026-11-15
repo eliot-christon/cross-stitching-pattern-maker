@@ -957,3 +957,16 @@ input[type="file"]::file-selector-button {
   place-items: center;
   color: var(--muted);
 }
+
+/* Pixel art found in the chosen image: its switch and what it does. */
+.pixel-art {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: start;
+}
+
+.field-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}

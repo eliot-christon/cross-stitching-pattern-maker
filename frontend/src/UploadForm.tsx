@@ -4,10 +4,12 @@ import {
   convertImage,
   downloadPdf,
   getLimits,
+  inspectImage,
   replacementField,
   type ChartOptions,
   type DmcThread,
   type Limits,
+  type PixelArt,
   type Replacement,
   type SettingLimits,
   type Settings,
@@ -198,9 +200,14 @@ function Converter({ limits }: { limits: Limits }) {
       mergeDistance: String(ranges.merge_distance.default),
       minStitches: String(ranges.min_stitches.default),
       confettiSize: String(ranges.confetti_size.default),
+      pixelArt: false,
     },
     replacements: [],
   }));
+  /** The chosen image's art pixels, when the API found it to be pixel art. */
+  const [pixelArt, setPixelArt] = useState<PixelArt | null>(null);
+  /** The chosen image is being inspected: nothing converts until it is done. */
+  const inspecting = useRef(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** A change is waiting: the quiet delay is counting, or it expired while one ran. */
@@ -284,6 +291,10 @@ function Converter({ limits }: { limits: Limits }) {
 
   /** Send the inputs as they stand, unless there is no image or they were the last sent. */
   function sendIfChanged() {
+    if (inspecting.current) {
+      // The inspection schedules a conversion with what it finds.
+      return;
+    }
     due.current = false;
     setPending(false);
     const { image, settings, replacements } = latest.current;
@@ -336,9 +347,39 @@ function Converter({ limits }: { limits: Limits }) {
     setInputs(next);
   }
 
-  function changeSetting(key: keyof Settings, value: string) {
-    change({ ...latest.current, settings: { ...latest.current.settings, [key]: value } });
+  function changeSettings(patch: Partial<Settings>) {
+    change({ ...latest.current, settings: { ...latest.current.settings, ...patch } });
     schedule();
+  }
+
+  function changeSetting(key: Exclude<keyof Settings, "pixelArt">, value: string) {
+    changeSettings({ [key]: value });
+  }
+
+  /**
+   * Ask the API whether `image` is pixel art before it is converted: if so, one stitch per
+   * art pixel (its width, its colours, within the limits) with pixel art on; if not, or
+   * if the inspection fails, a picture with the settings as they were.
+   */
+  async function inspect(image: File) {
+    inspecting.current = true;
+    setPending(true);
+    const result = await inspectImage(image, limits.max_upload_bytes);
+    if (!mounted.current || latest.current.image !== image) {
+      return;
+    }
+    inspecting.current = false;
+    const art = result.ok ? result.pixelArt : null;
+    setPixelArt(art);
+    changeSettings(
+      art === null
+        ? { pixelArt: false }
+        : {
+            pixelArt: true,
+            width: String(Math.min(art.width, ranges.width.max)),
+            maxColours: String(Math.max(ranges.max_colours.min, Math.min(art.colours, ranges.max_colours.max))),
+          },
+    );
   }
 
   function changeReplacements(replacements: readonly Replacement[]) {
@@ -435,16 +476,19 @@ function Converter({ limits }: { limits: Limits }) {
     change({ ...latest.current, image });
     // The PDF on the view belongs to the image that was there.
     clearPdf();
-    // The preview, any error and any download belong to the image that was there.
+    // The preview, any error, any download and the pixel art found belong to the image
+    // that was there.
     setPreview(null);
     setError(null);
     setDownload({ kind: "idle" });
+    setPixelArt(null);
+    cancelTimer();
+    due.current = false;
+    inspecting.current = false;
     if (image === null) {
-      cancelTimer();
-      due.current = false;
       setPending(false);
     } else {
-      schedule();
+      void inspect(image);
     }
   }
 
@@ -530,6 +574,22 @@ function Converter({ limits }: { limits: Limits }) {
               onChange={(event) => chooseImage(event.target.files?.[0] ?? null)}
             />
           </label>
+          {pixelArt !== null && (
+            <div className="pixel-art">
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.pixelArt}
+                  onChange={(event) => changeSettings({ pixelArt: event.target.checked })}
+                />
+                <span>Pixel art</span>
+              </label>
+              <p className="field-hint">
+                {`${pixelArt.width} x ${pixelArt.height} pixels, ${pixelArt.colours} colours: ` +
+                  (settings.pixelArt ? "one stitch per pixel." : "converted as a picture.")}
+              </p>
+            </div>
+          )}
           <SettingField
             label="Width (stitches)"
             limits={ranges.width}
