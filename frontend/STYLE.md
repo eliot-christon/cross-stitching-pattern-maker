@@ -24,6 +24,7 @@ under `prefers-color-scheme: dark`. Components use the tokens, never raw values.
 | `--danger-soft` | the faint card behind an error | `#f6e3dc` | `#3a2621` |
 | `--focus` | focus ring (the accent) | `#4d6a4f` | `#a3bf98` |
 | `--swatch-border` | the edge of a thread swatch, so white shows on light and black on dark | `rgb(46 41 34 / 0.35)` | `rgb(238 231 218 / 0.45)` |
+| `--thread-2` | the second thread of the stitched title, ochre | `#9c6a2f` | `#d8a865` |
 
 Contrast (WCAG ratio, at least 4.5:1 for every text pair):
 
@@ -35,7 +36,7 @@ Contrast (WCAG ratio, at least 4.5:1 for every text pair):
 | danger on bg / surface / sunk | 6.0 / 6.7 / 5.5 | 7.8 / 7.0 / 8.3 |
 | on-accent on accent | 5.8 | 8.6 |
 
-`--border` and `--stitch` are decoration, not text, and stay low (1.3-2.3:1) so they read
+`--border`, `--stitch` and `--thread-2` are decoration, not text, and stay low (1.3-2.3:1) so they read
 as texture. Saturation stays low everywhere; red is kept out of the chrome so the red
 centre lines of the viewer (and the errors) stand out on their own.
 
@@ -64,10 +65,12 @@ One system stack for text, one for headings; no font file and no font host.
 A cross is two short strokes in an 8 px tile (`--stitch-x`), coloured `--stitch` through a
 CSS mask, so it follows the theme.
 
-- **Where:** the stitched logo (a small heart of crosses, in the accent), the rule under
-  the header, the rule at the top of each panel, the frame of the empty viewer.
+- **Where:** the title, "CROSS-STITCH" over "PATTERN MAKER" stitched in 5 x 7 capitals,
+  big and centred (at most 640 px wide), the first line in the accent and the second in
+  `--thread-2`, the `h1` text kept for readers; the rule under the header, the rule at the
+  top of each panel, the frame of the empty viewer and its small heart of crosses.
 - **Where not:** never over or around the pattern itself, never on the key's swatches,
-  never animated, never in the accent except the logo.
+  never animated, never in the accent except the title.
 
 ## Layout
 
@@ -86,7 +89,21 @@ CSS mask, so it follows the theme.
 
 ## Controls
 
-- Each setting: its label above, then the slider and a narrow number field on one row.
+Each kind of value has its own control, all in `src/controls.tsx`, labels above:
+
+- a few named choices (chart variant, split, the viewer's modes): a segmented row of pills;
+  paper sizes as pills with a sheet icon drawn to scale, orientation as a portrait and a
+  landscape sheet
+- a wide range (width, colours, merge distance, minimum stitches): a slider and a narrow
+  number field on one row
+- a small range (confetti, pages, repeated rows and columns): a stepper, minus and plus
+  around the number
+- common values plus any other (fabric count): chips, then a number field
+- a colour among presets (fabric colour): round swatches, a rainbow one for any colour
+- on or off (pixel art, centre lines): a sliding switch in the accent
+- the image: a dashed drop zone showing the chosen image and its name
+- In the panel, settings are grouped under small muted headings (Size and threads,
+  Cleanup).
 - The primary button (Download PDF) is filled with the accent; other buttons are outlined.
 - Status messages are a small muted line; errors use `--danger` text on a `--danger-soft`
   card. One status at a time.
@@ -105,5 +122,5 @@ CSS mask, so it follows the theme.
 
 ## Sample screen
 
-The page with no image chosen: header with the stitched heart and title, the settings
+The page with no image chosen: the stitched title centred over the tagline, the settings
 panel, and the empty viewer framed in crosses saying where the pattern will appear.
