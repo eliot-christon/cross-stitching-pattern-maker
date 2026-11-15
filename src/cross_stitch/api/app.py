@@ -44,9 +44,12 @@ from cross_stitch.pattern import (
     clean_pattern,
     colours_with_headroom,
     convert_image,
+    find_pixel_grid,
     isolated_stitches,
+    pixel_art_colours,
     replace_threads,
     stitch_height,
+    unscale_pixel_art,
 )
 from cross_stitch.threads import Thread, dmc_thread, dmc_threads, similar_dmc
 
@@ -157,6 +160,19 @@ class PatternOut(BaseModel):
     )
 
 
+class PixelArtOut(BaseModel):
+    width: int
+    """Art pixels across: the width that gives one stitch per art pixel."""
+    height: int
+    colours: int
+    """Colours a stitcher would tell apart, at most the colour limit."""
+
+
+class InspectOut(BaseModel):
+    pixel_art: PixelArtOut | None
+    """The image's art pixels, or `null` when it is not pixel art."""
+
+
 class SettingOut(BaseModel):
     min: int | float
     max: int | float
@@ -254,6 +270,14 @@ def _decode(upload: bytes) -> Image.Image:
         raise HTTPException(400, "the upload is not a decodable image") from error
     except (Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
         raise HTTPException(400, "the image has too many pixels") from error
+
+
+def _read_image(upload: UploadFile) -> Image.Image:
+    """The uploaded image, decoded; 413 over `MAX_UPLOAD_BYTES`, 400 if not an image."""
+    data = upload.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise _BodyTooLarge
+    return _decode(data)
 
 
 def _grid_json(pattern: Pattern) -> list[list[int | None]]:
@@ -425,6 +449,10 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
             "repeated, applied in order"
         ),
     ] = None,
+    pixel_art: Annotated[
+        bool,
+        Form(description="Reduce the image to one pixel per art pixel first (pixel art)"),
+    ] = False,
 ) -> _Converted:
     """The conversion inputs both routes share: validated, decoded and converted here, so
     `POST /patterns` and `POST /patterns/pdf` accept and refuse exactly the same requests.
@@ -432,10 +460,12 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
     The settings come back with the pattern rather than through a second `Depends(_cleanup)`
     in a route: a dependency met twice reports each of its validation errors twice."""
     replacements = [_replacement(value) for value in replace or []]
-    upload = image.file.read(MAX_UPLOAD_BYTES + 1)
-    if len(upload) > MAX_UPLOAD_BYTES:
-        raise _BodyTooLarge
-    decoded = _decode(upload)
+    decoded = _read_image(image)
+    if pixel_art:
+        grid = find_pixel_grid(decoded)
+        if grid is None:
+            raise HTTPException(422, "pixel_art: no grid of art pixels found in the image")
+        decoded = unscale_pixel_art(decoded, grid)
     height = stitch_height(decoded.width, decoded.height, width)
     if height > MAX_HEIGHT:
         raise HTTPException(
@@ -453,6 +483,24 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
         cleaned=cleaned,
         cleanup_on=cleanup.on,
         replaced=replace_threads(cleaned.pattern, replacements),
+    )
+
+
+@app.post("/images/inspect")
+def inspect_image(
+    image: Annotated[UploadFile, File(description="The image to look at")],
+) -> InspectOut:
+    """Whether the image is pixel art, and if so its size in art pixels and its colours:
+    the settings that give one stitch per art pixel with `pixel_art=true`."""
+    decoded = _read_image(image)
+    grid = find_pixel_grid(decoded)
+    if grid is None:
+        return InspectOut(pixel_art=None)
+    colours = pixel_art_colours(unscale_pixel_art(decoded, grid))
+    return InspectOut(
+        pixel_art=PixelArtOut(
+            width=grid.columns, height=grid.rows, colours=min(colours, _MAX_COLOURS.max)
+        )
     )
 
 
