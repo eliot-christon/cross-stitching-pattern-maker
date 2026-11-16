@@ -47,12 +47,16 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "N", "PTH"]
 
 [tool.mypy]
 strict = true
+# Dev scripts outside the package, imported by their tests.
+mypy_path = "scripts"
 
 [tool.pylint.main]
 max-line-length = 100
+source-roots = ["scripts"]
 
 [tool.pylint."messages control"]
 disable = ["missing-module-docstring", "missing-function-docstring", "missing-class-docstring"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["scripts"]
