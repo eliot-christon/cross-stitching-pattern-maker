@@ -12,8 +12,9 @@ decoding, and the JSON shape. Run locally with
 import io
 import json
 import warnings
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -43,16 +44,22 @@ from cross_stitch.pattern import (
     EMPTY,
     CleanedPattern,
     Pattern,
+    PixelGrid,
     Replaced,
+    background_as_fabric,
     clean_pattern,
     colours_with_headroom,
     convert_image,
+    fabric_weave,
     find_pixel_grid,
+    find_stitch_grid,
     isolated_stitches,
     pixel_art_colours,
     replace_threads,
     stitch_height,
+    symbols_only,
     unscale_pixel_art,
+    unstitch,
 )
 from cross_stitch.threads import Thread, dmc_thread, dmc_threads, similar_dmc
 
@@ -163,17 +170,32 @@ class PatternOut(BaseModel):
     )
 
 
-class PixelArtOut(BaseModel):
+ReadAs = Literal["picture", "pixel_art", "stitched"]
+"""How the pattern routes read an upload. `picture` resamples it to `width`; every other
+kind is a grid kind: the source's own grid of cells, one stitch per cell (`pixel_art`:
+flat cells, `find_pixel_grid`; `stitched`: textured stitches or a chart's cells under
+symbols, `find_stitch_grid`)."""
+
+
+class SourceGridOut(BaseModel):
     width: int
-    """Art pixels across: the width that gives one stitch per art pixel."""
+    """Cells across the source's grid: the pattern's width when read as its kind."""
     height: int
     colours: int
     """Colours a stitcher would tell apart, at most the colour limit."""
 
 
 class InspectOut(BaseModel):
-    pixel_art: PixelArtOut | None
-    """The image's art pixels, or `null` when it is not pixel art."""
+    kind: ReadAs | None
+    """How the upload reads best, sent back as `read_as`; `null` when it is no image."""
+    description: str
+    """What was found, in words, for the page to show."""
+    grid: SourceGridOut | None
+    """The source's grid for a grid kind, else `null`."""
+    warnings: list[str]
+    """What the reading changed or could not do."""
+    refusal: str | None
+    """Why the upload cannot be read as found, else `null`."""
 
 
 class BandOut(BaseModel):
@@ -295,9 +317,18 @@ app = FastAPI(title="Cross-stitch pattern maker")
 app.add_middleware(_limit_body)
 
 
+PDF_REFUSAL = "PDF charts cannot be read: upload an image of the pattern (PNG or JPEG)"
+
+
+def _is_pdf(upload: bytes) -> bool:
+    return upload.startswith(b"%PDF-")
+
+
 def _decode(upload: bytes) -> Image.Image:
-    """Decode an upload with Pillow, upright per its EXIF orientation; 400 if it is not an
-    image Pillow can read (or is a decompression bomb)."""
+    """Decode an upload with Pillow, upright per its EXIF orientation; 400 if it is a PDF
+    or not an image Pillow can read (or is a decompression bomb)."""
+    if _is_pdf(upload):
+        raise HTTPException(400, PDF_REFUSAL)
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -310,12 +341,100 @@ def _decode(upload: bytes) -> Image.Image:
         raise HTTPException(400, "the image has too many pixels") from error
 
 
-def _read_image(upload: UploadFile) -> Image.Image:
-    """The uploaded image, decoded; 413 over `MAX_UPLOAD_BYTES`, 400 if not an image."""
+def _read_bytes(upload: UploadFile) -> bytes:
+    """The uploaded file's bytes; 413 over `MAX_UPLOAD_BYTES`."""
     data = upload.file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise _BodyTooLarge
-    return _decode(data)
+    return data
+
+
+CropField = Annotated[
+    str | None,
+    Form(
+        description="Keep only this box of the upright image before reading it: "
+        "left,top,right,bottom in pixels, right and bottom excluded"
+    ),
+]
+
+
+def _cropped(image: Image.Image, crop: str | None) -> Image.Image:
+    """The image inside the `crop` box, in pixels of the upright image; the whole image
+    with no box. A box that is not four whole numbers, empty, inverted or not inside the
+    image is a 422 naming `crop`."""
+    if not crop:
+        return image
+    try:
+        left, top, right, bottom = (int(part) for part in crop.split(","))
+    except ValueError:
+        raise _crop_error(crop, "is not left,top,right,bottom in whole pixels") from None
+    if not (0 <= left < right <= image.width and 0 <= top < bottom <= image.height):
+        raise _crop_error(
+            crop, f"is not a non-empty box inside the {image.width} x {image.height} image"
+        )
+    return image.crop((left, top, right, bottom))
+
+
+def _crop_error(crop: str, problem: str) -> RequestValidationError:
+    return RequestValidationError(
+        [
+            {
+                "loc": ("body", "crop"),
+                "msg": f"{crop!r} {problem}",
+                "type": "value_error",
+                "input": crop,
+            }
+        ]
+    )
+
+
+def _read_image(upload: UploadFile, crop: str | None = None) -> Image.Image:
+    """The uploaded image, decoded and cropped to `crop`; 413 over `MAX_UPLOAD_BYTES`,
+    400 if not an image, 422 for a bad box."""
+    return _cropped(_decode(_read_bytes(upload)), crop)
+
+
+@dataclass(frozen=True)
+class _Reader:
+    """How a grid kind finds its grid in an image and reduces the image to it."""
+
+    find: Callable[[Image.Image], PixelGrid | None]
+    reduce: Callable[[Image.Image, PixelGrid], Image.Image]
+    label: str
+    """The kind in words, as the inspection describes it."""
+    cells: str
+    """What its cells are, for the 422 when there is no grid."""
+
+
+_READERS: dict[ReadAs, _Reader] = {
+    "pixel_art": _Reader(find_pixel_grid, unscale_pixel_art, "Pixel art", "art pixels"),
+    "stitched": _Reader(find_stitch_grid, unstitch, "Stitched", "stitches"),
+}
+"""The grid kinds, in the order the inspection tries them: flat pixel art first, so every
+image it reads stays read that way."""
+
+WEAVE_REFUSAL = (
+    "Fabric weave found but no grid of stitches: photograph the stitching flat and face "
+    "on, or treat the image as a photo"
+)
+SYMBOLS_REFUSAL = (
+    "The chart's cells hold symbols, not thread colours (its colours are only in its "
+    "key): use a colour chart, or treat the image as a photo"
+)
+PITCH_WARNING = 0.02
+"""Relative difference between a grid's cell width and height worth a warning."""
+
+
+def _source_grid(image: Image.Image, read_as: ReadAs) -> Image.Image:
+    """The image reduced to one pixel per cell of its own grid, as `read_as` reads it;
+    422 naming `read_as` when it has no such grid. A picture is returned as it is."""
+    if read_as == "picture":
+        return image
+    reader = _READERS[read_as]
+    grid = reader.find(image)
+    if grid is None:
+        raise HTTPException(422, f"read_as: no grid of {reader.cells} found in the image")
+    return reader.reduce(image, grid)
 
 
 def _grid_json(pattern: Pattern) -> list[list[int | None]]:
@@ -487,9 +606,22 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
             "repeated, applied in order"
         ),
     ] = None,
-    pixel_art: Annotated[
+    read_as: Annotated[
+        ReadAs,
+        Form(
+            description="How to read the image: picture (resampled to width) or a grid "
+            "kind from POST /images/inspect (one stitch per cell of its own grid; width "
+            "unused)"
+        ),
+    ] = "picture",
+    crop: CropField = None,
+    background_fabric: Annotated[
         bool,
-        Form(description="Reduce the image to one pixel per art pixel first (pixel art)"),
+        Form(
+            alias="background_as_fabric",
+            description="Leave the background bare: the thread most frequent on the border, "
+            "where it joins the border",
+        ),
     ] = False,
 ) -> _Converted:
     """The conversion inputs both routes share: validated, decoded and converted here, so
@@ -498,24 +630,29 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
     The settings come back with the pattern rather than through a second `Depends(_cleanup)`
     in a route: a dependency met twice reports each of its validation errors twice."""
     replacements = [_replacement(value) for value in replace or []]
-    decoded = _read_image(image)
-    if pixel_art:
-        grid = find_pixel_grid(decoded)
-        if grid is None:
-            raise HTTPException(422, "pixel_art: no grid of art pixels found in the image")
-        decoded = unscale_pixel_art(decoded, grid)
+    decoded = _source_grid(_read_image(image, crop), read_as)
+    if read_as != "picture":
+        width = decoded.width
+        if width > _WIDTH.max:
+            raise HTTPException(
+                422, f"read_as: the grid is {width} stitches wide; at most {_WIDTH.max}"
+            )
     height = stitch_height(decoded.width, decoded.height, width)
     if height > MAX_HEIGHT:
         raise HTTPException(
             422,
             f"height would be {height} stitches at width {width}; at most {MAX_HEIGHT}",
         )
+    # The background takes a thread away: convert with one more, so `max_colours` stitched
+    # threads remain when the image has that many besides it (cleanup caps the rest).
     pattern = convert_image(
         decoded,
         width=width,
-        max_colours=cleanup.colours_to_convert(max_colours),
+        max_colours=cleanup.colours_to_convert(max_colours) + int(background_fabric),
         fabric_count=fabric_count,
     )
+    if background_fabric:
+        pattern = background_as_fabric(pattern)
     cleaned = cleanup(pattern, max_colours)
     return _Converted(
         cleaned=cleaned,
@@ -527,18 +664,73 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
 @app.post("/images/inspect")
 def inspect_image(
     image: Annotated[UploadFile, File(description="The image to look at")],
+    crop: CropField = None,
 ) -> InspectOut:
-    """Whether the image is pixel art, and if so its size in art pixels and its colours:
-    the settings that give one stitch per art pixel with `pixel_art=true`."""
-    decoded = _read_image(image)
-    grid = find_pixel_grid(decoded)
-    if grid is None:
-        return InspectOut(pixel_art=None)
-    colours = pixel_art_colours(unscale_pixel_art(decoded, grid))
-    return InspectOut(
-        pixel_art=PixelArtOut(
-            width=grid.columns, height=grid.rows, colours=min(colours, _MAX_COLOURS.max)
+    """What the upload is and how it reads best: its `kind` (sent back as `read_as`), the
+    source grid of a grid kind with the settings that give one stitch per cell, what the
+    reading changes, and why it cannot be read when it cannot. A PDF is refused here, with
+    a 200; bytes that are no image are a 400, as on the pattern routes."""
+    data = _read_bytes(image)
+    if _is_pdf(data):
+        return InspectOut(
+            kind=None, description="PDF document", grid=None, warnings=[], refusal=PDF_REFUSAL
         )
+    decoded = _cropped(_decode(data), crop)
+    found = _found_grid(decoded)
+    if found is None:
+        return _picture(WEAVE_REFUSAL if fabric_weave(decoded) else None)
+    kind, grid = found
+    # Flat white cells under symbols are pixel art to its reader: checked for every kind.
+    if symbols_only(decoded, grid):
+        return _picture(SYMBOLS_REFUSAL)
+    reader = _READERS[kind]
+    return _grid_inspection(kind, reader, grid, reader.reduce(decoded, grid))
+
+
+def _found_grid(image: Image.Image) -> tuple[ReadAs, PixelGrid] | None:
+    """The first grid kind whose reader finds a grid in `image`, and that grid. A pixel art
+    at its own size (one pixel per cell) is the last resort: a grid of larger cells that a
+    later reader finds is what the image shows."""
+    fallback: tuple[ReadAs, PixelGrid] | None = None
+    for kind, reader in _READERS.items():
+        grid = reader.find(image)
+        if grid is None:
+            continue
+        if grid.pitch_x > 1 or grid.pitch_y > 1:
+            return kind, grid
+        fallback = fallback or (kind, grid)
+    return fallback
+
+
+def _picture(refusal: str | None) -> InspectOut:
+    return InspectOut(
+        kind="picture", description="Picture", grid=None, warnings=[], refusal=refusal
+    )
+
+
+def _grid_inspection(
+    kind: ReadAs, reader: _Reader, grid: PixelGrid, reduced: Image.Image
+) -> InspectOut:
+    """The inspection of a source read as `kind`: its grid, colours and warnings."""
+    colours = pixel_art_colours(reduced)
+    warnings_ = []
+    if abs(grid.pitch_x - grid.pitch_y) > PITCH_WARNING * max(grid.pitch_x, grid.pitch_y):
+        warnings_.append(
+            f"Cells are {grid.pitch_x:.1f} x {grid.pitch_y:.1f} pixels, not square: the image "
+            "may be stretched; the pattern follows its grid"
+        )
+    if colours > _MAX_COLOURS.max:
+        warnings_.append(
+            f"{colours} colours found; patterns hold at most {_MAX_COLOURS.max}, "
+            "so the closest ones merge"
+        )
+        colours = _MAX_COLOURS.max
+    return InspectOut(
+        kind=kind,
+        description=f"{reader.label}, {grid.columns} x {grid.rows} stitches, {colours} colours",
+        grid=SourceGridOut(width=grid.columns, height=grid.rows, colours=colours),
+        warnings=warnings_,
+        refusal=None,
     )
 
 

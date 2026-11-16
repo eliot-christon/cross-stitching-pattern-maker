@@ -67,8 +67,10 @@ export function SliderField(props: {
   limits: SettingLimits;
   value: string;
   onChange: (value: string) => void;
+  /** The value is fixed by something else: shown, not editable. */
+  disabled?: boolean;
 }) {
-  const { label, limits, value, onChange } = props;
+  const { label, limits, value, onChange, disabled = false } = props;
   const labelId = useId();
   return (
     <div role="group" aria-labelledby={labelId} className="field">
@@ -83,6 +85,7 @@ export function SliderField(props: {
           max={limits.max}
           step={limits.step}
           value={value}
+          disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
         />
         <input
@@ -90,6 +93,7 @@ export function SliderField(props: {
           aria-labelledby={labelId}
           step="any"
           value={value}
+          disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
         />
       </div>
@@ -260,7 +264,7 @@ export function Switch(props: {
 }
 
 /** A small preview of an image file, read in the page (no object URL, no request). */
-function useThumbnail(file: File | null): string | null {
+export function useThumbnail(file: File | null): string | null {
   // The thumbnail with the file it shows: one for another file is never shown.
   const [read, setRead] = useState<{ file: File; url: string } | null>(null);
   useEffect(() => {

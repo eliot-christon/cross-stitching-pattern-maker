@@ -59,9 +59,10 @@ def _padded(grid: IntArray) -> IntArray:
     return padded
 
 
-def _cluster_labels(padded: IntArray) -> IntArray:
+def _cluster_labels(padded: IntArray, *, diagonals: bool = True) -> IntArray:
     """Flat label per cell of `padded`: the smallest flat index (so the first cell in
-    reading order) of its 8-connected same-entry cluster, or `EMPTY` for bare fabric.
+    reading order) of its same-entry cluster, or `EMPTY` for bare fabric. Cells join
+    through their 8 neighbours, or only the 4 sharing a side when `diagonals` is off.
 
     Union-find in numpy: each round hooks the larger of two linked roots under the smaller
     one, then pointer jumping flattens every tree, until no link joins two roots.
@@ -70,7 +71,8 @@ def _cluster_labels(padded: IntArray) -> IntArray:
     parent = np.arange(flat.size, dtype=np.intp)
     width = padded.shape[1]
     firsts, seconds = [], []
-    for step in (1, width - 1, width, width + 1):  # right, down-left, down, down-right
+    # right, down-left, down, down-right; the padding keeps rows from wrapping into links.
+    for step in (1, width - 1, width, width + 1) if diagonals else (1, width):
         linked = np.nonzero((flat[:-step] == flat[step:]) & (flat[:-step] != EMPTY))[0]
         firsts.append(linked)
         seconds.append(linked + step)
