@@ -235,20 +235,22 @@ def _flat_axis(length: int, other: _Axis | None) -> _Axis | None:
     return _Axis(other.pitch, 0.0, max(1, round(length / other.pitch)))
 
 
-def _centre_indices(cells: int, pitch: float, origin: float, limit: int) -> npt.NDArray[np.intp]:
-    """For each cell on one axis, the pixel indices of its centre: about half a cell, at
-    least one pixel, clipped to the image's `limit` pixels."""
-    size = max(1, round(pitch / 2))
+def _centre_indices(
+    cells: int, pitch: float, origin: float, limit: int, share: float = 0.5
+) -> npt.NDArray[np.intp]:
+    """For each cell on one axis, the pixel indices of its centre: `share` of a cell (half
+    by default), at least one pixel, clipped to the image's `limit` pixels."""
+    size = max(1, round(pitch * share))
     centres = origin + (np.arange(cells) + 0.5) * pitch
     first = np.floor(centres - size / 2 + 0.5).astype(np.intp)
     indices: npt.NDArray[np.intp] = np.clip(first[:, np.newaxis] + np.arange(size), 0, limit - 1)
     return indices
 
 
-def _centre_blocks(rgba: ByteArray, grid: PixelGrid) -> ByteArray:
-    """The central part of every cell: shape (rows, columns, k, k, 4)."""
-    xs = _centre_indices(grid.columns, grid.pitch_x, grid.origin_x, rgba.shape[1])
-    ys = _centre_indices(grid.rows, grid.pitch_y, grid.origin_y, rgba.shape[0])
+def _centre_blocks(rgba: ByteArray, grid: PixelGrid, share: float = 0.5) -> ByteArray:
+    """The central `share` of every cell on each axis: shape (rows, columns, ky, kx, 4)."""
+    xs = _centre_indices(grid.columns, grid.pitch_x, grid.origin_x, rgba.shape[1], share)
+    ys = _centre_indices(grid.rows, grid.pitch_y, grid.origin_y, rgba.shape[0], share)
     blocks: ByteArray = rgba[ys[:, np.newaxis, :, np.newaxis], xs[np.newaxis, :, np.newaxis, :]]
     return blocks
 

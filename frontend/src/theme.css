@@ -917,11 +917,45 @@ select {
   color: var(--muted);
 }
 
-/* Pixel art found in the chosen image: its switch and what it does. */
-.pixel-art {
+/* What the inspection found in the chosen image, its warnings and refusal, and the
+   "Treat as a photo" switch. */
+.source-kind {
   display: grid;
   gap: var(--space-1);
   justify-items: start;
+}
+
+/* The chosen image to drag a crop box on, the area outside the box dimmed. The image is
+   shown at its own shape, so its box is what the pointer is measured against. */
+.crop {
+  justify-items: start;
+}
+
+.crop-area {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  cursor: crosshair;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.crop-area img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 28rem;
+}
+
+.crop-outline {
+  position: absolute;
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.35);
+  pointer-events: none;
 }
 
 .field-hint {

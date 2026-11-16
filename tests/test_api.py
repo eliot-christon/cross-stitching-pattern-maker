@@ -949,3 +949,37 @@ def test_the_pdf_cover_key_lists_the_json_symbols_in_key_order() -> None:
         )
         assert row is not None, f"{entry['code']} with {entry['symbol']} missing or out of order"
         previous = row
+
+
+def _subject_on_white() -> bytes:
+    """30 x 30 white, three blocks of other threads in the middle."""
+    pixels = np.full((30, 30, 3), dmc_thread("Blanc").rgb, dtype=np.uint8)
+    for i, code in enumerate(("310", "321", "797")):
+        pixels[10:20, 5 + i * 7 : 12 + i * 7] = dmc_thread(code).rgb
+    return _png(Image.fromarray(pixels))
+
+
+def test_background_as_fabric_leaves_the_border_thread_bare_and_keeps_max_colours() -> None:
+    fields = {"width": "30", "max_colours": "3", "merge_distance": "1"}
+    response = _post(_subject_on_white(), {**fields, "background_as_fabric": "true"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert sorted(entry["code"] for entry in body["key"]) == ["310", "321", "797"]
+    for grid in (body["grid"], body["converted"]["grid"]):
+        assert all(cell is None for cell in grid[0] + grid[-1])
+        assert all(row[0] is None and row[-1] is None for row in grid)
+    assert body["total_stitches"] == sum(entry["stitches"] for entry in body["key"])
+
+
+def test_background_as_fabric_off_or_absent_changes_nothing() -> None:
+    upload = _subject_on_white()
+    fields = {"width": "30", "max_colours": "3"}
+
+    absent = _post(upload, fields).json()
+
+    assert _post(upload, {**fields, "background_as_fabric": "false"}).json() == absent
+    assert "Blanc" in {entry["code"] for entry in absent["key"]}
+    pdf = _post_pdf(upload, {**fields, "background_as_fabric": "true"})
+    assert pdf.status_code == 200
+    assert pdf.headers["content-type"] == "application/pdf"

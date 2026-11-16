@@ -1,5 +1,6 @@
 """Image -> cross-stitch pattern: the stitch grid, its DMC key, counts and sizes."""
 
+from cross_stitch.pattern.background import background_as_fabric
 from cross_stitch.pattern.cleanup import (
     CLEANUP_HEADROOM,
     CleanedPattern,
@@ -26,6 +27,12 @@ from cross_stitch.pattern.pixelart import (
     unscale_pixel_art,
 )
 from cross_stitch.pattern.replace import Replaced, replace_threads
+from cross_stitch.pattern.stitched import (
+    fabric_weave,
+    find_stitch_grid,
+    symbols_only,
+    unstitch,
+)
 
 __all__ = [
     "CLEANUP_HEADROOM",
@@ -36,11 +43,14 @@ __all__ = [
     "Pattern",
     "PixelGrid",
     "Replaced",
+    "background_as_fabric",
     "build_pattern",
     "clean_pattern",
     "colours_with_headroom",
     "convert_image",
+    "fabric_weave",
     "find_pixel_grid",
+    "find_stitch_grid",
     "isolated_stitches",
     "limit_threads",
     "merge_similar_threads",
@@ -51,5 +61,7 @@ __all__ = [
     "skeins_needed",
     "stitch_height",
     "stitches_per_skein",
+    "symbols_only",
     "unscale_pixel_art",
+    "unstitch",
 ]

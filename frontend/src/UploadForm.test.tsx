@@ -129,7 +129,12 @@ function stubApi(
   const patterns = handlers.patterns ?? (() => Promise.resolve(json(200, PATTERN)));
   const layout = handlers.layout ?? (() => Promise.resolve(json(200, LAYOUT)));
   const pdf = handlers.pdf ?? (() => Promise.reject(new Error("no PDF expected")));
-  const inspect = handlers.inspect ?? (() => Promise.resolve(json(200, { pixel_art: null })));
+  const inspect =
+    handlers.inspect ??
+    (() =>
+      Promise.resolve(
+        json(200, { kind: "picture", description: "Picture", grid: null, warnings: [], refusal: null }),
+      ));
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     if (url === "/api/limits") {
       return Promise.resolve(json(200, LIMITS));
@@ -1789,46 +1794,88 @@ describe("PDF view", () => {
   });
 });
 
-describe("pixel art", () => {
-  const ART = { pixel_art: { width: 64, height: 60, colours: 6 } };
-
-  function pixelArtSwitch(): HTMLElement | null {
-    return screen.queryByRole("checkbox", { name: "Pixel art" });
+describe("source kind", () => {
+  function inspection(fields: Record<string, unknown> = {}) {
+    return { kind: "picture", description: "Picture", grid: null, warnings: [], refusal: null, ...fields };
   }
 
-  it("converts pixel art once, at one stitch per art pixel and its colours", async () => {
-    const fetchMock = stubApi({ inspect: () => Promise.resolve(json(200, ART)) });
-    await renderLive();
+  const ART = inspection({
+    kind: "pixel_art",
+    description: "Pixel art, 64 x 64 stitches, 6 colours",
+    grid: { width: 64, height: 64, colours: 6 },
+  });
 
-    chooseFile("sprite.png");
+  function photoSwitch(): HTMLElement | null {
+    return screen.queryByRole("checkbox", { name: "Treat as a photo" });
+  }
+
+  function widthNumber(): HTMLElement {
+    return within(screen.getByRole("group", { name: "Width (stitches)" })).getByRole("spinbutton");
+  }
+
+  async function choose(found: Record<string, unknown>, name = "sprite.png") {
+    const fetchMock = stubApi({ inspect: () => Promise.resolve(json(200, found)) });
+    await renderLive();
+    chooseFile(name);
     await settle();
     await wait(QUIET_MS);
     await settle();
+    return fetchMock;
+  }
 
+  it("reads a grid kind once, at the grid's size and colours, with the width fixed", async () => {
+    const fetchMock = await choose(ART);
+
+    expect(screen.getByText("Detected: Pixel art, 64 x 64 stitches, 6 colours")).toBeInTheDocument();
+    expect(sent(fetchMock, "read_as")).toEqual(["pixel_art"]);
     expect(sent(fetchMock, "width")).toEqual(["64"]);
     expect(sent(fetchMock, "max_colours")).toEqual(["6"]);
-    expect(sent(fetchMock, "pixel_art")).toEqual(["true"]);
-    expect(pixelArtSwitch()).toBeChecked();
-    expect(screen.getByText(/64 x 60 pixels, 6 colours: one stitch per pixel/)).toBeInTheDocument();
+    expect(photoSwitch()).not.toBeChecked();
+    expect(widthNumber()).toBeDisabled();
   });
 
-  it("converts the image as a picture once the switch is off", async () => {
-    const fetchMock = stubApi({ inspect: () => Promise.resolve(json(200, ART)) });
-    await renderLive();
-    chooseFile("sprite.png");
-    await settle();
+  it("converts as a picture with the width editable once treated as a photo", async () => {
+    const fetchMock = await choose(ART);
+
+    fireEvent.click(photoSwitch() as HTMLElement);
     await wait(QUIET_MS);
     await settle();
 
-    fireEvent.click(pixelArtSwitch() as HTMLElement);
+    expect(sent(fetchMock, "read_as")).toEqual(["pixel_art", "picture"]);
+    expect(widthNumber()).toBeEnabled();
+  });
+
+  it("shows a refusal and converts nothing until treated as a photo", async () => {
+    const refusal = "fabric found but no stitch grid";
+    const fetchMock = await choose(inspection({ refusal }), "photo.jpg");
+
+    expect(screen.getByRole("alert")).toHaveTextContent(refusal);
+    expect(sent(fetchMock, "read_as")).toEqual([]);
+
+    fireEvent.click(photoSwitch() as HTMLElement);
     await wait(QUIET_MS);
     await settle();
 
-    expect(sent(fetchMock, "pixel_art")).toEqual(["true", "false"]);
-    expect(sent(fetchMock, "width")).toEqual(["64", "64"]);
+    expect(sent(fetchMock, "read_as")).toEqual(["picture"]);
   });
 
-  it("keeps the settings and shows no switch for an image that is not pixel art", async () => {
+  it("shows a refusal with no switch and converts nothing for what is no image", async () => {
+    const refusal = "PDF charts cannot be read";
+    const fetchMock = await choose(inspection({ kind: null, description: "PDF document", refusal }), "a.pdf");
+
+    expect(screen.getByRole("alert")).toHaveTextContent(refusal);
+    expect(photoSwitch()).not.toBeInTheDocument();
+    expect(sent(fetchMock, "read_as")).toEqual([]);
+  });
+
+  it("shows every warning", async () => {
+    await choose({ ...ART, warnings: ["first warning", "second warning"] });
+
+    expect(screen.getByText("first warning")).toBeInTheDocument();
+    expect(screen.getByText("second warning")).toBeInTheDocument();
+  });
+
+  it("keeps the settings and shows no switch for a picture", async () => {
     const fetchMock = stubApi();
     await renderLive();
 
@@ -1839,8 +1886,10 @@ describe("pixel art", () => {
 
     expect(sent(fetchMock, "width")).toEqual(["100"]);
     expect(sent(fetchMock, "max_colours")).toEqual(["7"]);
-    expect(sent(fetchMock, "pixel_art")).toEqual(["false"]);
-    expect(pixelArtSwitch()).not.toBeInTheDocument();
+    expect(sent(fetchMock, "read_as")).toEqual(["picture"]);
+    expect(screen.getByText("Detected: Picture")).toBeInTheDocument();
+    expect(photoSwitch()).not.toBeInTheDocument();
+    expect(widthNumber()).toBeEnabled();
   });
 
   it("converts as a picture when the inspection fails", async () => {
@@ -1852,21 +1901,152 @@ describe("pixel art", () => {
     await wait(QUIET_MS);
     await settle();
 
-    expect(sent(fetchMock, "pixel_art")).toEqual(["false"]);
-    expect(pixelArtSwitch()).not.toBeInTheDocument();
+    expect(sent(fetchMock, "read_as")).toEqual(["picture"]);
+    expect(photoSwitch()).not.toBeInTheDocument();
   });
 
   it("caps the colours found at the colour limit", async () => {
-    const many = { pixel_art: { width: 40, height: 40, colours: 250 } };
-    const fetchMock = stubApi({ inspect: () => Promise.resolve(json(200, many)) });
-    await renderLive();
+    const fetchMock = await choose({ ...ART, grid: { width: 40, height: 40, colours: 250 } });
 
-    chooseFile("sprite.png");
+    expect(sent(fetchMock, "max_colours")).toEqual(["100"]);
+  });
+});
+
+describe("crop", () => {
+  /** Drag a box on the crop view: the image 1000 x 500 shown at 400 x 200. */
+  async function drawCrop(from: [number, number], to: [number, number]) {
+    // The image is read in the page (FileReader): let that finish, on the faked clock.
+    await settle();
+    const image = screen.getByAltText("The chosen image, to crop");
+    Object.defineProperty(image, "naturalWidth", { value: 1000, configurable: true });
+    Object.defineProperty(image, "naturalHeight", { value: 500, configurable: true });
+    image.getBoundingClientRect = () => new DOMRect(0, 0, 400, 200);
+    fireEvent.load(image);
+    const area = image.parentElement as HTMLElement;
+    fireEvent.pointerDown(area, { clientX: from[0], clientY: from[1], pointerId: 1 });
+    fireEvent.pointerMove(area, { clientX: to[0], clientY: to[1], pointerId: 1 });
+    fireEvent.pointerUp(area, { clientX: to[0], clientY: to[1], pointerId: 1 });
+  }
+
+  function inspected(fetchMock: ReturnType<typeof stubApi>): unknown[] {
+    return posted(fetchMock, "/api/images/inspect").map((body) => body.get("crop"));
+  }
+
+  async function quiet() {
+    await wait(QUIET_MS);
+    await settle();
+  }
+
+  it("inspects again with the box, then converts with it; reset drops it", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+    chooseFile();
+    await settle();
+    await quiet();
+    expect(inspected(fetchMock)).toEqual([null]);
+    expect(sent(fetchMock, "crop")).toEqual([null]);
+
+    await drawCrop([40, 20], [200, 120]);
+    await settle();
+    expect(inspected(fetchMock)).toEqual([null]);
+    await quiet();
+    expect(inspected(fetchMock)).toEqual([null, "100,50,500,300"]);
+    expect(sent(fetchMock, "crop")).toEqual([null]);
+    await quiet();
+    expect(sent(fetchMock, "crop")).toEqual([null, "100,50,500,300"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset crop" }));
+    await quiet();
+    await quiet();
+    expect(inspected(fetchMock)).toEqual([null, "100,50,500,300", null]);
+    expect(sent(fetchMock, "crop")).toEqual([null, "100,50,500,300", null]);
+  });
+
+  it("drops the box when another image is chosen", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+    chooseFile("first.png");
+    await settle();
+    await quiet();
+    await drawCrop([40, 20], [200, 120]);
+    await quiet();
+    await quiet();
+
+    chooseFile("second.png");
+    await settle();
+    await quiet();
+
+    expect(inspected(fetchMock).at(-1)).toBeNull();
+    expect(sent(fetchMock, "crop").at(-1)).toBeNull();
+    expect(sentImages(fetchMock).at(-1)).toBe("second.png");
+  });
+
+  it("sends the box of the preview shown with the PDF", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    chooseFile();
+    await settle();
+    await quiet();
+    await drawCrop([40, 20], [200, 120]);
+    await quiet();
+    await quiet();
+
+    fireEvent.click(downloadButton());
+    await settle();
+
+    expect(posted(fetchMock, "/api/patterns/pdf").map((body) => body.get("crop"))).toEqual([
+      "100,50,500,300",
+    ]);
+  });
+});
+
+describe("background as fabric", () => {
+  function backgroundSwitch(): HTMLElement {
+    return screen.getByRole("checkbox", { name: "Background as fabric" });
+  }
+
+  it("is off at first, and turning it on converts once more with it on", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    chooseFile();
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+    expect(backgroundSwitch()).not.toBeChecked();
+    expect(sent(fetchMock, "background_as_fabric")).toEqual(["false"]);
+
+    fireEvent.click(backgroundSwitch());
+    await wait(QUIET_MS);
+    await settle();
+    expect(sent(fetchMock, "background_as_fabric")).toEqual(["false", "true"]);
+
+    fireEvent.click(downloadButton());
+    await settle();
+    expect(posted(fetchMock, "/api/patterns/pdf").map((body) => body.get("background_as_fabric"))).toEqual([
+      "true",
+    ]);
+  });
+
+  it("stays on when another image is chosen", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+    chooseFile("first.png");
+    await settle();
+    await wait(QUIET_MS);
+    await settle();
+    fireEvent.click(backgroundSwitch());
+    await wait(QUIET_MS);
+    await settle();
+
+    chooseFile("second.png");
     await settle();
     await wait(QUIET_MS);
     await settle();
 
-    expect(sent(fetchMock, "max_colours")).toEqual(["100"]);
+    expect(sentImages(fetchMock).at(-1)).toBe("second.png");
+    expect(sent(fetchMock, "background_as_fabric").at(-1)).toBe("true");
   });
 });
 

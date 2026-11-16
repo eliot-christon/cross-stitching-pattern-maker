@@ -20,6 +20,7 @@ frontend/dist/
 # Local data and outputs - user images and generated patterns never go in git
 .data/
 out/
+input_examples/
 
 # Editors / OS
 .vscode/
