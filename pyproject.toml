@@ -52,7 +52,8 @@ mypy_path = "scripts"
 
 [tool.pylint.main]
 max-line-length = 100
-source-roots = ["scripts"]
+# Dev scripts outside the package, imported by their tests; run from the repo root, as CI.
+init-hook = "import sys; sys.path.append('scripts')"
 
 [tool.pylint."messages control"]
 disable = ["missing-module-docstring", "missing-function-docstring", "missing-class-docstring"]
