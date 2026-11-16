@@ -22,7 +22,9 @@ const SETTINGS = {
   mergeDistance: "2.5",
   minStitches: "10",
   confettiSize: "1",
-  pixelArt: false,
+  readAs: "picture",
+  crop: "",
+  backgroundAsFabric: false,
 };
 
 /** An upload limit as the API reports it today; the size checks take it as an argument. */
@@ -90,6 +92,8 @@ describe("convertImage", () => {
     expect(body.get("merge_distance")).toBe("2.5");
     expect(body.get("min_stitches")).toBe("10");
     expect(body.get("confetti_size")).toBe("1");
+    expect(body.get("read_as")).toBe("picture");
+    expect(body.get("background_as_fabric")).toBe("false");
   });
 
   it("returns the pattern from a 200", async () => {
@@ -428,7 +432,9 @@ describe("replacements on the wire", () => {
     mergeDistance: "0",
     minStitches: "0",
     confettiSize: "0",
-    pixelArt: false,
+    readAs: "picture",
+    crop: "",
+    backgroundAsFabric: false,
   };
   const black = { code: "310", name: "Black", rgb: [0, 0, 0] as [number, number, number] };
   const winter = { code: "3865", name: "Winter White", rgb: [249, 247, 241] as [number, number, number] };
@@ -490,7 +496,9 @@ describe("chart layout on the wire", () => {
     mergeDistance: "0",
     minStitches: "0",
     confettiSize: "0",
-    pixelArt: false,
+    readAs: "picture",
+    crop: "",
+    backgroundAsFabric: false,
   };
   const layoutFields = ["split", "pages_across", "pages_down", "overlap", "centre_lines"];
 
@@ -538,31 +546,40 @@ describe("inspectImage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts the image alone and gives the pixel art found", async () => {
+  const FOUND = {
+    kind: "pixel_art",
+    description: "Pixel art, 64 x 60 stitches, 6 colours",
+    grid: { width: 64, height: 60, colours: 6 },
+    warnings: [],
+    refusal: null,
+  };
+
+  it("posts the image alone and gives what the inspection found", async () => {
     const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
-      Promise.resolve(new Response(JSON.stringify({ pixel_art: { width: 64, height: 60, colours: 6 } }))),
+      Promise.resolve(new Response(JSON.stringify(FOUND))),
     );
     vi.stubGlobal("fetch", fetchMock);
     const image = new File(["x"], "a.png", { type: "image/png" });
 
     const result = await inspectImage(image, 1000);
 
-    expect(result).toEqual({ ok: true, pixelArt: { width: 64, height: 60, colours: 6 } });
+    expect(result).toEqual({ ok: true, inspection: FOUND });
     const call = fetchMock.mock.calls[0];
     expect(call?.[0]).toBe("/api/images/inspect");
     const body = call?.[1]?.body as FormData;
     expect([...body.keys()]).toEqual(["image"]);
   });
 
-  it("gives null for an image that is not pixel art, and the API's message on failure", async () => {
+  it("gives a refusal as found, and the API's message on failure", async () => {
+    const refused = { ...FOUND, kind: null, description: "PDF document", grid: null, refusal: "no PDF" };
     const answers = [
-      new Response(JSON.stringify({ pixel_art: null })),
+      new Response(JSON.stringify(refused)),
       new Response(JSON.stringify({ detail: "the upload is not a decodable image" }), { status: 400 }),
     ];
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(answers.shift() as Response)));
     const image = new File(["x"], "a.png", { type: "image/png" });
 
-    expect(await inspectImage(image, 1000)).toEqual({ ok: true, pixelArt: null });
+    expect(await inspectImage(image, 1000)).toEqual({ ok: true, inspection: refused });
     expect(await inspectImage(image, 1000)).toEqual({
       ok: false,
       message: "the upload is not a decodable image",

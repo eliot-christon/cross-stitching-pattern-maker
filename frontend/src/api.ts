@@ -48,21 +48,38 @@ export interface Settings {
   minStitches: string;
   /** Merge clusters of one thread up to this many cells into their surroundings; "0" is off. */
   confettiSize: string;
-  /** Reduce the image to one pixel per art pixel before converting it. */
-  pixelArt: boolean;
+  /**
+   * How the API reads the image, sent as `read_as`: `PICTURE`, or a kind an inspection
+   * named, passed back unchanged.
+   */
+  readAs: string;
+  /** The crop box as the API's `crop` field spells it (`left,top,right,bottom`); "" for none. */
+  crop: string;
+  /** Leave the background (the border's thread, where it joins the border) bare fabric. */
+  backgroundAsFabric: boolean;
 }
 
-/** The image inspection endpoint: is the image pixel art, and of what size. */
+/** The `read_as` that resamples the image to the width, as any photo is converted. */
+export const PICTURE = "picture";
+
+/** The image inspection endpoint: what the upload is and how it reads best. */
 export const INSPECT_URL = "/api/images/inspect";
 
-/** An image's art pixels, as `POST /images/inspect` finds them. */
-export interface PixelArt {
-  width: number;
-  height: number;
-  colours: number;
+/** What `POST /images/inspect` found. `kind` is opaque here: it is sent back as `readAs`. */
+export interface Inspection {
+  /** How the upload reads best; null when it is no image the API can read. */
+  kind: string | null;
+  /** What was found, in words. */
+  description: string;
+  /** The source's own grid, for a kind other than `PICTURE`. */
+  grid: { width: number; height: number; colours: number } | null;
+  /** What the reading changes or cannot do. */
+  warnings: string[];
+  /** Why the upload cannot be read as found. */
+  refusal: string | null;
 }
 
-export type InspectResult = { ok: true; pixelArt: PixelArt | null } | { ok: false; message: string };
+export type InspectResult = { ok: true; inspection: Inspection } | { ok: false; message: string };
 
 /** The PDF chart endpoint: the same inputs as `PATTERNS_URL` plus the chart options. */
 export const PATTERN_PDF_URL = "/api/patterns/pdf";
@@ -194,7 +211,11 @@ function appendSettings(
   body.append("merge_distance", settings.mergeDistance);
   body.append("min_stitches", settings.minStitches);
   body.append("confetti_size", settings.confettiSize);
-  body.append("pixel_art", settings.pixelArt ? "true" : "false");
+  body.append("read_as", settings.readAs);
+  body.append("background_as_fabric", settings.backgroundAsFabric ? "true" : "false");
+  if (settings.crop !== "") {
+    body.append("crop", settings.crop);
+  }
   // Repeated `replace` fields, in order: the API applies them in sequence.
   for (const pair of replacements) {
     body.append("replace", replacementField(pair));
@@ -204,15 +225,19 @@ function appendSettings(
   }
 }
 
-/** Whether the image is pixel art, and its size in art pixels and colours. */
-export async function inspectImage(image: File, maxUploadBytes: number): Promise<InspectResult> {
-  const sent = await sendForm(INSPECT_URL, image, maxUploadBytes);
+/** What the upload (inside `crop`, when set) is, how it reads best, and why it cannot be read. */
+export async function inspectImage(image: File, maxUploadBytes: number, crop = ""): Promise<InspectResult> {
+  const sent = await sendForm(INSPECT_URL, image, maxUploadBytes, (body) => {
+    if (crop !== "") {
+      body.append("crop", crop);
+    }
+  });
   if (!sent.ok) {
     return sent;
   }
   const payload = await readJson(sent.response);
   if (sent.response.ok && typeof payload === "object" && payload !== null) {
-    return { ok: true, pixelArt: (payload as { pixel_art?: PixelArt | null }).pixel_art ?? null };
+    return { ok: true, inspection: payload as Inspection };
   }
   return { ok: false, message: errorMessage(sent.response.status, payload, "Inspecting the image failed") };
 }

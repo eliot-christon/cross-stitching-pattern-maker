@@ -6,12 +6,13 @@ import {
   getChartLayout,
   getLimits,
   inspectImage,
+  PICTURE,
   replacementField,
   type ChartLayoutReport,
   type ChartOptions,
   type DmcThread,
+  type Inspection,
   type Limits,
-  type PixelArt,
   type Replacement,
   type Settings,
 } from "./api";
@@ -25,6 +26,8 @@ import {
   SwatchChoice,
   Switch,
 } from "./controls";
+import { CropBox } from "./CropBox";
+import { boxFromField, cropField, type Box } from "./crop";
 import { DEFAULT_FABRIC, FABRICS } from "./fabric";
 import type { KeyEntry, Pattern } from "./pattern";
 import { StitchedHeart, StitchRule } from "./motif";
@@ -183,14 +186,25 @@ function Converter({ limits }: { limits: Limits }) {
       mergeDistance: String(ranges.merge_distance.default),
       minStitches: String(ranges.min_stitches.default),
       confettiSize: String(ranges.confetti_size.default),
-      pixelArt: false,
+      readAs: PICTURE,
+      crop: "",
+      backgroundAsFabric: false,
     },
     replacements: [],
   }));
-  /** The chosen image's art pixels, when the API found it to be pixel art. */
-  const [pixelArt, setPixelArt] = useState<PixelArt | null>(null);
+  /** What the API found in the chosen image; null before, or if the inspection failed. */
+  const [inspection, setInspection] = useState<Inspection | null>(null);
+  /** "Treat as a photo": convert as a picture whatever the inspection found. */
+  const [asPhoto, setAsPhoto] = useState(false);
+  /** What `sendIfChanged` reads to hold back a refused upload. */
+  const reading = useRef<{ inspection: Inspection | null; asPhoto: boolean }>({
+    inspection: null,
+    asPhoto: false,
+  });
   /** The chosen image is being inspected: nothing converts until it is done. */
   const inspecting = useRef(false);
+  /** The crop changed: the quiet delay ends with a new inspection, not a conversion. */
+  const reinspect = useRef(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** A change is waiting: the quiet delay is counting, or it expired while one ran. */
@@ -267,7 +281,10 @@ function Converter({ limits }: { limits: Limits }) {
     setPending(true);
     timer.current = setTimeout(() => {
       timer.current = null;
-      if (inFlight.current) {
+      const { image } = latest.current;
+      if (reinspect.current && image !== null) {
+        void inspect(image);
+      } else if (inFlight.current) {
         due.current = true;
       } else {
         sendIfChanged();
@@ -284,7 +301,7 @@ function Converter({ limits }: { limits: Limits }) {
     due.current = false;
     setPending(false);
     const { image, settings, replacements } = latest.current;
-    if (image === null) {
+    if (image === null || refused()) {
       return;
     }
     const source = { image, settings, replacements };
@@ -338,34 +355,72 @@ function Converter({ limits }: { limits: Limits }) {
     schedule();
   }
 
-  function changeSetting(key: Exclude<keyof Settings, "pixelArt">, value: string) {
+  function changeSetting(key: Exclude<keyof Settings, "readAs" | "crop" | "backgroundAsFabric">, value: string) {
     changeSettings({ [key]: value });
   }
 
+  /** The upload is refused and not (or cannot be) treated as a photo: nothing converts. */
+  function refused(): boolean {
+    const { inspection: found, asPhoto: photo } = reading.current;
+    return found !== null && found.refusal !== null && (found.kind === null || !photo);
+  }
+
+  function setReading(found: Inspection | null, photo: boolean) {
+    reading.current = { inspection: found, asPhoto: photo };
+    setInspection(found);
+    setAsPhoto(photo);
+  }
+
   /**
-   * Ask the API whether `image` is pixel art before it is converted: if so, one stitch per
-   * art pixel (its width, its colours, within the limits) with pixel art on; if not, or
-   * if the inspection fails, a picture with the settings as they were.
+   * The settings that read the image as `found` says, or as a picture when `photo` is on:
+   * a grid kind fixes the width at the grid's and starts the colours at its count.
+   */
+  function readingSettings(found: Inspection | null, photo: boolean): Partial<Settings> {
+    if (photo || found === null || found.kind === null || found.grid === null) {
+      return { readAs: PICTURE };
+    }
+    const { grid } = found;
+    return {
+      readAs: found.kind,
+      width: String(grid.width),
+      maxColours: String(Math.max(ranges.max_colours.min, Math.min(grid.colours, ranges.max_colours.max))),
+    };
+  }
+
+  /**
+   * Ask the API what `image` is before it is converted, and read it that way: a grid kind
+   * at its own size, a picture with the settings as they were. A refused upload converts
+   * nothing until "Treat as a photo"; a failed inspection converts as a picture.
    */
   async function inspect(image: File) {
     inspecting.current = true;
+    reinspect.current = false;
     setPending(true);
-    const result = await inspectImage(image, limits.max_upload_bytes);
-    if (!mounted.current || latest.current.image !== image) {
+    const { crop } = latest.current.settings;
+    const result = await inspectImage(image, limits.max_upload_bytes, crop);
+    // Another image or another crop since: its own inspection follows.
+    if (!mounted.current || latest.current.image !== image || latest.current.settings.crop !== crop) {
       return;
     }
     inspecting.current = false;
-    const art = result.ok ? result.pixelArt : null;
-    setPixelArt(art);
-    changeSettings(
-      art === null
-        ? { pixelArt: false }
-        : {
-            pixelArt: true,
-            width: String(Math.min(art.width, ranges.width.max)),
-            maxColours: String(Math.max(ranges.max_colours.min, Math.min(art.colours, ranges.max_colours.max))),
-          },
-    );
+    const found = result.ok ? result.inspection : null;
+    // A new crop keeps "Treat as a photo" as it was; a new image starts with it off.
+    const photo = reading.current.asPhoto;
+    setReading(found, photo);
+    changeSettings(readingSettings(found, photo));
+  }
+
+  /** A new crop box: the image is inspected again with it after the quiet delay. */
+  function changeCrop(box: Box | null) {
+    reinspect.current = true;
+    changeSettings({ crop: box === null ? "" : cropField(box) });
+  }
+
+  function treatAsPhoto(on: boolean) {
+    setReading(reading.current.inspection, on);
+    const next = readingSettings(reading.current.inspection, on);
+    // Off again, a grid kind's colours start from the grid; on, the colours stay as set.
+    changeSettings(on ? { readAs: next.readAs } : next);
   }
 
   function changeReplacements(replacements: readonly Replacement[]) {
@@ -459,15 +514,17 @@ function Converter({ limits }: { limits: Limits }) {
   }
 
   function chooseImage(image: File | null) {
-    change({ ...latest.current, image });
+    // A crop box belongs to the image it was drawn on.
+    change({ ...latest.current, image, settings: { ...latest.current.settings, crop: "" } });
+    reinspect.current = false;
     // The PDF on the view belongs to the image that was there.
     clearPdf();
-    // The preview, any error, any download and the pixel art found belong to the image
-    // that was there.
+    // The preview, any error, any download and what the inspection found belong to the
+    // image that was there.
     setPreview(null);
     setError(null);
     setDownload({ kind: "idle" });
-    setPixelArt(null);
+    setReading(null, false);
     cancelTimer();
     due.current = false;
     inspecting.current = false;
@@ -596,25 +653,39 @@ function Converter({ limits }: { limits: Limits }) {
         {/* noValidate: the API checks the settings and its message is shown, not the browser's. */}
         <form className="form" noValidate onSubmit={(event) => event.preventDefault()}>
           <DropZone label="Image" file={inputs.image} onChange={chooseImage} />
-          {pixelArt !== null && (
-            <div className="pixel-art">
-              <Switch
-                label="Pixel art"
-                checked={settings.pixelArt}
-                onChange={(on) => changeSettings({ pixelArt: on })}
-              />
-              <p className="field-hint">
-                {`${pixelArt.width} x ${pixelArt.height} pixels, ${pixelArt.colours} colours: ` +
-                  (settings.pixelArt ? "one stitch per pixel." : "converted as a picture.")}
-              </p>
+          {inspection !== null && (
+            <div className="source-kind">
+              <p className="field-hint">Detected: {inspection.description}</p>
+              {inspection.warnings.map((warning) => (
+                <p key={warning} className="field-hint">
+                  {warning}
+                </p>
+              ))}
+              {inspection.refusal !== null && (
+                <p role="alert" className="alert">
+                  {inspection.refusal}
+                </p>
+              )}
+              {inspection.kind !== null && (inspection.kind !== PICTURE || inspection.refusal !== null) && (
+                <Switch label="Treat as a photo" checked={asPhoto} onChange={treatAsPhoto} />
+              )}
             </div>
           )}
+          {inputs.image !== null && inspection?.kind !== null && (
+            <CropBox file={inputs.image} box={boxFromField(settings.crop)} onChange={changeCrop} />
+          )}
+          <Switch
+            label="Background as fabric"
+            checked={settings.backgroundAsFabric}
+            onChange={(on) => changeSettings({ backgroundAsFabric: on })}
+          />
 
           <h3 className="form-heading">Size and threads</h3>
           <SliderField
             label="Width (stitches)"
             limits={ranges.width}
             value={settings.width}
+            disabled={settings.readAs !== PICTURE}
             onChange={(value) => changeSetting("width", value)}
           />
           <SliderField
