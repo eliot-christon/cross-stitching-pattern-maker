@@ -24,7 +24,7 @@ function makePattern(width: number, height: number, overrides: Partial<Pattern> 
     finished_size: { width_in: 1, height_in: 1, width_cm: 2.54, height_cm: 2.54 },
     isolated_stitches: { before: 0, after: 0 },
     converted: null,
-    ignored_replacements: [],
+    changed_cells: [],
     ...overrides,
   };
 }

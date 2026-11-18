@@ -11,6 +11,7 @@ import {
   getNearestThreads,
   getThreads,
   inspectImage,
+  type Change,
   type Limits,
 } from "./api";
 import type { Pattern } from "./pattern";
@@ -40,7 +41,7 @@ const PATTERN: Pattern = {
   finished_size: { width_in: 0.125, height_in: 0.0625, width_cm: 0.3175, height_cm: 0.15875 },
   isolated_stitches: { before: 1, after: 1 },
   converted: null,
-  ignored_replacements: [],
+  changed_cells: [],
 };
 
 function image(size?: number): File {
@@ -231,6 +232,7 @@ describe("getLimits", () => {
       pages_down: { min: 1, max: 20, step: 1, default: 2 },
       overlap: { min: 0, max: 5, step: 1, default: 2 },
     },
+    changes: { max_entries: 1000, max_bytes: 524288, brush: { min: 1, max: 9, step: 2, default: 1 }, max_coordinate: 2000 },
   };
 
   it("gets the limits from the limits URL and returns them as sent", async () => {
@@ -420,7 +422,7 @@ describe("thread table and nearest threads", () => {
   });
 });
 
-describe("replacements on the wire", () => {
+describe("changes on the wire", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -436,9 +438,21 @@ describe("replacements on the wire", () => {
     crop: "",
     backgroundAsFabric: false,
   };
+  const chart = {
+    variant: "colour",
+    paper: "A4",
+    orientation: "portrait",
+    split: "cells",
+    pagesAcross: "2",
+    pagesDown: "2",
+    overlap: "2",
+    centreLines: false,
+    fabricColour: "#ffffff",
+  } as const;
   const black = { code: "310", name: "Black", rgb: [0, 0, 0] as [number, number, number] };
   const winter = { code: "3865", name: "Winter White", rgb: [249, 247, 241] as [number, number, number] };
-  const ivory = { code: "3866", name: "Mocha Brown Ultra Very Light", rgb: [250, 246, 240] as [number, number, number] };
+  const red = { code: "321", name: "Red", rgb: [199, 43, 59] as [number, number, number] };
+  const image = new File(["x"], "a.png", { type: "image/png" });
 
   function capture() {
     const bodies: FormData[] = [];
@@ -452,35 +466,53 @@ describe("replacements on the wire", () => {
     return bodies;
   }
 
-  it("sends the pairs as repeated replace fields, in order, on both routes", async () => {
+  function sentChanges(body: FormData | undefined): unknown {
+    const field = body?.get("changes");
+    return typeof field === "string" ? JSON.parse(field) : field;
+  }
+
+  it("sends a replacement and a removal as one changes field, and no replace field", async () => {
     const bodies = capture();
-    const image = new File(["x"], "a.png", { type: "image/png" });
-    const pairs = [
-      { from: black, to: winter },
-      { from: winter, to: ivory },
+    const changes: Change[] = [
+      { op: "replace", from: black, to: winter },
+      { op: "replace", from: red, to: null },
     ];
 
-    await convertImage(image, settings, 1000, pairs);
-    await downloadPdf(image, settings, { variant: "colour", paper: "A4", orientation: "portrait", split: "cells", pagesAcross: "2", pagesDown: "2", overlap: "2", centreLines: false, fabricColour: "#ffffff" }, 1000, pairs);
-    await convertImage(image, settings, 1000, []);
+    await convertImage(image, settings, 1000, changes);
 
-    expect(bodies.map((body) => body.getAll("replace"))).toEqual([
-      ["310:3865", "3865:3866"],
-      ["310:3865", "3865:3866"],
-      [],
+    expect(bodies[0]?.getAll("changes")).toEqual([
+      '[{"op":"replace","from":"310","to":"3865"},{"op":"replace","from":"321","to":null}]',
+    ]);
+    expect(bodies[0]?.has("replace")).toBe(false);
+  });
+
+  it("spells a stroke, a rectangle and an eraser fill as the API reads them", async () => {
+    const bodies = capture();
+    const changes: Change[] = [
+      { op: "stroke", thread: black, brush: 3, grid: [40, 20], points: [[1, 2], [3, 2]] },
+      { op: "rect", thread: winter, grid: [40, 20], from: [5, 6], to: [1, 0] },
+      { op: "fill", thread: null, grid: [40, 20], at: [7, 8] },
+    ];
+
+    await convertImage(image, settings, 1000, changes);
+
+    expect(sentChanges(bodies[0])).toEqual([
+      { op: "stroke", thread: "310", brush: 3, grid: [40, 20], points: [[1, 2], [3, 2]] },
+      { op: "rect", thread: "3865", grid: [40, 20], from: [5, 6], to: [1, 0] },
+      { op: "fill", thread: null, grid: [40, 20], at: [7, 8] },
     ]);
   });
 
-  it("sends a removal as FROM:fabric, in its place in the order", async () => {
+  it("sends no changes field for an empty list, and the same field on both routes", async () => {
     const bodies = capture();
-    const image = new File(["x"], "a.png", { type: "image/png" });
+    const changes: Change[] = [{ op: "replace", from: black, to: winter }];
 
-    await convertImage(image, settings, 1000, [
-      { from: black, to: null },
-      { from: winter, to: ivory },
-    ]);
+    await convertImage(image, settings, 1000, []);
+    await convertImage(image, settings, 1000, changes);
+    await downloadPdf(image, settings, chart, 1000, changes);
 
-    expect(bodies[0]?.getAll("replace")).toEqual(["310:fabric", "3865:3866"]);
+    expect(bodies[0]?.has("changes")).toBe(false);
+    expect(bodies[2]?.get("changes")).toBe(bodies[1]?.get("changes"));
   });
 });
 

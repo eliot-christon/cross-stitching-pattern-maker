@@ -74,11 +74,20 @@ CSS mask, so it follows the theme.
 
 ## Layout
 
-- **Desktop (800 px and wider):** the header across the top; below it, the settings panel
-  (fixed width, about 340 px, scrolls with the page) on the left and the viewer area
-  taking the rest on the right. The PDF choices sit at the bottom of the settings panel,
-  once a pattern exists.
-- **Below 800 px:** one column, stacked: header, settings panel, viewer area. No drawer.
+- One DOM order, settings panel, Changes panel, viewer area, placed by grid areas:
+  - **1200 px and wider:** three columns: the settings panel (340 px) on the left, the
+    viewer area in the middle, the Changes panel (300 px) on the right, sticky below the
+    top of the window and scrolling inside itself when it is long.
+  - **800 to 1199 px:** two columns: the settings panel with the Changes panel under it on
+    the left, the viewer area on the right.
+  - **Below 800 px:** one column, stacked: header, settings panel, Changes panel, viewer
+    area. No drawer.
+- The PDF choices sit at the bottom of the settings panel, once a pattern exists.
+- The Changes panel is a disclosure (open by default) headed "Changes" with a count pill:
+  setting chips first (a pill on `--sunk` with a round reset button), then the ordered
+  list of replacements and edits as bordered rows (tool in bold, thread swatches, size
+  and cell count in `--muted`, a Remove button), an entry that did nothing dashed and
+  muted, then Undo, Redo and Reset all.
 - The page never scrolls horizontally, down to 360 px wide: wide content (the viewer, the
   key) scrolls inside its own box.
 - Page gutter: `--space-4` on phones, `--space-6` on desktop; maximum content width 1600 px.
