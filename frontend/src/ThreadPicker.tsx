@@ -90,28 +90,34 @@ function Choice(props: {
 }
 
 /**
- * A dialog to choose what replaces `from`: bare fabric (the thread removed), its nearest
- * threads, as the API ranks them, then a search by code or name over the whole table.
- * `onPick` gets the thread chosen, or `null` for bare fabric.
+ * A dialog to choose a thread. With `from`, what replaces it: bare fabric (the thread
+ * removed), its nearest threads, as the API ranks them, then a search by code or name over
+ * the whole table; `onPick` gets the thread chosen, or `null` for bare fabric. With
+ * `paint`, the thread to paint with: those threads (the pattern's) first, then the search;
+ * no bare fabric (the eraser is its own tool).
  */
-export function ThreadPicker(props: {
-  from: PickedFrom;
-  onPick: (thread: DmcThread | null) => void;
-  onClose: () => void;
-}) {
-  const { from, onPick, onClose } = props;
+export function ThreadPicker(
+  props: {
+    onPick: (thread: DmcThread | null) => void;
+    onClose: () => void;
+  } & ({ from: PickedFrom; paint?: undefined } | { from?: undefined; paint: readonly DmcThread[] }),
+) {
+  const { from, paint, onPick, onClose } = props;
   const titleId = useId();
   const [nearest, setNearest] = useState<Load<NearThread>>({ kind: "loading" });
   const [all, setAll] = useState<Load<DmcThread>>({ kind: "loading" });
   const [query, setQuery] = useState("");
 
+  const fromCode = from?.code;
   useEffect(() => {
     let current = true;
-    void getNearestThreads(from.code).then((result) => {
-      if (current) {
-        setNearest(fromResult(result));
-      }
-    });
+    if (fromCode !== undefined) {
+      void getNearestThreads(fromCode).then((result) => {
+        if (current) {
+          setNearest(fromResult(result));
+        }
+      });
+    }
     void threadTable().then((result) => {
       if (current) {
         setAll(fromResult(result));
@@ -120,10 +126,10 @@ export function ThreadPicker(props: {
     return () => {
       current = false;
     };
-  }, [from.code]);
+  }, [fromCode]);
 
-  const found = all.kind === "ready" ? searchThreads(all.threads, query, from.code) : [];
-  const title = `Replace DMC ${from.code} ${from.name}`;
+  const found = all.kind === "ready" ? searchThreads(all.threads, query, fromCode ?? "") : [];
+  const title = from === undefined ? "Paint with" : `Replace DMC ${from.code} ${from.name}`;
 
   return (
     <div
@@ -147,40 +153,55 @@ export function ThreadPicker(props: {
         }}
       >
         <div className="picker-header">
-          <Swatch rgb={from.rgb} />
+          {from !== undefined && <Swatch rgb={from.rgb} />}
           <h2 id={titleId}>{title}</h2>
           <button type="button" className="icon-button" aria-label="Close" onClick={onClose}>
             ×
           </button>
         </div>
 
-        <section aria-label="Remove" className="picker-section">
-          <button type="button" className="thread-choice" onClick={() => onPick(null)}>
-            <FabricSwatch />
-            <span className="thread-choice-code">Remove</span>
-            <span className="thread-choice-name">Leave bare fabric where it was</span>
-          </button>
-        </section>
-
-        <section aria-label="Nearest threads" className="picker-section">
-          <h3>Nearest threads</h3>
-          {nearest.kind === "loading" && <p className="picker-note">Loading...</p>}
-          {nearest.kind === "failed" && <p className="alert">{nearest.message}</p>}
-          {nearest.kind === "ready" && (
+        {paint !== undefined && (
+          <section aria-label="In the pattern" className="picker-section">
+            <h3>In the pattern</h3>
             <ul className="thread-list">
-              {nearest.threads
-                .filter((thread) => thread.code !== from.code)
-                .map((thread) => (
-                  <Choice
-                    key={thread.code}
-                    thread={thread}
-                    detail={`ΔE ${thread.distance.toFixed(1)}`}
-                    onPick={onPick}
-                  />
-                ))}
+              {paint.map((thread) => (
+                <Choice key={thread.code} thread={thread} onPick={onPick} />
+              ))}
             </ul>
-          )}
-        </section>
+          </section>
+        )}
+
+        {from !== undefined && (
+          <section aria-label="Remove" className="picker-section">
+            <button type="button" className="thread-choice" onClick={() => onPick(null)}>
+              <FabricSwatch />
+              <span className="thread-choice-code">Remove</span>
+              <span className="thread-choice-name">Leave bare fabric where it was</span>
+            </button>
+          </section>
+        )}
+
+        {from !== undefined && (
+          <section aria-label="Nearest threads" className="picker-section">
+            <h3>Nearest threads</h3>
+            {nearest.kind === "loading" && <p className="picker-note">Loading...</p>}
+            {nearest.kind === "failed" && <p className="alert">{nearest.message}</p>}
+            {nearest.kind === "ready" && (
+              <ul className="thread-list">
+                {nearest.threads
+                  .filter((thread) => thread.code !== from.code)
+                  .map((thread) => (
+                    <Choice
+                      key={thread.code}
+                      thread={thread}
+                      detail={`ΔE ${thread.distance.toFixed(1)}`}
+                      onPick={onPick}
+                    />
+                  ))}
+              </ul>
+            )}
+          </section>
+        )}
 
         <section aria-label="All threads" className="picker-section">
           <label className="field">
