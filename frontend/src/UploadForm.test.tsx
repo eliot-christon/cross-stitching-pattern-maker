@@ -66,6 +66,12 @@ const LIMITS: Limits = {
     merge_distance: { min: 0, max: 10, step: 0.5, default: 0 },
     min_stitches: { min: 0, max: 1000, step: 1, default: 0 },
     confetti_size: { min: 0, max: 10, step: 1, default: 0 },
+    brightness: { min: -100, max: 100, step: 1, default: 0 },
+    contrast: { min: -100, max: 100, step: 1, default: 0 },
+    saturation: { min: -100, max: 100, step: 1, default: 0 },
+    hue: { min: -180, max: 180, step: 1, default: 0 },
+    gamma: { min: 0.25, max: 4, step: 0.05, default: 1 },
+    sharpness: { min: -100, max: 100, step: 1, default: 0 },
     pages_across: { min: 1, max: 20, step: 1, default: 2 },
     pages_down: { min: 1, max: 20, step: 1, default: 2 },
     overlap: { min: 0, max: 5, step: 1, default: 2 },
@@ -172,7 +178,7 @@ function sentImages(fetchMock: ReturnType<typeof stubApi>): string[] {
 /** Render the form and wait until the limits are in and it is shown. */
 async function renderForm(): Promise<RenderResult> {
   const view = render(<UploadForm />);
-  await screen.findByLabelText("Image");
+  await screen.findByLabelText("Image", { selector: "input" });
   return view;
 }
 
@@ -226,20 +232,40 @@ function controlled() {
   return { handler, answer };
 }
 
+/**
+ * `element`, with the settings tab that holds it selected first when its panel is hidden:
+ * the way a person reaches a control in another tab.
+ */
+function reveal<T extends HTMLElement>(element: T): T {
+  const panel = element.closest('[role="tabpanel"]');
+  if (panel !== null && panel.hasAttribute("hidden")) {
+    const tab = document.getElementById(panel.getAttribute("aria-labelledby") ?? "");
+    if (tab !== null) {
+      fireEvent.click(tab);
+    }
+  }
+  return element;
+}
+
+/** Select the settings tab named `name`. */
+function showTab(name: "Image" | "Pattern" | "Chart") {
+  fireEvent.click(screen.getByRole("tab", { name }));
+}
+
 function numberField(name: string): HTMLElement {
-  return screen.getByRole("spinbutton", { name });
+  return reveal(screen.getByRole("spinbutton", { name, hidden: true }));
 }
 
 function slider(name: string): HTMLElement {
-  return screen.getByRole("slider", { name });
+  return reveal(screen.getByRole("slider", { name, hidden: true }));
 }
 
 function fabricCount(): HTMLElement {
-  return screen.getByLabelText("Fabric count");
+  return reveal(screen.getByLabelText("Fabric count"));
 }
 
 function imageInput(): HTMLElement {
-  return screen.getByLabelText("Image");
+  return screen.getByLabelText("Image", { selector: "input" });
 }
 
 function chooseFile(name = "photo.png", bytes = "png bytes"): File {
@@ -250,7 +276,9 @@ function chooseFile(name = "photo.png", bytes = "png bytes"): File {
 
 /** The radio named `name` in the group named `group`. */
 function option(group: string, name: string): HTMLElement {
-  return within(screen.getByRole("group", { name: group })).getByRole("radio", { name });
+  return reveal(
+    within(screen.getByRole("group", { name: group, hidden: true })).getByRole("radio", { name, hidden: true }),
+  );
 }
 
 /** Choose the option named `name` in the group named `group`. */
@@ -268,7 +296,7 @@ function keyShows(code: string): boolean {
 }
 
 function downloadButton(): HTMLElement {
-  return screen.getByRole("button", { name: /pdf/i });
+  return reveal(screen.getByRole("button", { name: /pdf/i, hidden: true }));
 }
 
 function convertButton(): HTMLElement | null {
@@ -290,7 +318,7 @@ describe("UploadForm limits", () => {
 
     expect(screen.getByRole("status")).toHaveTextContent(/loading the settings/i);
     expect(convertButton()).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Image")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Image", { selector: "input" })).not.toBeInTheDocument();
   });
 
   it("says so, with no form, when the limits cannot be fetched", async () => {
@@ -298,7 +326,7 @@ describe("UploadForm limits", () => {
     render(<UploadForm />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/cannot reach the server/i);
-    expect(screen.queryByLabelText("Image")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Image", { selector: "input" })).not.toBeInTheDocument();
   });
 
   it("asks for the limits once, at the limits URL", async () => {
@@ -601,7 +629,7 @@ describe("UploadForm live conversion", () => {
     fireEvent.change(imageInput(), { target: { files: [] } });
 
     expect(keyShows(A_CODE)).toBe(false);
-    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pdf/i, hidden: true })).not.toBeInTheDocument();
     await wait(10 * QUIET_MS);
     expect(posted(fetchMock, "/api/patterns")).toHaveLength(1);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
@@ -886,7 +914,7 @@ describe("UploadForm errors and image changes", () => {
     chooseFile("other.png");
 
     expect(keyShows(A_CODE)).toBe(false);
-    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pdf/i, hidden: true })).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent(BUSY);
 
     await wait(QUIET_MS);
@@ -924,7 +952,7 @@ describe("UploadForm errors and image changes", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(NOT_AN_IMAGE);
     expect(keyShows(A_CODE)).toBe(false);
     expect(screen.queryByRole("table", { name: "Thread key" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pdf/i, hidden: true })).not.toBeInTheDocument();
   });
 
   it("discards a preview of the image no longer chosen, then sends the new image's request", async () => {
@@ -1001,7 +1029,7 @@ describe("UploadForm PDF download", () => {
     stubApi();
     await renderForm();
 
-    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pdf/i, hidden: true })).not.toBeInTheDocument();
   });
 
   it("offers the download with colour, A4 and portrait chosen after a conversion", async () => {
@@ -1895,7 +1923,7 @@ describe("source kind", () => {
   }
 
   function widthNumber(): HTMLElement {
-    return within(screen.getByRole("group", { name: "Width (stitches)" })).getByRole("spinbutton");
+    return within(reveal(screen.getByRole("group", { name: "Width (stitches)", hidden: true }))).getByRole("spinbutton");
   }
 
   async function choose(found: Record<string, unknown>, name = "sprite.png") {
@@ -2047,6 +2075,21 @@ describe("crop", () => {
     expect(sent(fetchMock, "crop")).toEqual([null, "100,50,500,300", null]);
   });
 
+  it("keeps a drawn box after leaving the Image tab and coming back", async () => {
+    stubApi();
+    await renderLive();
+    chooseFile();
+    await settle();
+    await quiet();
+    await drawCrop([40, 20], [200, 120]);
+
+    showTab("Chart");
+    showTab("Image");
+
+    expect(screen.getByRole("button", { name: "Reset crop" })).toBeVisible();
+    expect(screen.getByText("Crop 400 × 250 px")).toBeVisible();
+  });
+
   it("drops the box when another image is chosen", async () => {
     const fetchMock = stubApi();
     await renderLive();
@@ -2083,6 +2126,161 @@ describe("crop", () => {
     expect(posted(fetchMock, "/api/patterns/pdf").map((body) => body.get("crop"))).toEqual([
       "100,50,500,300",
     ]);
+  });
+});
+
+describe("settings tabs and adjustments", () => {
+  async function quiet() {
+    await wait(QUIET_MS);
+    await settle();
+  }
+
+  function tab(name: string): HTMLElement {
+    return screen.getByRole("tab", { name });
+  }
+
+  function panel(name: string): HTMLElement {
+    return screen.getByRole("tabpanel", { name });
+  }
+
+  /** The value of `field` in each inspection posted, in order. */
+  function inspectedWith(fetchMock: ReturnType<typeof stubApi>, field: string): unknown[] {
+    return posted(fetchMock, "/api/images/inspect").map((body) => body.get(field));
+  }
+
+  it("opens on the Image tab with the drop zone; width in Pattern, Download PDF in Chart", async () => {
+    stubApi();
+    await renderLive();
+
+    expect(tab("Image")).toHaveAttribute("aria-selected", "true");
+    expect(within(panel("Image")).getByLabelText("Image", { selector: "input" })).toBeInTheDocument();
+    showTab("Pattern");
+    expect(within(panel("Pattern")).getByRole("slider", { name: WIDTH })).toBeVisible();
+    showTab("Chart");
+    expect(panel("Chart")).toHaveTextContent("The chart choices come with the pattern.");
+
+    chooseFile();
+    await quiet();
+    expect(within(panel("Chart")).getByRole("button", { name: /download pdf/i })).toBeVisible();
+  });
+
+  it("keeps a typed width across tab switches", async () => {
+    stubApi();
+    await renderLive();
+    showTab("Pattern");
+    setValue(numberField(WIDTH), "120");
+
+    showTab("Image");
+    showTab("Pattern");
+
+    expect(numberField(WIDTH)).toHaveValue(120);
+  });
+
+  it("stays on the Chart tab through a new response and another image", async () => {
+    stubApi();
+    await renderLive();
+    chooseFile();
+    await quiet();
+    showTab("Chart");
+
+    chooseFile("other.png");
+    await quiet();
+    await quiet();
+
+    expect(keyShows(A_CODE)).toBe(true);
+    expect(tab("Chart")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("shows the conversion status and the API's error while the Chart tab is shown", async () => {
+    stubApi({ patterns: () => Promise.resolve(json(400, { detail: "the image is too dark" })) });
+    await renderLive();
+    showTab("Chart");
+
+    chooseFile();
+    expect(screen.getByRole("status")).toHaveTextContent(BUSY);
+    await quiet();
+
+    expect(screen.getByRole("alert")).toHaveTextContent("the image is too dark");
+    expect(tab("Chart")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("takes the six adjustment sliders' range, step and starting value from the limits", async () => {
+    stubApi();
+    await renderLive();
+
+    const sliders = {
+      Brightness: LIMITS.settings.brightness,
+      Contrast: LIMITS.settings.contrast,
+      Saturation: LIMITS.settings.saturation,
+      Hue: LIMITS.settings.hue,
+      Gamma: LIMITS.settings.gamma,
+      Sharpness: LIMITS.settings.sharpness,
+    };
+    for (const [name, limits] of Object.entries(sliders)) {
+      const range = within(panel("Image")).getByRole("slider", { name });
+      expect(range).toHaveAttribute("min", String(limits.min));
+      expect(range).toHaveAttribute("max", String(limits.max));
+      expect(range).toHaveAttribute("step", String(limits.step));
+      expect(range).toHaveValue(String(limits.default));
+    }
+  });
+
+  it("re-inspects with a brightness change after the quiet delay, then converts with it", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    chooseFile();
+    await quiet();
+    expect(inspectedWith(fetchMock, "brightness")).toEqual(["0"]);
+
+    setValue(numberField("Brightness"), "20");
+    await wait(QUIET_MS - 1);
+    expect(inspectedWith(fetchMock, "brightness")).toEqual(["0"]);
+    await wait(1);
+    await settle();
+    expect(inspectedWith(fetchMock, "brightness")).toEqual(["0", "20"]);
+    expect(sent(fetchMock, "brightness")).toEqual(["0"]);
+    await quiet();
+    expect(sent(fetchMock, "brightness")).toEqual(["0", "20"]);
+
+    fireEvent.click(downloadButton());
+    await settle();
+    expect(posted(fetchMock, "/api/patterns/pdf").map((body) => body.get("brightness"))).toEqual(["20"]);
+  });
+
+  it("chips a brightness off its default; the chip's reset puts it back and re-inspects", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+    chooseFile();
+    await quiet();
+    setValue(numberField("Brightness"), "-30");
+    await quiet();
+    await quiet();
+
+    expect(within(screen.getByRole("region", { name: "Changes" })).getByText("Brightness -30")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Reset brightness" }));
+    expect(numberField("Brightness")).toHaveValue(LIMITS.settings.brightness.default);
+    await quiet();
+
+    expect(inspectedWith(fetchMock, "brightness")).toEqual(["0", "-30", "0"]);
+  });
+
+  it("keeps the adjustments for another image and inspects it with them", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+    chooseFile();
+    await quiet();
+    setValue(numberField("Saturation"), "-100");
+    await quiet();
+    await quiet();
+
+    chooseFile("other.png");
+    await quiet();
+
+    expect(numberField("Saturation")).toHaveValue(-100);
+    expect(inspectedWith(fetchMock, "saturation").at(-1)).toBe("-100");
+    expect(sent(fetchMock, "saturation").at(-1)).toBe("-100");
+    expect(sentImages(fetchMock).at(-1)).toBe("other.png");
   });
 });
 
@@ -2145,7 +2343,7 @@ describe("fabric colour", () => {
     await wait(QUIET_MS);
     await settle();
 
-    const fabric = screen.getByRole("group", { name: "Fabric colour" });
+    const fabric = reveal(screen.getByRole("group", { name: "Fabric colour", hidden: true }));
     expect(within(fabric).getByRole("radio", { name: "White" })).toBeChecked();
     fireEvent.click(within(fabric).getByRole("radio", { name: "Black" }));
     fireEvent.click(downloadButton());

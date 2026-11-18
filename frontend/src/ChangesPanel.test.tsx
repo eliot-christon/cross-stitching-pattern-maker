@@ -13,6 +13,12 @@ const RANGES: Limits["settings"] = {
   merge_distance: { min: 0, max: 10, step: 0.5, default: 0 },
   min_stitches: { min: 0, max: 1000, step: 1, default: 0 },
   confetti_size: { min: 0, max: 10, step: 1, default: 0 },
+  brightness: { min: -100, max: 100, step: 1, default: 0 },
+  contrast: { min: -100, max: 100, step: 1, default: 0 },
+  saturation: { min: -100, max: 100, step: 1, default: 0 },
+  hue: { min: -180, max: 180, step: 1, default: 0 },
+  gamma: { min: 0.25, max: 4, step: 0.05, default: 1 },
+  sharpness: { min: -100, max: 100, step: 1, default: 0 },
   pages_across: { min: 1, max: 20, step: 1, default: 2 },
   pages_down: { min: 1, max: 20, step: 1, default: 2 },
   overlap: { min: 0, max: 5, step: 1, default: 2 },
@@ -28,6 +34,12 @@ const PLAIN: Settings = {
   readAs: "picture",
   crop: "",
   backgroundAsFabric: false,
+  brightness: "0",
+  contrast: "0",
+  saturation: "0",
+  hue: "0",
+  gamma: "1",
+  sharpness: "0",
 };
 
 const REPLACE: Change = { op: "replace", from: BLACK, to: WHITE };

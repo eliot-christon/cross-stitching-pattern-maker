@@ -26,6 +26,12 @@ const SETTINGS = {
   readAs: "picture",
   crop: "",
   backgroundAsFabric: false,
+  brightness: "0",
+  contrast: "0",
+  saturation: "0",
+  hue: "0",
+  gamma: "1",
+  sharpness: "0",
 };
 
 /** An upload limit as the API reports it today; the size checks take it as an argument. */
@@ -228,6 +234,12 @@ describe("getLimits", () => {
       merge_distance: { min: 0, max: 10, step: 0.5, default: 0 },
       min_stitches: { min: 0, max: 1000, step: 1, default: 0 },
       confetti_size: { min: 0, max: 10, step: 1, default: 0 },
+      brightness: { min: -100, max: 100, step: 1, default: 0 },
+      contrast: { min: -100, max: 100, step: 1, default: 0 },
+      saturation: { min: -100, max: 100, step: 1, default: 0 },
+      hue: { min: -180, max: 180, step: 1, default: 0 },
+      gamma: { min: 0.25, max: 4, step: 0.05, default: 1 },
+      sharpness: { min: -100, max: 100, step: 1, default: 0 },
       pages_across: { min: 1, max: 20, step: 1, default: 2 },
       pages_down: { min: 1, max: 20, step: 1, default: 2 },
       overlap: { min: 0, max: 5, step: 1, default: 2 },
@@ -437,6 +449,12 @@ describe("changes on the wire", () => {
     readAs: "picture",
     crop: "",
     backgroundAsFabric: false,
+    brightness: "0",
+    contrast: "0",
+    saturation: "0",
+    hue: "0",
+    gamma: "1",
+    sharpness: "0",
   };
   const chart = {
     variant: "colour",
@@ -516,6 +534,73 @@ describe("changes on the wire", () => {
   });
 });
 
+describe("adjustments on the wire", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const adjustments = { brightness: "12", contrast: "-5", saturation: "abc", hue: "180", gamma: "0.5", sharpness: "" };
+  const settings = {
+    width: "40",
+    maxColours: "4",
+    fabricCount: "14",
+    mergeDistance: "0",
+    minStitches: "0",
+    confettiSize: "0",
+    readAs: "picture",
+    crop: "",
+    backgroundAsFabric: false,
+    ...adjustments,
+  };
+  const chart = {
+    variant: "colour",
+    paper: "A4",
+    orientation: "portrait",
+    split: "cells",
+    pagesAcross: "2",
+    pagesDown: "2",
+    overlap: "2",
+    centreLines: false,
+    fabricColour: "#ffffff",
+  } as const;
+
+  it("sends the six adjustments as typed with the inspection, the conversion and the PDF", async () => {
+    const bodies: FormData[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        bodies.push(init?.body as FormData);
+        return Promise.resolve(new Response("{}", { status: 500 }));
+      }),
+    );
+    const image = new File(["x"], "a.png", { type: "image/png" });
+
+    await inspectImage(image, 1000, "", adjustments);
+    await convertImage(image, settings, 1000);
+    await downloadPdf(image, settings, chart, 1000);
+
+    for (const body of bodies) {
+      expect(Object.fromEntries(Object.keys(adjustments).map((field) => [field, body.get(field)]))).toEqual(adjustments);
+    }
+    expect(bodies).toHaveLength(3);
+  });
+
+  it("sends no adjustment with an inspection given none", async () => {
+    const bodies: FormData[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        bodies.push(init?.body as FormData);
+        return Promise.resolve(new Response("{}", { status: 500 }));
+      }),
+    );
+
+    await inspectImage(new File(["x"], "a.png", { type: "image/png" }), 1000);
+
+    expect(bodies[0]?.has("brightness")).toBe(false);
+  });
+});
+
 describe("chart layout on the wire", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -531,6 +616,12 @@ describe("chart layout on the wire", () => {
     readAs: "picture",
     crop: "",
     backgroundAsFabric: false,
+    brightness: "0",
+    contrast: "0",
+    saturation: "0",
+    hue: "0",
+    gamma: "1",
+    sharpness: "0",
   };
   const layoutFields = ["split", "pages_across", "pages_down", "overlap", "centre_lines"];
 
