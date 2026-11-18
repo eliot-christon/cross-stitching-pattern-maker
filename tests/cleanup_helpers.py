@@ -127,6 +127,14 @@ def stitches_of(pattern: Pattern) -> list[int]:
     return [entry.stitches for entry in pattern.key]
 
 
+def code_grid(pattern: Pattern) -> list[list[str | None]]:
+    """The grid as thread codes, None for bare fabric."""
+    return [
+        [None if index == EMPTY else pattern.key[int(index)].thread.code for index in row]
+        for row in pattern.grid
+    ]
+
+
 def counted(pattern: Pattern) -> list[tuple[str, int]]:
     """The key as (code, stitches), in key order."""
     return list(zip(codes_of(pattern), stitches_of(pattern), strict=True))
@@ -182,6 +190,22 @@ def assert_cleaned_from(result: Pattern, original: Pattern) -> None:
         assert entry.stitches == cells, entry.thread.code
         assert entry.skeins == skeins_needed(cells, result.fabric_count), entry.thread.code
     assert stitches_of(result) == sorted(stitches_of(result), reverse=True)
+
+
+def assert_counts_add_up(result: Pattern, original: Pattern) -> None:
+    """What any edit keeps: the size and fabric, every stitch in exactly one key entry
+    (counts summing to the total and to the stitched cells), skeins from the counts, the
+    key sorted by stitches with each thread once."""
+    assert result.grid.shape == original.grid.shape
+    assert result.fabric_count == original.fabric_count
+    stitched = int(np.count_nonzero(result.grid != EMPTY))
+    assert sum(entry.stitches for entry in result.key) == result.total_stitches == stitched
+    for index, entry in enumerate(result.key):
+        assert entry.stitches == int(np.count_nonzero(result.grid == index)) >= 1
+        assert entry.skeins == skeins_needed(entry.stitches, result.fabric_count)
+    assert stitches_of(result) == sorted(stitches_of(result), reverse=True)
+    threads = [entry.thread for entry in result.key]
+    assert len(set(threads)) == len(threads)
 
 
 def assert_equal_patterns(first: Pattern, second: Pattern) -> None:
