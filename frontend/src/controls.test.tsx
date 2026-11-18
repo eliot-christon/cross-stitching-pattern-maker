@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { useState } from "react";
 
-import { ChipChoice, DropZone, Segmented, Stepper, Switch, Tabs } from "./controls";
+import { ChipChoice, DropZone, Segmented, Stepper, Switch, Tabs, ThreadChip } from "./controls";
 import { StitchedTitle } from "./motif";
 
 const SMALL = { min: 0, max: 5, step: 1, default: 2 };
@@ -189,5 +189,25 @@ describe("Tabs", () => {
     expect(tab("Chart")).toHaveAttribute("tabindex", "0");
     expect(tab("Image")).toHaveAttribute("tabindex", "-1");
     expect(screen.getByText("chart settings")).toBeVisible();
+  });
+});
+
+describe("ThreadChip", () => {
+  it("shows the thread's code, is named for it, and asks for another on click", () => {
+    const onClick = vi.fn();
+    render(
+      <ThreadChip label="Paint with" thread={{ code: "310", name: "Black", rgb: [0, 0, 0] }} onClick={onClick} />,
+    );
+
+    const chip = screen.getByRole("button", { name: "Paint with 310 Black: choose another" });
+    expect(chip).toHaveTextContent("310");
+    fireEvent.click(chip);
+    expect(onClick).toHaveBeenCalledOnce();
+  });
+
+  it("reads as no thread without one, and can be disabled", () => {
+    render(<ThreadChip label="Paint with" thread={null} onClick={vi.fn()} disabled />);
+
+    expect(screen.getByRole("button", { name: "Paint with no thread: choose another" })).toBeDisabled();
   });
 });

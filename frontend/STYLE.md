@@ -114,6 +114,13 @@ Each kind of value has its own control, all in `src/controls.tsx`, labels above:
 - a colour among presets (fabric colour): round swatches, a rainbow one for any colour
 - on or off (pixel art, centre lines): a sliding switch in the accent
 - the image: a dashed drop zone showing the chosen image and its name
+- a thread to change (the paint thread): a pill chip with the thread's round swatch and
+  code, opening the thread picker
+- the edit tools, in the viewer's toolbar on their own row: a segmented choice (Pan,
+  Pencil, Eraser, Fill, Rectangle; Pan first), the Brush stepper for Pencil and Eraser,
+  and the paint thread as a thread chip;
+  the viewer's cursor is a crosshair while a drawing tool is chosen. No editor-style
+  toolbar: these are the page's own controls
 - groups shown one at a time (the settings panel's Image, Pattern and Chart): tabs, a
   full-width row of labels in `--muted`, the selected one in `--text` over a 3 px
   `--accent` underline, on a 1 px `--border` rule; arrow keys, Home and End move along them

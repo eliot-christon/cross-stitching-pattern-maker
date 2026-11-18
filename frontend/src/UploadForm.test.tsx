@@ -1527,6 +1527,130 @@ describe("the changes list", () => {
     expect(replacementItems()).toHaveLength(1);
     expect(screen.getByRole("region", { name: "Changes" })).toHaveTextContent(/At most 1 changes/);
   });
+
+  // Hand edits: the viewer measures 160 x 160 here, so PATTERN (2 x 1) shows at 80 px per
+  // cell from y = 40; cell (column, 0) is under (column * 80 + 40, 80).
+  function stubViewerSize() {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(160);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(160);
+  }
+
+  /** Pencil from cell (0, 0) to cell (1, 0) of PATTERN. */
+  function strokeAcross() {
+    fireEvent.click(screen.getByRole("radio", { name: "Pencil" }));
+    const box = screen.getByRole("group", { name: /^Pattern viewer/ });
+    fireEvent.pointerDown(box, { clientX: 40, clientY: 80, pointerId: 1 });
+    fireEvent.pointerMove(box, { clientX: 120, clientY: 80, pointerId: 1 });
+    fireEvent.pointerUp(box, { clientX: 120, clientY: 80, pointerId: 1 });
+  }
+
+  const STROKE = { op: "stroke", thread: "321", brush: 1, grid: [2, 1], points: [[0, 0], [1, 0]] };
+
+  function sentChanges(body: FormData | undefined): unknown[] {
+    const field = body?.get("changes");
+    return typeof field === "string" ? (JSON.parse(field) as unknown[]) : [];
+  }
+
+  function changeItems(): HTMLElement[] {
+    return replacementItems();
+  }
+
+  it("lists a stroke as a Pencil entry, sends it last after the quiet delay, and shows its count", async () => {
+    stubViewerSize();
+    let calls = 0;
+    const fetchMock = stubWithThreads({
+      patterns: () => {
+        calls += 1;
+        return Promise.resolve(json(200, calls === 1 ? PATTERN : { ...PATTERN, changed_cells: [1] }));
+      },
+    });
+    await renderLive();
+    await preview();
+
+    strokeAcross();
+    expect(changeItems()).toHaveLength(1);
+    expect(changeItems()[0]).toHaveTextContent(/Pencil.*321.*1 × 1/);
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sentChanges(posted(fetchMock, "/api/patterns").at(-1)).at(-1)).toEqual(STROKE);
+    expect(changeItems()[0]).toHaveTextContent("1 cells");
+  });
+
+  it("drops the hand edits when a response has another size, keeping replacements, with no request", async () => {
+    stubViewerSize();
+    const TALL: Pattern = { ...PATTERN, height: 2, grid: [[0, 1], [1, 0]] };
+    let calls = 0;
+    const fetchMock = stubWithThreads({
+      patterns: () => {
+        calls += 1;
+        return Promise.resolve(json(200, calls < 3 ? PATTERN : TALL));
+      },
+    });
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    strokeAcross();
+    await wait(QUIET_MS);
+    await settle();
+    expect(changeItems()).toHaveLength(2);
+
+    setValue(numberField(WIDTH), "55");
+    await wait(QUIET_MS);
+    await settle();
+    const sentBefore = posted(fetchMock, "/api/patterns").length;
+    await wait(10 * QUIET_MS);
+    await settle();
+
+    expect(changeItems()).toHaveLength(1);
+    expect(changeItems()[0]).toHaveTextContent(/Replace.*310/);
+    expect(screen.getByRole("region", { name: "Changes" })).toHaveTextContent(
+      "1 hand edit dropped: the pattern is now 2 × 2.",
+    );
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(sentBefore);
+
+    fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
+    expect(changeItems()).toHaveLength(2);
+  });
+
+  it("drops the hand edits when another image is chosen, saying so", async () => {
+    stubViewerSize();
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    strokeAcross();
+    await wait(QUIET_MS);
+    await settle();
+
+    chooseFile("other.png");
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(changeItems()).toHaveLength(0);
+    expect(screen.getByRole("region", { name: "Changes" })).toHaveTextContent(
+      "1 hand edit dropped: another image was chosen.",
+    );
+    expect(sentImages(fetchMock).at(-1)).toBe("other.png");
+    expect(posted(fetchMock, "/api/patterns").at(-1)?.has("changes")).toBe(false);
+  });
+
+  it("asks for the PDF with the stroke once the preview has it", async () => {
+    stubViewerSize();
+    const fetchMock = stubWithThreads({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    await preview();
+    strokeAcross();
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(downloadButton());
+    await settle();
+
+    const pdfs = posted(fetchMock, "/api/patterns/pdf");
+    expect(pdfs).toHaveLength(1);
+    expect(sentChanges(pdfs[0])).toEqual([STROKE]);
+  });
 });
 
 describe("PDF chart layout", () => {

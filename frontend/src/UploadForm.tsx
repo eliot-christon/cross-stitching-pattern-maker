@@ -19,7 +19,19 @@ import {
   type Limits,
   type Settings,
 } from "./api";
-import { append, canRedo, canUndo, EMPTY_HISTORY, redo, remove, resetAll, undo, type History } from "./changes";
+import {
+  append,
+  canRedo,
+  canUndo,
+  dropHandEdits,
+  EMPTY_HISTORY,
+  isHandEdit,
+  redo,
+  remove,
+  resetAll,
+  undo,
+  type History,
+} from "./changes";
 import { ChangesPanel } from "./ChangesPanel";
 import {
   ChipChoice,
@@ -239,6 +251,10 @@ function Converter({ limits }: { limits: Limits }) {
   const [download, setDownload] = useState<Download>({ kind: "idle" });
   /** The key entry whose thread the picker is replacing, if it is open. */
   const [picking, setPicking] = useState<KeyEntry | null>(null);
+  /** The thread chosen to paint with; null: the preview key's first entry. */
+  const [paintThread, setPaintThread] = useState<DmcThread | null>(null);
+  /** The picker is open for the paint thread. */
+  const [pickingPaint, setPickingPaint] = useState(false);
   // The PDF view: whether it is shown, the PDF on it, and its request state.
   const [pdfVisible, setPdfVisible] = useState(false);
   const [shownPdf, setShownPdf] = useState<ShownPdf | null>(null);
@@ -343,6 +359,14 @@ function Converter({ limits }: { limits: Limits }) {
     if (source.image === latest.current.image) {
       if (result.ok) {
         setPreview({ pattern: result.pattern, source });
+        // Hand edits drawn on another size: the API skipped them; they leave the list.
+        const { width, height } = result.pattern;
+        const elsewhere = historyRef.current.list.some(
+          (entry) => entry.op !== "replace" && (entry.grid[0] !== width || entry.grid[1] !== height),
+        );
+        if (elsewhere) {
+          dropEdits((count) => `${handEdits(count)} dropped: the pattern is now ${width} × ${height}.`);
+        }
         setError(null);
         // A failed download's message was about the previous preview.
         setDownload((current) => (current.kind === "failed" ? { kind: "idle" } : current));
@@ -451,6 +475,24 @@ function Converter({ limits }: { limits: Limits }) {
     schedule();
   }
 
+  /**
+   * Take every hand edit out of the list, as one undoable step, saying so; no request goes
+   * out for it: the API already skipped them, or another image's conversion carries the list.
+   */
+  function dropEdits(notice: (count: number) => string) {
+    const { history: next, dropped } = dropHandEdits(historyRef.current);
+    if (dropped === 0) {
+      return;
+    }
+    historyRef.current = next;
+    setHistory(next);
+    setChangesNotice(notice(dropped));
+    change({ ...latest.current, changes: next.list });
+    if (lastSent.current !== null) {
+      lastSent.current = { ...lastSent.current, changes: next.list };
+    }
+  }
+
   /** Add a change at the end of the list, unless the list holds as many as the API takes. */
   function addChange(made: Change) {
     const { max_entries: most } = limits.changes;
@@ -479,13 +521,13 @@ function Converter({ limits }: { limits: Limits }) {
     }
   }
 
-  const pickingRef = useRef(picking);
-  pickingRef.current = picking;
+  const pickingRef = useRef(false);
+  pickingRef.current = picking !== null || pickingPaint;
   // Ctrl+Z and Ctrl+Shift+Z (Cmd on macOS) undo and redo the changes, except while typing
   // in a field or choosing a thread, where the keys belong to the field or the dialog.
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z" || pickingRef.current !== null) {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z" || pickingRef.current) {
         return;
       }
       if (typing(event.target)) {
@@ -578,7 +620,8 @@ function Converter({ limits }: { limits: Limits }) {
   }
 
   function chooseImage(image: File | null) {
-    // A crop box belongs to the image it was drawn on.
+    // Hand edits and a crop box belong to the image they were drawn on.
+    dropEdits((count) => `${handEdits(count)} dropped: another image was chosen.`);
     change({ ...latest.current, image, settings: { ...latest.current.settings, crop: "" } });
     reinspect.current = false;
     // The PDF on the view belongs to the image that was there.
@@ -700,6 +743,13 @@ function Converter({ limits }: { limits: Limits }) {
   }
 
   const { settings } = inputs;
+  /** The thread the tools paint with: the one chosen, else the key's first entry. */
+  const firstEntry = preview?.pattern.key[0];
+  const paint: DmcThread | null =
+    paintThread ?? (firstEntry === undefined ? null : { code: firstEntry.code, name: firstEntry.name, rgb: firstEntry.rgb });
+  /** Hand edits no response holds yet: the viewer draws them meanwhile. */
+  const shownChanges = new Set(preview?.source.changes ?? []);
+  const pendingEdits = history.list.filter((entry) => isHandEdit(entry) && !shownChanges.has(entry));
   /** What the latest response says each change it was sent did, by the change itself. */
   const counts = new Map<Change, number>(
     preview?.source.changes.map((entry, i) => [entry, preview.pattern.changed_cells[i] ?? 0]) ?? [],
@@ -962,6 +1012,13 @@ function Converter({ limits }: { limits: Limits }) {
             pdfView={<PdfView url={shownPdf?.url ?? null} note={pdfNote} />}
             onShowChange={(view) => setPdfVisible(view === "pdf")}
             fabric={chart.fabricColour}
+            editing={{
+              thread: paint,
+              onPickThread: () => setPickingPaint(true),
+              brush: limits.changes.brush,
+              onEdit: addChange,
+              pending: pendingEdits,
+            }}
           />
         ) : (
           <div className="empty-state">
@@ -981,8 +1038,25 @@ function Converter({ limits }: { limits: Limits }) {
           onClose={() => setPicking(null)}
         />
       )}
+      {pickingPaint && preview !== null && (
+        <ThreadPicker
+          paint={preview.pattern.key.map(({ code, name, rgb }) => ({ code, name, rgb }))}
+          onPick={(thread) => {
+            if (thread !== null) {
+              setPaintThread(thread);
+            }
+            setPickingPaint(false);
+          }}
+          onClose={() => setPickingPaint(false)}
+        />
+      )}
     </div>
   );
+}
+
+/** "1 hand edit", "3 hand edits". */
+function handEdits(count: number): string {
+  return `${count} hand edit${count === 1 ? "" : "s"}`;
 }
 
 /** Whether a key press on `target` belongs to a field being typed in. */

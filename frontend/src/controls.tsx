@@ -2,13 +2,15 @@
  * Form controls shared by the settings panel and the viewer, each fitted to one kind of
  * value: a few named choices (segmented), a wide range (slider and number), a small range
  * (stepper), common values plus any other (chips), a colour among presets (swatches), on
- * or off (switch), and an image (drop zone); and tabs, for a panel of several groups.
+ * or off (switch), an image (drop zone) and a thread to change (thread chip); and tabs,
+ * for a panel of several groups.
  * Values are kept as typed: the API checks them and its message says what is wrong.
  */
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
-import type { SettingLimits } from "./api";
+import type { DmcThread, SettingLimits } from "./api";
+import { FabricSwatch, Swatch } from "./swatch";
 
 /**
  * One of a few named choices: radios shown as a row of pills, a group named by `legend`.
@@ -21,8 +23,10 @@ export function Segmented<T extends string>(props: {
   onChange: (value: T) => void;
   showLegend?: boolean;
   className?: string;
+  /** Shown but not choosable (the choice does not apply now). */
+  disabled?: boolean;
 }) {
-  const { legend, options, value, onChange, showLegend = false, className } = props;
+  const { legend, options, value, onChange, showLegend = false, className, disabled = false } = props;
   const name = useId();
   const labelId = useId();
   const classes = ["segmented", className].filter(Boolean).join(" ");
@@ -31,6 +35,7 @@ export function Segmented<T extends string>(props: {
       <input
         type="radio"
         name={name}
+        disabled={disabled}
         checked={value === option.value}
         onChange={() => onChange(option.value)}
       />
@@ -441,5 +446,31 @@ export function Tabs<T extends string>(props: {
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * A thread as a pill to click: its round swatch and code, named by `label` and the thread
+ * (or "no thread", shown as fabric) for assistive tech. Opens whatever chooses another.
+ */
+export function ThreadChip(props: {
+  label: string;
+  thread: DmcThread | null;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  const { label, thread, onClick, disabled = false } = props;
+  const named = thread === null ? "no thread" : `${thread.code} ${thread.name}`;
+  return (
+    <button
+      type="button"
+      className="thread-chip"
+      disabled={disabled}
+      aria-label={`${label} ${named}: choose another`}
+      onClick={onClick}
+    >
+      {thread === null ? <FabricSwatch /> : <Swatch rgb={thread.rgb} />}
+      <span>{thread?.code ?? "Thread"}</span>
+    </button>
   );
 }

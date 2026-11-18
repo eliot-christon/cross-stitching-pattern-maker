@@ -1,9 +1,11 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { Change, DmcThread } from "./api";
 import { gridPixels } from "./grid";
 import type { KeyEntry, Pattern } from "./pattern";
-import { PatternViewer } from "./PatternViewer";
+import { PatternViewer, type ViewerEditing } from "./PatternViewer";
 
 const KEY: KeyEntry[] = [
   { code: "321", name: "Red", rgb: [199, 43, 59], stitches: 1, skeins: 1, symbol: "Z", symbol_ink: "white" },
@@ -369,5 +371,218 @@ describe("PatternViewer with a PDF view", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Pattern" }));
     expect(screen.getByRole("img")).toBeInTheDocument();
     expect(onShowChange).toHaveBeenLastCalledWith("pattern");
+  });
+});
+
+describe("PatternViewer edit tools", () => {
+  /** A thread of an odd colour, so its fills are told apart from everything else. */
+  const PAINT: DmcThread = { code: "3865", name: "Winter White", rgb: [1, 2, 3] };
+  const PAINT_CSS = "rgb(1, 2, 3)";
+  // An 8 x 8 pattern in the 160 x 160 viewer: 20 px cells, the pattern at (0, 0).
+  const SIDE = 8;
+  const CELL = 20;
+
+  function editing(overrides: Partial<ViewerEditing> = {}): ViewerEditing {
+    return {
+      thread: PAINT,
+      onPickThread: vi.fn(),
+      brush: { min: 1, max: 9, step: 2, default: 1 },
+      onEdit: vi.fn(),
+      pending: [],
+      ...overrides,
+    };
+  }
+
+  function box(): HTMLElement {
+    return screen.getByRole("group", { name: /^Pattern viewer/ });
+  }
+
+  /** The centre of cell (column, row) as a pointer event's coordinates. */
+  function at(column: number, row: number, pointerId = 1) {
+    return { clientX: column * CELL + CELL / 2, clientY: row * CELL + CELL / 2, pointerId };
+  }
+
+  function chooseTool(name: string) {
+    fireEvent.click(screen.getByRole("radio", { name }));
+  }
+
+  /** Press on the first cell, move through the others, release on the last. */
+  function drag(...cells: [number, number][]) {
+    const [first, ...rest] = cells;
+    if (first === undefined) {
+      return;
+    }
+    fireEvent.pointerDown(box(), at(...first));
+    for (const cell of rest) {
+      fireEvent.pointerMove(box(), at(...cell));
+    }
+    const last = cells.at(-1) ?? first;
+    fireEvent.pointerUp(box(), at(...last));
+  }
+
+  /** The viewer with its pending list kept as a page would: each edit appended. */
+  function Editable({ onEdit }: { onEdit: (change: Change) => void }) {
+    const [pending, setPending] = useState<Change[]>([]);
+    return (
+      <PatternViewer
+        pattern={makePattern(SIDE, SIDE)}
+        editing={editing({
+          pending,
+          onEdit: (change) => {
+            onEdit(change);
+            setPending((current) => [...current, change]);
+          },
+        })}
+      />
+    );
+  }
+
+  it("starts on Pan, and a drag pans as before, adding no entry", () => {
+    const tools = editing();
+    render(<PatternViewer pattern={makePattern(SIDE, SIDE)} editing={tools} />);
+    fireEvent.click(button("Zoom in"));
+
+    expect(screen.getByRole("radio", { name: "Pan" })).toBeChecked();
+    drag([2, 2], [5, 5]);
+
+    expect(tools.onEdit).not.toHaveBeenCalled();
+    expect(button("Zoom out")).toBeEnabled();
+  });
+
+  it("makes one stroke of the cells passed through with the Pencil, and erases with the Eraser", () => {
+    const tools = editing();
+    render(<PatternViewer pattern={makePattern(SIDE, SIDE)} editing={tools} />);
+
+    chooseTool("Pencil");
+    drag([2, 3], [3, 3], [3, 3], [4, 3], [5, 3]);
+    chooseTool("Eraser");
+    drag([2, 3], [5, 3]);
+
+    expect(tools.onEdit).toHaveBeenNthCalledWith(1, {
+      op: "stroke",
+      thread: PAINT,
+      brush: 1,
+      grid: [SIDE, SIDE],
+      points: [
+        [2, 3],
+        [3, 3],
+        [4, 3],
+        [5, 3],
+      ],
+    });
+    expect(tools.onEdit).toHaveBeenNthCalledWith(2, {
+      op: "stroke",
+      thread: null,
+      brush: 1,
+      grid: [SIDE, SIDE],
+      points: [
+        [2, 3],
+        [5, 3],
+      ],
+    });
+  });
+
+  it("makes one rectangle of its two corners, and one fill at the cell clicked", () => {
+    const tools = editing();
+    render(<PatternViewer pattern={makePattern(SIDE, SIDE)} editing={tools} />);
+
+    chooseTool("Rectangle");
+    drag([1, 1], [3, 2], [4, 2]);
+    chooseTool("Fill");
+    drag([6, 0]);
+
+    expect(tools.onEdit).toHaveBeenNthCalledWith(1, {
+      op: "rect",
+      thread: PAINT,
+      grid: [SIDE, SIDE],
+      from: [1, 1],
+      to: [4, 2],
+    });
+    expect(tools.onEdit).toHaveBeenNthCalledWith(2, { op: "fill", thread: PAINT, grid: [SIDE, SIDE], at: [6, 0] });
+  });
+
+  it("adds nothing on a pointer cancel or a press off the pattern", () => {
+    stubSize(200);
+    const tools = editing();
+    render(<PatternViewer pattern={makePattern(SIDE, 4)} editing={tools} />);
+    chooseTool("Pencil");
+
+    // 8 x 4 in 200 x 200: 25 px cells, the pattern from y = 50 to 150.
+    fireEvent.pointerDown(box(), { clientX: 30, clientY: 10, pointerId: 1 });
+    fireEvent.pointerMove(box(), { clientX: 30, clientY: 80, pointerId: 1 });
+    fireEvent.pointerUp(box(), { clientX: 30, clientY: 80, pointerId: 1 });
+    fireEvent.pointerDown(box(), { clientX: 30, clientY: 80, pointerId: 2 });
+    fireEvent.pointerMove(box(), { clientX: 60, clientY: 80, pointerId: 2 });
+    fireEvent.pointerCancel(box(), { clientX: 60, clientY: 80, pointerId: 2 });
+
+    expect(tools.onEdit).not.toHaveBeenCalled();
+  });
+
+  it("drops the stroke and pinches when a second finger comes down", () => {
+    const tools = editing();
+    render(<PatternViewer pattern={makePattern(SIDE, SIDE)} editing={tools} />);
+    chooseTool("Pencil");
+
+    fireEvent.pointerDown(box(), at(2, 2, 1));
+    fireEvent.pointerMove(box(), at(3, 2, 1));
+    fireEvent.pointerDown(box(), at(6, 6, 2));
+    fireEvent.pointerMove(box(), at(7, 7, 2));
+    fireEvent.pointerUp(box(), at(7, 7, 2));
+    fireEvent.pointerUp(box(), at(3, 2, 1));
+
+    expect(tools.onEdit).not.toHaveBeenCalled();
+    expect(button("Zoom out")).toBeEnabled();
+  });
+
+  it("draws a stroke's cells in the thread's colour until its response; a fill draws nothing", () => {
+    const recording = stubCanvas();
+    const onEdit = vi.fn();
+    render(<Editable onEdit={onEdit} />);
+    chooseTool("Pencil");
+
+    drag([1, 1], [3, 1]);
+    // One repaint after the release: the 3 cells of the stroke, in the paint thread's colour.
+    recording.fills.length = 0;
+    fireEvent.click(screen.getByRole("checkbox", { name: "Centre lines" }));
+    expect(recording.fills.filter((fill) => fill === PAINT_CSS)).toHaveLength(3);
+
+    chooseTool("Fill");
+    drag([6, 6]);
+    recording.fills.length = 0;
+    fireEvent.click(screen.getByRole("checkbox", { name: "Centre lines" }));
+
+    expect(onEdit).toHaveBeenCalledTimes(2);
+    expect(recording.fills.filter((fill) => fill === PAINT_CSS)).toHaveLength(3);
+  });
+
+  it("offers no tools in the PDF view, and disables them on Before cleanup", () => {
+    const converted = { grid: [[0, 1]], key: KEY, total_stitches: 2 };
+    render(
+      <PatternViewer pattern={makePattern(2, 1, { converted })} editing={editing()} pdfView={<p>the PDF</p>} />,
+    );
+
+    fireEvent.click(screen.getByRole("radio", { name: "Before cleanup" }));
+    expect(screen.getByRole("radio", { name: "Pencil" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Paint with/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("radio", { name: "After cleanup" }));
+    expect(screen.getByRole("radio", { name: "Pencil" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("radio", { name: "PDF" }));
+    expect(screen.queryByRole("radio", { name: "Pencil" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Edit tools" })).not.toBeInTheDocument();
+  });
+
+  it("opens the thread picker from the paint chip, and offers the brush to the Pencil only", () => {
+    const tools = editing();
+    render(<PatternViewer pattern={makePattern(SIDE, SIDE)} editing={tools} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Paint with 3865 Winter White/ }));
+    expect(tools.onPickThread).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("spinbutton", { name: "Brush" })).not.toBeInTheDocument();
+    chooseTool("Pencil");
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Brush" }), { target: { value: "3" } });
+    drag([4, 4]);
+
+    expect(tools.onEdit).toHaveBeenCalledWith(expect.objectContaining({ op: "stroke", brush: 3 }));
   });
 });
