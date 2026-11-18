@@ -21,24 +21,55 @@ export interface Limits {
    * before reading it, and through a proxy that refusal arrives as a bare 502.
    */
   max_upload_bytes: number;
-  /** Keyed by form field name: the conversion settings, then the PDF's layout settings. */
+  /**
+   * Keyed by form field name: the conversion settings, the image adjustments, then the
+   * PDF's layout settings.
+   */
   settings: Record<
     | "width"
     | "max_colours"
     | "merge_distance"
     | "min_stitches"
     | "confetti_size"
+    | AdjustmentField
     | "pages_across"
     | "pages_down"
     | "overlap",
     SettingLimits
   >;
+  /** What the `changes` field of the pattern routes accepts. */
+  changes: {
+    max_entries: number;
+    /** UTF-8 bytes of the whole field. */
+    max_bytes: number;
+    /** A stroke's brush sizes: odd, `step` 2 from `min`. */
+    brush: SettingLimits;
+    /** The largest coordinate of a point, either sign. */
+    max_coordinate: number;
+  };
 }
+
+/** The image adjustments, as their form fields (and `/limits` keys) spell them, in order. */
+export const ADJUSTMENTS = ["brightness", "contrast", "saturation", "hue", "gamma", "sharpness"] as const;
+export type AdjustmentField = (typeof ADJUSTMENTS)[number];
+
+/** The adjustments as the page names them. */
+export const ADJUSTMENT_LABELS: Record<AdjustmentField, string> = {
+  brightness: "Brightness",
+  contrast: "Contrast",
+  saturation: "Saturation",
+  hue: "Hue",
+  gamma: "Gamma",
+  sharpness: "Sharpness",
+};
+
+/** The adjustments as typed: applied by the API to the image right after the crop. */
+export type Adjustments = Record<AdjustmentField, string>;
 
 export type LimitsResult = { ok: true; limits: Limits } | { ok: false; message: string };
 
 /** The settings as the user typed them; the API validates them. */
-export interface Settings {
+export interface Settings extends Adjustments {
   width: string;
   maxColours: string;
   fabricCount: string;
@@ -84,19 +115,58 @@ export type InspectResult = { ok: true; inspection: Inspection } | { ok: false; 
 /** The PDF chart endpoint: the same inputs as `PATTERNS_URL` plus the chart options. */
 export const PATTERN_PDF_URL = "/api/patterns/pdf";
 
-/** One thread swap, applied by the API after cleanup; a list applies in order. A `to` of
- * `null` removes the thread: its cells become bare fabric. */
-export interface Replacement {
-  from: DmcThread;
-  to: DmcThread | null;
-}
+/** A cell or a size, (x, y) or (width, height): the column, then the row, 0-based. */
+export type Cell = readonly [number, number];
 
-/** The `TO` of a `replace` field that removes a thread, as the API spells it. */
-export const FABRIC = "fabric";
+/**
+ * One entry of the `changes` the API applies after cleanup, in order, each against the
+ * pattern the earlier ones left. A `null` thread is bare fabric: a replacement to it
+ * removes a thread, painting with it erases. A hand edit carries the `grid` (width,
+ * height) it was drawn on; the API skips it on a pattern of any other size.
+ */
+export type Change =
+  | { readonly op: "replace"; readonly from: DmcThread; readonly to: DmcThread | null }
+  | {
+      readonly op: "stroke";
+      readonly thread: DmcThread | null;
+      /** Odd: a brush x brush square centred on each cell the pointer passed through. */
+      readonly brush: number;
+      readonly grid: Cell;
+      readonly points: readonly Cell[];
+    }
+  | {
+      readonly op: "rect";
+      readonly thread: DmcThread | null;
+      readonly grid: Cell;
+      /** Opposite corners, both included, in any order. */
+      readonly from: Cell;
+      readonly to: Cell;
+    }
+  | { readonly op: "fill"; readonly thread: DmcThread | null; readonly grid: Cell; readonly at: Cell };
 
-/** A replacement as the API's `replace` field spells it: `FROM:TO`. */
-export function replacementField({ from, to }: Replacement): string {
-  return `${from.code}:${to === null ? FABRIC : to.code}`;
+/** A list of changes as the API's `changes` field spells it: JSON with DMC codes. */
+export function changesField(changes: readonly Change[]): string {
+  const code = (thread: DmcThread | null) => (thread === null ? null : thread.code);
+  return JSON.stringify(
+    changes.map((change) => {
+      switch (change.op) {
+        case "replace":
+          return { op: "replace", from: change.from.code, to: code(change.to) };
+        case "stroke":
+          return {
+            op: "stroke",
+            thread: code(change.thread),
+            brush: change.brush,
+            grid: change.grid,
+            points: change.points,
+          };
+        case "rect":
+          return { op: "rect", thread: code(change.thread), grid: change.grid, from: change.from, to: change.to };
+        case "fill":
+          return { op: "fill", thread: code(change.thread), grid: change.grid, at: change.at };
+      }
+    }),
+  );
 }
 
 /** The chart options `POST /patterns/pdf` accepts, as its form fields spell them. */
@@ -193,16 +263,16 @@ function post(
   image: File,
   settings: Settings,
   maxUploadBytes: number,
-  replacements: readonly Replacement[],
+  changes: readonly Change[],
   extra: Record<string, string> = {},
 ): Promise<Sent> {
-  return sendForm(url, image, maxUploadBytes, (body) => appendSettings(body, settings, replacements, extra));
+  return sendForm(url, image, maxUploadBytes, (body) => appendSettings(body, settings, changes, extra));
 }
 
 function appendSettings(
   body: FormData,
   settings: Settings,
-  replacements: readonly Replacement[],
+  changes: readonly Change[],
   extra: Record<string, string>,
 ) {
   body.append("width", settings.width);
@@ -216,20 +286,37 @@ function appendSettings(
   if (settings.crop !== "") {
     body.append("crop", settings.crop);
   }
-  // Repeated `replace` fields, in order: the API applies them in sequence.
-  for (const pair of replacements) {
-    body.append("replace", replacementField(pair));
+  appendAdjustments(body, settings);
+  if (changes.length > 0) {
+    body.append("changes", changesField(changes));
   }
   for (const [name, value] of Object.entries(extra)) {
     body.append(name, value);
   }
 }
 
-/** What the upload (inside `crop`, when set) is, how it reads best, and why it cannot be read. */
-export async function inspectImage(image: File, maxUploadBytes: number, crop = ""): Promise<InspectResult> {
+function appendAdjustments(body: FormData, adjustments: Adjustments) {
+  for (const field of ADJUSTMENTS) {
+    body.append(field, adjustments[field]);
+  }
+}
+
+/**
+ * What the upload (inside `crop`, when set, and with the `adjustments`, when given) is,
+ * how it reads best, and why it cannot be read.
+ */
+export async function inspectImage(
+  image: File,
+  maxUploadBytes: number,
+  crop = "",
+  adjustments?: Adjustments,
+): Promise<InspectResult> {
   const sent = await sendForm(INSPECT_URL, image, maxUploadBytes, (body) => {
     if (crop !== "") {
       body.append("crop", crop);
+    }
+    if (adjustments !== undefined) {
+      appendAdjustments(body, adjustments);
     }
   });
   if (!sent.ok) {
@@ -257,16 +344,9 @@ export async function downloadPdf(
   settings: Settings,
   options: ChartOptions,
   maxUploadBytes: number,
-  replacements: readonly Replacement[] = [],
+  changes: readonly Change[] = [],
 ): Promise<PdfResult> {
-  const sent = await post(
-    PATTERN_PDF_URL,
-    image,
-    settings,
-    maxUploadBytes,
-    replacements,
-    chartFields(options),
-  );
+  const sent = await post(PATTERN_PDF_URL, image, settings, maxUploadBytes, changes, chartFields(options));
   if (!sent.ok) {
     return sent;
   }
@@ -281,9 +361,9 @@ export async function convertImage(
   image: File,
   settings: Settings,
   maxUploadBytes: number,
-  replacements: readonly Replacement[] = [],
+  changes: readonly Change[] = [],
 ): Promise<ConvertResult> {
-  const sent = await post(PATTERNS_URL, image, settings, maxUploadBytes, replacements);
+  const sent = await post(PATTERNS_URL, image, settings, maxUploadBytes, changes);
   if (!sent.ok) {
     return sent;
   }

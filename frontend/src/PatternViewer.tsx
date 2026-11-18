@@ -1,14 +1,18 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import type { Change, DmcThread, SettingLimits } from "./api";
 import { centreLines, tenCellLines } from "./chartAids";
-import { Segmented, Switch } from "./controls";
+import { Segmented, Stepper, Switch, ThreadChip } from "./controls";
+import { pendingCells } from "./edits";
 import { DEFAULT_FABRIC } from "./fabric";
 import { gridPixels } from "./grid";
 import type { Pattern } from "./pattern";
 import { rgbCss } from "./swatch";
 import { visibleCells, visibleSymbols, type View } from "./symbolView";
 import {
+  cellAt,
   fitViewport,
+  nearestCell,
   maxScale,
   panBy,
   pinchFactor,
@@ -16,6 +20,7 @@ import {
   visibleWindow,
   wheelFactor,
   zoomAt,
+  type CellPoint,
   type Point,
   type Size,
   type Viewport,
@@ -24,6 +29,32 @@ import {
 type Cells = Pick<Pattern, "width" | "height" | "grid" | "key">;
 
 export type ViewMode = "colours" | "symbols" | "symbols-on-colours";
+
+/** What a drag does: pan the view, or one of the tools that edit cells. */
+export type Tool = "pan" | "pencil" | "eraser" | "fill" | "rect";
+
+/** What the viewer needs to edit the pattern; without it the viewer only views. */
+export interface ViewerEditing {
+  /** The thread Pencil, Fill and Rectangle paint with; null when there is none to offer. */
+  thread: DmcThread | null;
+  /** Open the thread picker for the paint thread. */
+  onPickThread: () => void;
+  /** The brush sizes a stroke takes (`/limits`). */
+  brush: SettingLimits;
+  /** A gesture ended: the one change it made. */
+  onEdit: (change: Change) => void;
+  /** Hand edits no response holds yet: drawn over the pattern meanwhile. */
+  pending: readonly Change[];
+}
+
+/** A drawing gesture in progress: the pointer making it and the cells it went through. */
+interface Gesture {
+  pointerId: number;
+  tool: Exclude<Tool, "pan">;
+  points: CellPoint[];
+  /** The rectangle's moving corner: the cell under the pointer, or the nearest edge cell. */
+  end: CellPoint;
+}
 
 /** Smallest cell, in CSS px, whose symbol can be read; below it no symbol is drawn. */
 export const SYMBOL_MIN_PX = 12;
@@ -213,6 +244,52 @@ function paintAids(
   }
 }
 
+/**
+ * Changes not yet in a response, drawn over the window: each stroke's and rectangle's cells
+ * in its thread's colour, the fabric's for the eraser, no symbol. Fills draw nothing.
+ */
+function paintPending(
+  context: CanvasRenderingContext2D,
+  vp: Viewport,
+  view: View,
+  pattern: Size,
+  changes: readonly Change[],
+  fabric: string,
+) {
+  for (const change of changes) {
+    if (change.op === "replace" || change.grid[0] !== pattern.width || change.grid[1] !== pattern.height) {
+      continue;
+    }
+    context.fillStyle = change.thread === null ? fabric : rgbCss(change.thread.rgb);
+    for (const [column, row] of pendingCells(change)) {
+      const inView =
+        column >= view.firstColumn &&
+        column < view.firstColumn + view.columns &&
+        row >= view.firstRow &&
+        row < view.firstRow + view.rows;
+      if (inView) {
+        context.fillRect(vp.x + column * vp.scale, vp.y + row * vp.scale, vp.scale, vp.scale);
+      }
+    }
+  }
+}
+
+/** The change a finished gesture makes on a pattern of `size`, painting with `thread`. */
+function gestureChange(gesture: Gesture, thread: DmcThread | null, brush: number, size: Size): Change {
+  const grid = [size.width, size.height] as const;
+  const paint = gesture.tool === "eraser" ? null : thread;
+  const first = gesture.points[0] ?? gesture.end;
+  switch (gesture.tool) {
+    case "pencil":
+    case "eraser":
+      return { op: "stroke", thread: paint, brush, grid, points: gesture.points };
+    case "rect":
+      return { op: "rect", thread: paint, grid, from: first, to: gesture.end };
+    case "fill":
+      return { op: "fill", thread: paint, grid, at: first };
+  }
+}
+
 function canvasName(mode: ViewMode, before: boolean | null, cells: Cells): string {
   const size = `${cells.width} x ${cells.height} stitches`;
   if (mode === "symbols") {
@@ -265,8 +342,14 @@ export function PatternViewer(props: {
   onShowChange?: (shows: ViewerShows) => void;
   /** The fabric's colour, which bare cells show in Colours and Symbols on colours. */
   fabric?: string;
+  /** The edit tools; none, the viewer only views. */
+  editing?: ViewerEditing;
 }) {
-  const { pattern, pdfView, onShowChange, fabric = DEFAULT_FABRIC } = props;
+  const { pattern, pdfView, onShowChange, fabric = DEFAULT_FABRIC, editing } = props;
+  const [chosenTool, setTool] = useState<Tool>("pan");
+  const [brushText, setBrushText] = useState(() => String(editing?.brush.default ?? 1));
+  /** The gesture in progress, drawn over the pattern as it goes. */
+  const [drawing, setDrawing] = useState<Change | null>(null);
   const [shows, setShows] = useState<ViewerShows>("pattern");
   const pdf = pdfView !== undefined && shows === "pdf";
   const [mode, setMode] = useState<ViewMode>("colours");
@@ -283,6 +366,10 @@ export function PatternViewer(props: {
     [converted, width, height],
   );
   const shown: Cells = mode === "colours" && showBefore && before !== null ? before : pattern;
+  /** Editing applies to the cleaned pattern only: on Before cleanup every drag pans. */
+  const editable = editing !== undefined && shown === pattern;
+  const tool: Tool = editable ? chosenTool : "pan";
+  const brush = Number(brushText) > 0 ? Number(brushText) : (editing?.brush.default ?? 1);
 
   const afterSource = useMemo(() => colourSource(pattern), [pattern]);
   const beforeSource = useMemo(
@@ -346,8 +433,11 @@ export function PatternViewer(props: {
     } else {
       paintColours(context, vp, view, source, fabric);
     }
+    if (shown === pattern && editing !== undefined) {
+      paintPending(context, vp, view, dims, drawing === null ? editing.pending : [...editing.pending, drawing], fabric);
+    }
     paintAids(context, vp, view, dims, centreLinesOn);
-  }, [vp, dims, size, mode, readable, pattern, source, centreLinesOn, fabric]);
+  }, [vp, dims, size, mode, readable, pattern, source, centreLinesOn, fabric, shown, editing, drawing]);
 
   // The wheel zooms about the pointer. A native listener, because React's is passive and
   // the page must not scroll while the wheel zooms.
@@ -371,8 +461,21 @@ export function PatternViewer(props: {
     return () => box.removeEventListener("wheel", onWheel);
   }, []);
 
-  // Drag pans; two pointers pinch about their midpoint.
+  // Drag pans, or draws with a drawing tool; two pointers pinch about their midpoint, and
+  // abandon a gesture in progress.
   const pointers = useRef(new Map<number, Point>());
+  const gesture = useRef<Gesture | null>(null);
+
+  function abandon() {
+    gesture.current = null;
+    setDrawing(null);
+  }
+
+  /** Show the gesture as it stands, drawn over the pattern until it ends. */
+  function track(current: Gesture) {
+    gesture.current = current;
+    setDrawing(gestureChange(current, editing?.thread ?? null, brush, dims));
+  }
 
   function local(event: React.PointerEvent): Point {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -381,7 +484,20 @@ export function PatternViewer(props: {
 
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>) {
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    pointers.current.set(event.pointerId, local(event));
+    const point = local(event);
+    pointers.current.set(event.pointerId, point);
+    if (pointers.current.size > 1) {
+      abandon();
+      return;
+    }
+    if (tool === "pan") {
+      return;
+    }
+    // A press off the pattern starts nothing.
+    const cell = cellAt(vp, dims, point);
+    if (cell !== null) {
+      track({ pointerId: event.pointerId, tool, points: [cell], end: cell });
+    }
   }
 
   function onPointerMove(event: React.PointerEvent<HTMLDivElement>) {
@@ -393,6 +509,13 @@ export function PatternViewer(props: {
     const others = [...pointers.current.entries()].filter(([id]) => id !== event.pointerId);
     pointers.current.set(event.pointerId, point);
     const other = others[0]?.[1];
+    if (other === undefined && tool !== "pan") {
+      const current = gesture.current;
+      if (current !== null && current.pointerId === event.pointerId) {
+        moveGesture(current, point);
+      }
+      return;
+    }
     if (other === undefined) {
       update((current) => panBy(current, dims, size, point.x - previous.x, point.y - previous.y));
       return;
@@ -412,8 +535,37 @@ export function PatternViewer(props: {
     );
   }
 
+  /** A stroke takes each new cell the pointer passes over (none off the pattern); a
+   * rectangle's corner follows the pointer, held to the pattern's edge. */
+  function moveGesture(current: Gesture, point: Point) {
+    if (current.tool === "pencil" || current.tool === "eraser") {
+      const cell = cellAt(vp, dims, point);
+      const last = current.points.at(-1);
+      if (cell !== null && (last === undefined || last[0] !== cell[0] || last[1] !== cell[1])) {
+        track({ ...current, points: [...current.points, cell] });
+      }
+    } else if (current.tool === "rect") {
+      const end = nearestCell(vp, dims, point);
+      if (end !== null && (end[0] !== current.end[0] || end[1] !== current.end[1])) {
+        track({ ...current, end });
+      }
+    }
+  }
+
   function onPointerUp(event: React.PointerEvent<HTMLDivElement>) {
     pointers.current.delete(event.pointerId);
+    const current = gesture.current;
+    if (current !== null && current.pointerId === event.pointerId && editing !== undefined) {
+      editing.onEdit(gestureChange(current, editing.thread, brush, dims));
+    }
+    if (current?.pointerId === event.pointerId) {
+      abandon();
+    }
+  }
+
+  function onPointerCancel(event: React.PointerEvent<HTMLDivElement>) {
+    pointers.current.delete(event.pointerId);
+    abandon();
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
@@ -480,6 +632,32 @@ export function PatternViewer(props: {
           />
         )}
         <Switch label="Centre lines" checked={centreLinesOn} onChange={setCentreLinesOn} />
+        {editing !== undefined && (
+          <div className="viewer-tools" role="group" aria-label="Edit tools">
+            <Segmented
+              legend="Tool"
+              options={[
+                { value: "pan", label: "Pan" },
+                { value: "pencil", label: "Pencil" },
+                { value: "eraser", label: "Eraser" },
+                { value: "fill", label: "Fill" },
+                { value: "rect", label: "Rectangle" },
+              ]}
+              value={tool}
+              onChange={setTool}
+              disabled={!editable}
+            />
+            {(tool === "pencil" || tool === "eraser") && (
+              <Stepper label="Brush" limits={editing.brush} value={brushText} onChange={setBrushText} />
+            )}
+            <ThreadChip
+              label="Paint with"
+              thread={editing.thread}
+              disabled={!editable}
+              onClick={editing.onPickThread}
+            />
+          </div>
+        )}
         <div className="viewer-zoom">
           <button
             type="button"
@@ -514,14 +692,18 @@ export function PatternViewer(props: {
       <div
         ref={boxRef}
         hidden={pdf}
-        className="viewer-box"
+        className={tool === "pan" ? "viewer-box" : "viewer-box viewer-box-drawing"}
         role="group"
         tabIndex={0}
-        aria-label="Pattern viewer: drag to pan, wheel or + and - to zoom, arrows to move"
+        aria-label={
+          tool === "pan"
+            ? "Pattern viewer: drag to pan, wheel or + and - to zoom, arrows to move"
+            : "Pattern viewer: drag to draw, two fingers to pan and zoom, wheel or + and - to zoom"
+        }
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerCancel={onPointerCancel}
         onKeyDown={onKeyDown}
       >
         <canvas ref={canvasRef} role="img" aria-label={label} />

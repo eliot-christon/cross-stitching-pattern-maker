@@ -12,10 +12,17 @@ const LIMITS = {
     merge_distance: LIMIT,
     min_stitches: LIMIT,
     confetti_size: LIMIT,
+    brightness: { min: -100, max: 100, step: 1, default: 0 },
+    contrast: { min: -100, max: 100, step: 1, default: 0 },
+    saturation: { min: -100, max: 100, step: 1, default: 0 },
+    hue: { min: -180, max: 180, step: 1, default: 0 },
+    gamma: { min: 0.25, max: 4, step: 0.05, default: 1 },
+    sharpness: { min: -100, max: 100, step: 1, default: 0 },
     pages_across: { min: 1, max: 20, step: 1, default: 2 },
     pages_down: { min: 1, max: 20, step: 1, default: 2 },
     overlap: { min: 0, max: 5, step: 1, default: 2 },
   },
+  changes: { max_entries: 1000, max_bytes: 524288, brush: { min: 1, max: 9, step: 2, default: 1 }, max_coordinate: 2000 },
 };
 
 const PATTERN = {
@@ -31,7 +38,7 @@ const PATTERN = {
   finished_size: { width_in: 0.14, height_in: 0.07, width_cm: 0.36, height_cm: 0.18 },
   isolated_stitches: { before: 2, after: 0 },
   converted: null,
-  ignored_replacements: [],
+  changed_cells: [],
 };
 
 /** What the viewer area says before there is a pattern to show. */
@@ -79,7 +86,7 @@ describe("App", () => {
     const fetchMock = stubLimits();
     render(<App />);
 
-    expect(await screen.findByLabelText("Image")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Image", { selector: "input" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /convert/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("table", { name: "Thread key" })).not.toBeInTheDocument();
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/limits"]);
@@ -89,7 +96,7 @@ describe("App", () => {
     stubLimits();
     render(<App />);
 
-    await screen.findByLabelText("Image");
+    await screen.findByLabelText("Image", { selector: "input" });
 
     expect(screen.getByText(EMPTY)).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
@@ -99,7 +106,7 @@ describe("App", () => {
   it("replaces the empty viewer with the pattern once one is shown", async () => {
     stubLimits();
     render(<App />);
-    const image = await screen.findByLabelText("Image");
+    const image = await screen.findByLabelText("Image", { selector: "input" });
 
     fireEvent.change(image, {
       target: { files: [new File(["x"], "a.png", { type: "image/png" })] },

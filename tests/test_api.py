@@ -5,6 +5,19 @@ from typing import Any
 
 import numpy as np
 import pytest
+from api_helpers import (
+    ADJUSTMENT_LIMITS,
+    CLEANUP_FORM,
+    STRIPE_CODES,
+    Pixel,
+    cleanable,
+    core_converted,
+    field_image,
+    grid_json,
+    key_json,
+    png,
+    stripes,
+)
 from fastapi.testclient import TestClient
 from PIL import Image
 from pypdf import PdfReader
@@ -13,33 +26,15 @@ from starlette.formparsers import MultiPartParser
 from cross_stitch.api.app import MAX_COLOURS, MAX_UPLOAD_BYTES, app
 from cross_stitch.export import SYMBOLS, pattern_symbols, render_pdf, symbol_ink
 from cross_stitch.pattern import (
-    EMPTY,
     CleanedPattern,
-    Pattern,
     clean_pattern,
     convert_image,
     isolated_stitches,
     merge_similar_threads,
-    replace_threads,
 )
 from cross_stitch.threads import dmc_thread
 
 client = TestClient(app)
-
-STRIPE_CODES = ["310", "Blanc", "321", "797"]
-
-
-def _png(image: Image.Image) -> bytes:
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
-def _stripes() -> Image.Image:
-    pixels = np.zeros((20, 40, 3), dtype=np.uint8)
-    for i, code in enumerate(STRIPE_CODES):
-        pixels[:, i * 10 : (i + 1) * 10] = dmc_thread(code).rgb
-    return Image.fromarray(pixels)
 
 
 def _half_transparent() -> Image.Image:
@@ -54,7 +49,7 @@ def _post(upload: bytes | None, fields: dict[str, str], filename: str = "image.p
 
 
 def _stripes_response(**extra: str) -> dict[str, Any]:
-    response = _post(_png(_stripes()), {"width": "40", "max_colours": "4", **extra})
+    response = _post(png(stripes()), {"width": "40", "max_colours": "4", **extra})
     assert response.status_code == 200, response.text
     body: dict[str, Any] = response.json()
     return body
@@ -73,7 +68,7 @@ def test_golden_stripes_give_four_threads_of_200_stitches() -> None:
 
 def test_stripes_key_entries_carry_the_symbols_the_core_assigns() -> None:
     body = _stripes_response()
-    pattern = convert_image(_stripes(), width=40, max_colours=4)
+    pattern = convert_image(stripes(), width=40, max_colours=4)
     symbols = [entry["symbol"] for entry in body["key"]]
     assert symbols == pattern_symbols(pattern)
     assert len(set(symbols)) == 4
@@ -86,23 +81,9 @@ def test_the_symbol_list_covers_the_maximum_number_of_colours() -> None:
 
 def test_body_is_exactly_what_the_core_returns() -> None:
     body = _stripes_response(fabric_count="18")
-    pattern = convert_image(_stripes(), width=40, max_colours=4, fabric_count=18)
-    symbols = pattern_symbols(pattern)
-    assert body["key"] == [
-        {
-            "code": entry.thread.code,
-            "name": entry.thread.name,
-            "rgb": list(entry.thread.rgb),
-            "stitches": entry.stitches,
-            "skeins": entry.skeins,
-            "symbol": symbol,
-            "symbol_ink": symbol_ink(entry.thread.rgb),
-        }
-        for entry, symbol in zip(pattern.key, symbols, strict=True)
-    ]
-    assert body["grid"] == [
-        [None if cell == EMPTY else cell for cell in row] for row in pattern.grid.tolist()
-    ]
+    pattern = convert_image(stripes(), width=40, max_colours=4, fabric_count=18)
+    assert body["key"] == key_json(pattern)
+    assert body["grid"] == grid_json(pattern)
     assert body["total_stitches"] == pattern.total_stitches
     assert body["fabric_count"] == 18
     assert body["finished_size"] == {
@@ -131,7 +112,7 @@ def test_key_counts_sum_to_the_total_and_the_grid_cells() -> None:
 
 
 def test_transparent_cells_are_null_and_not_counted() -> None:
-    response = _post(_png(_half_transparent()), {"width": "20", "max_colours": "2"})
+    response = _post(png(_half_transparent()), {"width": "20", "max_colours": "2"})
     assert response.status_code == 200, response.text
     body = response.json()
     assert all(cell is None for row in body["grid"] for cell in row[:10])
@@ -157,23 +138,23 @@ def test_transparent_cells_are_null_and_not_counted() -> None:
     ],
 )
 def test_invalid_settings_give_422_naming_the_field(fields: dict[str, str], field: str) -> None:
-    response = _post(_png(_stripes()), fields)
+    response = _post(png(stripes()), fields)
     assert response.status_code == 422
     assert field in response.text
 
 
 def test_limits_themselves_are_accepted() -> None:
-    image = _png(Image.new("RGB", (4, 2), dmc_thread("321").rgb))
+    image = png(Image.new("RGB", (4, 2), dmc_thread("321").rgb))
     for fields in ({"width": "1", "max_colours": "1"}, {"width": "1000", "max_colours": "100"}):
         assert _post(image, fields).status_code == 200
 
 
 def test_an_image_too_tall_for_the_width_gives_422() -> None:
-    tall = _png(Image.new("RGB", (1, 1001), (0, 0, 0)))
+    tall = png(Image.new("RGB", (1, 1001), (0, 0, 0)))
     response = _post(tall, {"width": "1", "max_colours": "1"})
     assert response.status_code == 422
     assert "height" in response.text
-    assert _post(_png(Image.new("RGB", (1, 1000))), {"width": "1", "max_colours": "1"}).is_success
+    assert _post(png(Image.new("RGB", (1, 1000))), {"width": "1", "max_colours": "1"}).is_success
 
 
 def test_no_image_field_gives_422() -> None:
@@ -236,19 +217,19 @@ def _post_pdf(upload: bytes | None, fields: dict[str, str], filename: str = "ima
 
 
 def _stripes_pdf(**extra: str) -> bytes:
-    response = _post_pdf(_png(_stripes()), {"width": "40", "max_colours": "4", **extra})
+    response = _post_pdf(png(stripes()), {"width": "40", "max_colours": "4", **extra})
     assert response.status_code == 200, response.text
     body: bytes = response.content
     return body
 
 
 def _core_pdf(**options: Any) -> bytes:
-    pattern = convert_image(_stripes(), width=40, max_colours=4, fabric_count=14)
+    pattern = convert_image(stripes(), width=40, max_colours=4, fabric_count=14)
     return render_pdf(pattern, **options)
 
 
 def test_the_pdf_is_an_attachment_of_type_pdf() -> None:
-    response = _post_pdf(_png(_stripes()), {"width": "40", "max_colours": "4"})
+    response = _post_pdf(png(stripes()), {"width": "40", "max_colours": "4"})
     assert response.status_code == 200, response.text
     assert response.headers["content-type"] == "application/pdf"
     disposition = response.headers["content-disposition"]
@@ -271,7 +252,7 @@ def test_the_pdf_follows_the_variant_paper_and_orientation_asked_for() -> None:
 
 
 def test_the_pdf_uses_the_fabric_count_given() -> None:
-    pattern = convert_image(_stripes(), width=40, max_colours=4, fabric_count=18)
+    pattern = convert_image(stripes(), width=40, max_colours=4, fabric_count=18)
     assert _stripes_pdf(fabric_count="18") == render_pdf(pattern)
 
 
@@ -284,7 +265,7 @@ def test_the_same_pdf_request_twice_gives_identical_bytes() -> None:
     [("variant", "sepia"), ("paper", "A6"), ("orientation", "diagonal")],
 )
 def test_an_unknown_pdf_choice_gives_422_naming_the_field(field: str, value: str) -> None:
-    response = _post_pdf(_png(_stripes()), {"width": "40", "max_colours": "4", field: value})
+    response = _post_pdf(png(stripes()), {"width": "40", "max_colours": "4", field: value})
     assert response.status_code == 422
     assert field in response.text
 
@@ -299,8 +280,8 @@ def test_an_unknown_pdf_choice_gives_422_naming_the_field(field: str, value: str
     ],
 )
 def test_the_pdf_refuses_the_settings_patterns_refuses_alike(fields: dict[str, str]) -> None:
-    by_json = _post(_png(_stripes()), fields)
-    by_pdf = _post_pdf(_png(_stripes()), fields)
+    by_json = _post(png(stripes()), fields)
+    by_pdf = _post_pdf(png(stripes()), fields)
     assert by_json.status_code == by_pdf.status_code == 422
     assert by_json.json() == by_pdf.json()
 
@@ -311,7 +292,7 @@ def test_the_pdf_refuses_the_settings_patterns_refuses_alike(fields: dict[str, s
         (None, 422),
         (b"this is a text file, not an image\n", 400),
         (b"\x00" * (MAX_UPLOAD_BYTES + 1), 413),
-        (_png(Image.new("RGB", (1, 1001), (0, 0, 0))), 422),
+        (png(Image.new("RGB", (1, 1001), (0, 0, 0))), 422),
     ],
     ids=["no image", "not an image", "over 20 MB", "too tall"],
 )
@@ -329,98 +310,44 @@ def test_the_json_route_is_unchanged_by_the_pdf_fields() -> None:
 
 # --- cleanup settings ------------------------------------------------------------------------
 
-type Pixel = tuple[int, int]
 
-# All three cleanup settings on (`_cleaned_cleanable` passes the same values to the core),
-# and all three at their upper limits.
-CLEANUP_FORM = {"merge_distance": "3", "min_stitches": "5", "confetti_size": "1"}
+# All three cleanup settings at their upper limits.
 CLEANUP_MAX_FORM = {"merge_distance": "10", "min_stitches": "1000", "confetti_size": "10"}
-
-
-def _field_image(shape: Pixel, marks: dict[Pixel, str]) -> Image.Image:
-    """An image of `shape` (height, width) pixels in DMC 797 (royal blue), with each pixel
-    of `marks`, (row, column) -> DMC code, in that thread's colour."""
-    pixels = np.full((*shape, 3), dmc_thread("797").rgb, dtype=np.uint8)
-    for pixel, code in marks.items():
-        pixels[pixel] = dmc_thread(code).rgb
-    return Image.fromarray(pixels)
 
 
 def _lone_pixel() -> Image.Image:
     """7 x 9 royal blue with one red (321) pixel in the middle: one isolated stitch."""
-    return _field_image((7, 9), {(3, 4): "321"})
-
-
-def _block(code: str, rows: range, columns: range) -> dict[Pixel, str]:
-    return {(row, column): code for row in rows for column in columns}
-
-
-def _cleanable() -> Image.Image:
-    """8 x 12 royal blue with work for each cleanup step: two 3 x 3 blocks of near-identical
-    greys (3799 and 844) to merge, one white (Blanc) pixel of confetti, and a red (321)
-    domino too small for `min_stitches` 5 but too large for `confetti_size` 1."""
-    marks = {
-        (1, 2): "Blanc",
-        (1, 8): "321",
-        (1, 9): "321",
-        **_block("3799", range(4, 7), range(1, 4)),
-        **_block("844", range(4, 7), range(6, 9)),
-    }
-    return _field_image((8, 12), marks)
+    return field_image((7, 9), {(3, 4): "321"})
 
 
 def _fields_for(image: Image.Image, max_colours: int, **extra: str) -> dict[str, str]:
     return {"width": str(image.width), "max_colours": str(max_colours), **extra}
 
 
-def _core_converted(image: Image.Image, max_colours: int) -> Pattern:
-    return convert_image(image, width=image.width, max_colours=max_colours, fabric_count=14)
-
-
 def _cleaned_cleanable() -> CleanedPattern:
-    """What the core makes of `_cleanable()` with `CLEANUP_FORM`."""
-    pattern = _core_converted(_cleanable(), 5)
+    """What the core makes of `cleanable()` with `CLEANUP_FORM`."""
+    pattern = core_converted(cleanable(), 5)
     return clean_pattern(pattern, merge_distance=3.0, min_stitches=5, confetti_size=1)
 
 
-def _grid_json(pattern: Pattern) -> list[list[int | None]]:
-    return [[None if cell == EMPTY else cell for cell in row] for row in pattern.grid.tolist()]
-
-
-def _key_json(pattern: Pattern) -> list[dict[str, Any]]:
-    symbols = pattern_symbols(pattern)
-    return [
-        {
-            "code": entry.thread.code,
-            "name": entry.thread.name,
-            "rgb": list(entry.thread.rgb),
-            "stitches": entry.stitches,
-            "skeins": entry.skeins,
-            "symbol": symbol,
-            "symbol_ink": symbol_ink(entry.thread.rgb),
-        }
-        for entry, symbol in zip(pattern.key, symbols, strict=True)
-    ]
-
-
 def _body(image: Image.Image, max_colours: int, **extra: str) -> dict[str, Any]:
-    response = _post(_png(image), _fields_for(image, max_colours, **extra))
+    response = _post(png(image), _fields_for(image, max_colours, **extra))
     assert response.status_code == 200, response.text
     body: dict[str, Any] = response.json()
     return body
 
 
 def test_confetti_size_gives_the_pattern_and_counts_the_core_cleans_to() -> None:
-    converted = _core_converted(_lone_pixel(), 2)
+    converted = core_converted(_lone_pixel(), 2)
     cleaned = clean_pattern(converted, merge_distance=0.0, min_stitches=0, confetti_size=1)
     # The case has confetti to remove.
     assert (cleaned.isolated_before, cleaned.isolated_after) == (1, 0)
-    assert _grid_json(cleaned.pattern) != _grid_json(converted)
+    assert grid_json(cleaned.pattern) != grid_json(converted)
 
     body = _body(_lone_pixel(), 2, confetti_size="1")
 
-    assert body["grid"] == _grid_json(cleaned.pattern)
-    assert body["key"] == _key_json(cleaned.pattern)
+    assert body["grid"] == grid_json(cleaned.pattern)
+    assert body["key"] == key_json(cleaned.pattern)
     assert body["total_stitches"] == cleaned.pattern.total_stitches
     assert body["isolated_stitches"] == {
         "before": cleaned.isolated_before,
@@ -429,13 +356,13 @@ def test_confetti_size_gives_the_pattern_and_counts_the_core_cleans_to() -> None
 
 
 def test_without_cleanup_fields_the_pattern_is_the_converted_one() -> None:
-    converted = _core_converted(_lone_pixel(), 2)
+    converted = core_converted(_lone_pixel(), 2)
     assert isolated_stitches(converted) == 1
 
     body = _body(_lone_pixel(), 2)
 
-    assert body["grid"] == _grid_json(converted)
-    assert body["key"] == _key_json(converted)
+    assert body["grid"] == grid_json(converted)
+    assert body["key"] == key_json(converted)
     assert body["isolated_stitches"] == {"before": 1, "after": 1}
 
 
@@ -450,7 +377,7 @@ def test_cleanup_fields_sent_as_zero_give_the_same_body_as_none() -> None:
 
 
 def test_all_three_cleanup_settings_give_the_pattern_the_core_cleans_to() -> None:
-    converted = _core_converted(_cleanable(), 5)
+    converted = core_converted(cleanable(), 5)
     cleaned = _cleaned_cleanable()
     # Each step has work: the two greys merge, the white pixel is confetti, the red domino
     # is pruned, leaving the field and the merged grey.
@@ -459,10 +386,10 @@ def test_all_three_cleanup_settings_give_the_pattern_the_core_cleans_to() -> Non
     assert isolated_stitches(converted) == 1
     assert {entry.thread.code for entry in cleaned.pattern.key} == {"797", "844"}
 
-    body = _body(_cleanable(), 5, **CLEANUP_FORM)
+    body = _body(cleanable(), 5, **CLEANUP_FORM)
 
-    assert body["grid"] == _grid_json(cleaned.pattern)
-    assert body["key"] == _key_json(cleaned.pattern)
+    assert body["grid"] == grid_json(cleaned.pattern)
+    assert body["key"] == key_json(cleaned.pattern)
     assert body["total_stitches"] == cleaned.pattern.total_stitches
     assert body["isolated_stitches"] == {
         "before": cleaned.isolated_before,
@@ -471,23 +398,23 @@ def test_all_three_cleanup_settings_give_the_pattern_the_core_cleans_to() -> Non
 
 
 def test_the_same_cleaned_request_twice_gives_identical_bodies() -> None:
-    assert _body(_cleanable(), 5, **CLEANUP_FORM) == _body(_cleanable(), 5, **CLEANUP_FORM)
+    assert _body(cleanable(), 5, **CLEANUP_FORM) == _body(cleanable(), 5, **CLEANUP_FORM)
 
 
 def test_the_pdf_is_exactly_what_the_core_renders_of_the_cleaned_pattern() -> None:
     cleaned = _cleaned_cleanable()
     # The cleaned chart is not the uncleaned one, so the route cannot pass by skipping it.
-    assert render_pdf(cleaned.pattern) != render_pdf(_core_converted(_cleanable(), 5))
+    assert render_pdf(cleaned.pattern) != render_pdf(core_converted(cleanable(), 5))
 
-    response = _post_pdf(_png(_cleanable()), _fields_for(_cleanable(), 5, **CLEANUP_FORM))
+    response = _post_pdf(png(cleanable()), _fields_for(cleanable(), 5, **CLEANUP_FORM))
 
     assert response.status_code == 200, response.text
     assert response.content == render_pdf(cleaned.pattern)
 
 
 def test_the_pdf_of_cleaned_settings_follows_the_chart_choices_too() -> None:
-    fields = _fields_for(_cleanable(), 5, variant="bw", paper="A5", **CLEANUP_FORM)
-    response = _post_pdf(_png(_cleanable()), fields)
+    fields = _fields_for(cleanable(), 5, variant="bw", paper="A5", **CLEANUP_FORM)
+    response = _post_pdf(png(cleanable()), fields)
     assert response.status_code == 200, response.text
     assert response.content == render_pdf(_cleaned_cleanable().pattern, variant="bw", paper="A5")
 
@@ -516,8 +443,8 @@ def test_a_refused_cleanup_setting_gives_the_same_422_naming_it_on_both_routes(
     field: str, value: str
 ) -> None:
     fields = {"width": "40", "max_colours": "4", field: value}
-    by_json = _post(_png(_stripes()), fields)
-    by_pdf = _post_pdf(_png(_stripes()), fields)
+    by_json = _post(png(stripes()), fields)
+    by_pdf = _post_pdf(png(stripes()), fields)
     assert by_json.status_code == by_pdf.status_code == 422
     assert by_json.json() == by_pdf.json()
     assert {tuple(error["loc"]) for error in by_json.json()["detail"]} == {("body", field)}
@@ -535,25 +462,27 @@ def test_a_refused_cleanup_setting_gives_the_same_422_naming_it_on_both_routes(
     ],
 )
 def test_the_cleanup_limits_themselves_are_accepted_on_both_routes(field: str, value: str) -> None:
-    fields = _fields_for(_cleanable(), 5, **{field: value})
-    assert _post(_png(_cleanable()), fields).status_code == 200
-    assert _post_pdf(_png(_cleanable()), fields).status_code == 200
+    fields = _fields_for(cleanable(), 5, **{field: value})
+    assert _post(png(cleanable()), fields).status_code == 200
+    assert _post_pdf(png(cleanable()), fields).status_code == 200
 
 
 def test_every_cleanup_setting_at_its_maximum_gives_the_core_pattern() -> None:
-    converted = _core_converted(_cleanable(), 5)
+    converted = core_converted(cleanable(), 5)
     cleaned = clean_pattern(converted, merge_distance=10.0, min_stitches=1000, confetti_size=10)
 
-    body = _body(_cleanable(), 5, **CLEANUP_MAX_FORM)
+    body = _body(cleanable(), 5, **CLEANUP_MAX_FORM)
 
-    assert body["grid"] == _grid_json(cleaned.pattern)
-    assert body["key"] == _key_json(cleaned.pattern)
+    assert body["grid"] == grid_json(cleaned.pattern)
+    assert body["key"] == key_json(cleaned.pattern)
 
 
 # --- GET /limits ---------------------------------------------------------------------------
 
 
 SETTING_NAMES = ["width", "max_colours", "merge_distance", "min_stitches", "confetti_size"]
+# Taken by every route reading an image; their bounds are tested in test_api_adjust.py.
+ADJUSTMENT_NAMES = list(ADJUSTMENT_LIMITS)
 # Taken by `POST /patterns/pdf` only; their bounds are tested in test_api_pdf.py.
 LAYOUT_NAMES = ["pages_across", "pages_down", "overlap"]
 
@@ -572,12 +501,12 @@ def _setting(name: str) -> dict[str, Any]:
 
 def _one_colour() -> Image.Image:
     """10 x 1 royal blue: 100 rows at the widest width, one at the narrowest."""
-    return _field_image((1, 10), {})
+    return field_image((1, 10), {})
 
 
 def _post_setting(name: str, value: float) -> Any:
     """`POST /patterns` of `_one_colour()` with `name` at `value`, the other fields valid."""
-    return _post(_png(_one_colour()), {"width": "10", "max_colours": "1", name: str(value)})
+    return _post(png(_one_colour()), {"width": "10", "max_colours": "1", name: str(value)})
 
 
 def test_the_limits_are_the_contract_the_frontend_relies_on() -> None:
@@ -589,12 +518,19 @@ def test_the_limits_are_the_contract_the_frontend_relies_on() -> None:
             "merge_distance": {"min": 0, "max": 10, "step": 0.1, "default": 0},
             "min_stitches": {"min": 0, "max": 1000, "step": 1, "default": 0},
             "confetti_size": {"min": 0, "max": 10, "step": 1, "default": 0},
+            **ADJUSTMENT_LIMITS,
             "pages_across": {"min": 1, "max": 20, "step": 1, "default": 2},
             "pages_down": {"min": 1, "max": 20, "step": 1, "default": 2},
             "overlap": {"min": 0, "max": 5, "step": 1, "default": 2},
         },
+        "changes": {
+            "max_entries": 1000,
+            "max_bytes": 524288,
+            "brush": {"min": 1, "max": 9, "step": 2, "default": 1},
+            "max_coordinate": 2000,
+        },
     }
-    assert list(_limits()["settings"]) == SETTING_NAMES + LAYOUT_NAMES
+    assert list(_limits()["settings"]) == SETTING_NAMES + ADJUSTMENT_NAMES + LAYOUT_NAMES
 
 
 @pytest.mark.parametrize("name", SETTING_NAMES)
@@ -623,7 +559,7 @@ def test_every_default_lies_within_its_bounds(name: str) -> None:
 
 def test_every_setting_at_its_default_is_accepted() -> None:
     defaults = {name: str(_setting(name)["default"]) for name in SETTING_NAMES}
-    response = _post(_png(_cleanable()), defaults)
+    response = _post(png(cleanable()), defaults)
     assert response.status_code == 200, response.text
 
 
@@ -656,31 +592,31 @@ def _code_at(grid: list[list[int | None]], key: list[dict[str, Any]], cell: Pixe
 
 
 def test_converted_is_the_core_pattern_before_cleanup() -> None:
-    converted = _core_converted(_cleanable(), 5)
+    converted = core_converted(cleanable(), 5)
     cleaned = _cleaned_cleanable()
     # Cleanup changes the pattern, so `converted` cannot pass by repeating the top level.
-    assert _grid_json(cleaned.pattern) != _grid_json(converted)
+    assert grid_json(cleaned.pattern) != grid_json(converted)
 
-    body = _body(_cleanable(), 5, **CLEANUP_FORM)
+    body = _body(cleanable(), 5, **CLEANUP_FORM)
 
     assert body["converted"] == {
-        "grid": _grid_json(converted),
-        "key": _key_json(converted),
+        "grid": grid_json(converted),
+        "key": key_json(converted),
         "total_stitches": converted.total_stitches,
     }
-    assert body["grid"] == _grid_json(cleaned.pattern)
-    assert body["key"] == _key_json(cleaned.pattern)
+    assert body["grid"] == grid_json(cleaned.pattern)
+    assert body["key"] == key_json(cleaned.pattern)
 
 
 def test_converted_holds_the_confetti_the_cleaned_grid_no_longer_has() -> None:
-    body = _body(_cleanable(), 5, confetti_size="1")
+    body = _body(cleanable(), 5, confetti_size="1")
     before = body["converted"]
     assert _code_at(before["grid"], before["key"], (1, 2)) == "Blanc"
     assert _code_at(body["grid"], body["key"], (1, 2)) == "797"
 
 
 def test_converted_has_as_many_stitches_as_the_cleaned_pattern() -> None:
-    body = _body(_cleanable(), 5, **CLEANUP_FORM)
+    body = _body(cleanable(), 5, **CLEANUP_FORM)
     before = body["converted"]
     assert before["total_stitches"] == body["total_stitches"]
     assert sum(entry["stitches"] for entry in before["key"]) == body["total_stitches"]
@@ -717,7 +653,7 @@ def test_every_key_entry_carries_the_ink_of_its_colour() -> None:
 
 
 def test_every_converted_key_entry_carries_the_ink_of_its_colour() -> None:
-    body = _body(_cleanable(), 5, **CLEANUP_FORM)
+    body = _body(cleanable(), 5, **CLEANUP_FORM)
     assert body["converted"] is not None
     _inks_match_the_threads(body["key"])
     _inks_match_the_threads(body["converted"]["key"])
@@ -725,210 +661,11 @@ def test_every_converted_key_entry_carries_the_ink_of_its_colour() -> None:
     assert inks == {"black", "white"}
 
 
-# --- replace: thread swaps after cleanup ---------------------------------------------------
-
-
-def _replace_fields(image: Image.Image, max_colours: int, *swaps: str, **extra: str) -> Any:
-    """Form fields with one repeated `replace` field per swap, in order."""
-    fields: dict[str, Any] = _fields_for(image, max_colours, **extra)
-    if swaps:
-        fields["replace"] = list(swaps)
-    return fields
-
-
-def _post_replace(route: str, swaps: tuple[str, ...], **extra: str) -> Any:
-    files = {"image": ("image.png", _png(_stripes()), "image/png")}
-    fields = _replace_fields(_stripes(), 4, *swaps, **extra)
-    return client.post(route, data=fields, files=files)
-
-
-def _replaced_body(*swaps: str, **extra: str) -> dict[str, Any]:
-    response = _post_replace("/patterns", swaps, **extra)
-    assert response.status_code == 200, response.text
-    body: dict[str, Any] = response.json()
-    return body
-
-
-def _core_replaced(*swaps: tuple[str, str]) -> Pattern:
-    """The core's stripes pattern, no cleanup, with the swaps applied."""
-    cleaned = clean_pattern(
-        _core_converted(_stripes(), 4), merge_distance=0.0, min_stitches=0, confetti_size=0
-    )
-    pairs = [(dmc_thread(source), dmc_thread(target)) for source, target in swaps]
-    return replace_threads(cleaned.pattern, pairs).pattern
-
-
-def _counts(body: dict[str, Any]) -> list[tuple[str, int]]:
-    return [(entry["code"], entry["stitches"]) for entry in body["key"]]
-
-
-def test_replace_swaps_the_thread_and_gives_the_core_pattern() -> None:
-    expected = _core_replaced(("310", "3865"))
-    body = _replaced_body("310:3865")
-
-    assert ("3865", 200) in _counts(body)
-    assert "310" not in [entry["code"] for entry in body["key"]]
-    assert body["ignored_replacements"] == []
-    assert body["key"] == _key_json(expected)
-    assert body["grid"] == _grid_json(expected)
-    assert body["total_stitches"] == 800
-
-
-def test_replace_onto_a_thread_in_the_key_merges_and_comes_first() -> None:
-    body = _replaced_body("310:Blanc")
-    assert len(body["key"]) == 3
-    assert _counts(body)[0] == ("Blanc", 400)
-    assert body["total_stitches"] == 800
-    assert sum(entry["stitches"] for entry in body["key"]) == 800
-    assert body["key"] == _key_json(_core_replaced(("310", "Blanc")))
-
-
-def test_replace_fields_apply_in_the_order_sent() -> None:
-    body = _replaced_body("310:321", "321:797")
-    assert _counts(body)[0] == ("797", 600)
-    assert sorted(code for code, _ in _counts(body)) == ["797", "Blanc"]
-    assert body["key"] == _key_json(_core_replaced(("310", "321"), ("321", "797")))
-
-    reverse = _replaced_body("321:797", "310:321")
-    assert reverse["key"] == _key_json(_core_replaced(("321", "797"), ("310", "321")))
-    assert reverse["key"] != body["key"]
-
-
-@pytest.mark.parametrize("target", ["fabric", "FABRIC", "Fabric"])
-def test_replace_onto_fabric_leaves_the_thread_s_cells_bare(target: str) -> None:
-    body = _replaced_body(f"310:{target}")
-    expected = replace_threads(_core_replaced(), [(dmc_thread("310"), None)]).pattern
-
-    assert body["grid"] == _grid_json(expected)
-    assert body["key"] == _key_json(expected)
-    assert body["total_stitches"] == 600
-    assert sum(row.count(None) for row in body["grid"]) == 200
-
-
-def test_a_replace_of_a_thread_not_in_the_pattern_is_reported_and_changes_nothing() -> None:
-    plain = _stripes_response()
-    body = _replaced_body("3865:310")
-    assert body["ignored_replacements"] == [0]
-    assert {**body, "ignored_replacements": []} == plain
-
-
-def test_only_the_replace_positions_that_did_nothing_are_reported() -> None:
-    body = _replaced_body("3865:310", "310:321", "310:797")
-    assert body["ignored_replacements"] == [0, 2]
-    assert _counts(body)[0] == ("321", 400)
-
-
-def test_a_request_without_replace_reports_none_ignored() -> None:
-    body = _stripes_response()
-    assert body["ignored_replacements"] == []
-    assert _body(_lone_pixel(), 2)["ignored_replacements"] == []
-
-
-def test_replace_codes_are_case_insensitive_and_keep_their_stored_spelling() -> None:
-    body = _replaced_body("blanc:b5200")
-    codes = [entry["code"] for entry in body["key"]]
-    assert "B5200" in codes
-    assert "Blanc" not in codes
-    assert body["ignored_replacements"] == []
-    assert body["key"] == _key_json(_core_replaced(("Blanc", "B5200")))
-
-
-@pytest.mark.parametrize(
-    "value",
-    ["310", "310:", ":310", "310:3865:321", "XYZ:310", "310:XYZ", "310:fabrik", "fabric:310"],
-)
-def test_a_malformed_replace_gives_the_same_422_naming_it_on_both_routes(value: str) -> None:
-    by_json = _post_replace("/patterns", (value,))
-    by_pdf = _post_replace("/patterns/pdf", (value,))
-    assert by_json.status_code == by_pdf.status_code == 422
-    assert by_json.json() == by_pdf.json()
-    errors = by_json.json()["detail"]
-    assert any("replace" in error["loc"] for error in errors)
-    assert any(value in error["msg"] for error in errors if "replace" in error["loc"])
-
-
-def test_one_bad_replace_among_good_ones_refuses_the_request() -> None:
-    assert _post_replace("/patterns", ("310:3865", "oops")).status_code == 422
-    assert _post_replace("/patterns/pdf", ("310:3865", "oops")).status_code == 422
-
-
-def test_replace_leaves_converted_as_the_raw_conversion_and_counts_isolation_after() -> None:
-    marks = {(1, 1): "321", (5, 7): "321"}
-    image = _field_image((7, 9), marks)
-    converted = _core_converted(image, 2)
-    cleaned = clean_pattern(converted, merge_distance=0.1, min_stitches=0, confetti_size=0)
-    final = replace_threads(cleaned.pattern, [(dmc_thread("797"), dmc_thread("321"))]).pattern
-    # The replacement reconnects the two lone stitches, so the count after differs.
-    assert (cleaned.isolated_before, cleaned.isolated_after) == (2, 2)
-    assert isolated_stitches(final) == 0
-
-    response = _post(_png(image), _replace_fields(image, 2, "797:321", merge_distance="0.1"))
-    assert response.status_code == 200, response.text
-    body = response.json()
-
-    assert body["converted"] == {
-        "grid": _grid_json(converted),
-        "key": _key_json(converted),
-        "total_stitches": converted.total_stitches,
-    }
-    assert body["isolated_stitches"] == {"before": 2, "after": 0}
-    assert body["grid"] == _grid_json(final)
-    assert body["key"] == _key_json(final)
-
-
-def test_replace_with_confetti_cleanup_applies_after_the_cleanup() -> None:
-    cleaned = _cleaned_cleanable()
-    source = cleaned.pattern.key[0].thread.code
-    assert source == "797"
-    final = replace_threads(cleaned.pattern, [(dmc_thread("797"), dmc_thread("3865"))]).pattern
-
-    image = _cleanable()
-    response = _post(_png(image), _replace_fields(image, 5, "797:3865", **CLEANUP_FORM))
-    assert response.status_code == 200, response.text
-    body = response.json()
-
-    assert body["grid"] == _grid_json(final)
-    assert body["key"] == _key_json(final)
-    assert body["isolated_stitches"] == {
-        "before": cleaned.isolated_before,
-        "after": isolated_stitches(final),
-    }
-    assert "3865" not in [entry["code"] for entry in body["converted"]["key"]]
-    assert body["converted"]["grid"] == _grid_json(_core_converted(image, 5))
-
-
-def test_the_pdf_is_what_the_core_renders_of_the_replaced_pattern() -> None:
-    expected = render_pdf(_core_replaced(("310", "3865")))
-    response = _post_replace("/patterns/pdf", ("310:3865",))
-    assert response.status_code == 200, response.text
-    assert response.content == expected
-    assert response.content != _stripes_pdf()
-
-
-def test_the_pdf_without_replace_is_unchanged() -> None:
-    response = _post_replace("/patterns/pdf", ())
-    assert response.status_code == 200, response.text
-    assert response.content == _core_pdf()
-
-
-def test_the_same_replace_request_twice_gives_identical_bodies() -> None:
-    assert _replaced_body("310:321", "321:797") == _replaced_body("310:321", "321:797")
-
-
-def _schema_properties(name: str) -> list[dict[str, Any]]:
-    schemas = app.openapi()["components"]["schemas"]
-    return [
-        schema["properties"][name]
-        for schema in schemas.values()
-        if name in schema.get("properties", {})
-    ]
-
-
-def test_replace_and_ignored_replacements_are_described_in_the_docs() -> None:
-    for name in ("replace", "ignored_replacements"):
-        properties = _schema_properties(name)
-        assert properties, name
-        assert all(prop.get("description") for prop in properties), name
+def test_a_request_without_changes_reports_no_changed_cells() -> None:
+    # The `changes` field itself is tested in test_api_changes.py.
+    assert _stripes_response()["changed_cells"] == []
+    assert _body(_lone_pixel(), 2)["changed_cells"] == []
+    assert _body(cleanable(), 5, **CLEANUP_FORM)["changed_cells"] == []
 
 
 def test_the_pdf_cover_key_lists_the_json_symbols_in_key_order() -> None:
@@ -956,7 +693,7 @@ def _subject_on_white() -> bytes:
     pixels = np.full((30, 30, 3), dmc_thread("Blanc").rgb, dtype=np.uint8)
     for i, code in enumerate(("310", "321", "797")):
         pixels[10:20, 5 + i * 7 : 12 + i * 7] = dmc_thread(code).rgb
-    return _png(Image.fromarray(pixels))
+    return png(Image.fromarray(pixels))
 
 
 def test_background_as_fabric_leaves_the_border_thread_bare_and_keeps_max_colours() -> None:

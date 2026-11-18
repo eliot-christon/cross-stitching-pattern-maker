@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import type { KeyEntry, Pattern } from "./pattern";
-import { PatternViewer, type ViewerShows } from "./PatternViewer";
+import { PatternViewer, type ViewerEditing, type ViewerShows } from "./PatternViewer";
 import { Swatch } from "./swatch";
 
 /** The key's columns after the swatch, as their headers read. */
@@ -16,8 +16,10 @@ export function PatternPreview(props: {
   onShowChange?: (shows: ViewerShows) => void;
   /** The fabric's colour, for bare cells in the viewer. */
   fabric?: string;
+  /** The viewer's edit tools; none, it only views. */
+  editing?: ViewerEditing;
 }) {
-  const { pattern, onReplace, pdfView, onShowChange, fabric } = props;
+  const { pattern, onReplace, pdfView, onShowChange, fabric, editing } = props;
   const { width, height, finished_size: size } = pattern;
 
   return (
@@ -27,6 +29,7 @@ export function PatternPreview(props: {
         pdfView={pdfView}
         onShowChange={onShowChange}
         fabric={fabric}
+        editing={editing}
       />
 
       <dl className="summary">

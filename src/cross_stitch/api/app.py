@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field
 from starlette.formparsers import MultiPartParser
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from cross_stitch.api import changes as _changes
+from cross_stitch.api.grid import MAX_HEIGHT, MAX_WIDTH
 from cross_stitch.export import (
     MAX_OVERLAP,
     MAX_PAGES,
@@ -42,26 +44,28 @@ from cross_stitch.export import (
 )
 from cross_stitch.pattern import (
     EMPTY,
+    Adjustments,
     CleanedPattern,
+    Edited,
     Pattern,
     PixelGrid,
-    Replaced,
+    adjust_image,
     background_as_fabric,
     clean_pattern,
     colours_with_headroom,
     convert_image,
+    edit_pattern,
     fabric_weave,
     find_pixel_grid,
     find_stitch_grid,
     isolated_stitches,
     pixel_art_colours,
-    replace_threads,
     stitch_height,
     symbols_only,
     unscale_pixel_art,
     unstitch,
 )
-from cross_stitch.threads import Thread, dmc_thread, dmc_threads, similar_dmc
+from cross_stitch.threads import dmc_thread, dmc_threads, similar_dmc
 
 __all__ = ["MAX_UPLOAD_BYTES", "app"]
 
@@ -80,8 +84,7 @@ class _Setting[T: (int, float)]:
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 """Largest accepted image upload."""
-MAX_HEIGHT = 1000
-_WIDTH = _Setting(min=1, max=1000, step=1, default=100)
+_WIDTH = _Setting(min=1, max=MAX_WIDTH, step=1, default=100)
 _MAX_COLOURS = _Setting(min=1, max=100, step=1, default=20)
 MAX_COLOURS = _MAX_COLOURS.max
 # A step of 0.1 is about a twentieth of a just-noticeable difference (CIEDE2000 about
@@ -89,11 +92,16 @@ MAX_COLOURS = _MAX_COLOURS.max
 _MERGE_DISTANCE = _Setting(min=0.0, max=10.0, step=0.1, default=0.0)
 _MIN_STITCHES = _Setting(min=0, max=1000, step=1, default=0)
 _CONFETTI_SIZE = _Setting(min=0, max=10, step=1, default=0)
+# The image adjustments, as `Adjustments` reads them: percentages, degrees and a gamma.
+_TONE = _Setting(min=-100, max=100, step=1, default=0)
+_HUE = _Setting(min=-180, max=180, step=1, default=0)
+_GAMMA = _Setting(min=0.25, max=4.0, step=0.05, default=1.0)
 # The chart layout of `POST /patterns/pdf`.
 _PAGES = _Setting(min=1, max=MAX_PAGES, step=1, default=2)
 _OVERLAP = _Setting(min=0, max=MAX_OVERLAP, step=1, default=OVERLAP)
-# Room for the multipart framing and the form fields around the image.
-_MAX_BODY_BYTES = MAX_UPLOAD_BYTES + 64 * 1024
+# Room for the multipart framing and the form fields around the image, `changes` the
+# largest of them.
+_MAX_BODY_BYTES = MAX_UPLOAD_BYTES + _changes.MAX_BYTES + 64 * 1024
 _TOO_LARGE = f"the upload is larger than {MAX_UPLOAD_BYTES} bytes"
 
 # Starlette writes an uploaded file over `spool_max_size` to a temporary file on disk.
@@ -165,8 +173,8 @@ class PatternOut(BaseModel):
     isolated_stitches: IsolatedStitchesOut
     converted: ConvertedOut | None
     """The pattern before cleanup, or `null` when every cleanup setting is 0."""
-    ignored_replacements: list[int] = Field(
-        description="0-based positions of the `replace` pairs that did nothing"
+    changed_cells: list[int] = Field(
+        description="Cells each `changes` entry changed, in order (0: it did nothing)"
     )
 
 
@@ -240,11 +248,27 @@ class SettingOut(BaseModel):
     default: int | float
 
 
+class ChangesLimitsOut(BaseModel):
+    """What the `changes` field of the pattern routes accepts."""
+
+    max_entries: int
+    max_bytes: int
+    """UTF-8 bytes of the whole field."""
+    brush: SettingOut
+    """The brush sizes of a stroke, odd: `step` 2 from `min`."""
+    max_coordinate: int
+    """The largest coordinate of a point, either sign: a page clamps to it."""
+
+
 class LimitsOut(BaseModel):
     max_upload_bytes: int
     settings: dict[str, SettingOut]
-    """Keyed by form field name: the conversion settings both pattern routes take, then
-    the chart layout settings `POST /patterns/pdf` takes."""
+    """Keyed by form field name: the conversion settings both pattern routes take, the
+    image adjustments every route reading an image takes, then the chart layout settings
+    `POST /patterns/pdf` takes."""
+    changes: ChangesLimitsOut = Field(
+        description="What the `changes` field of the pattern routes accepts"
+    )
 
 
 _LIMITS = LimitsOut(
@@ -257,11 +281,28 @@ _LIMITS = LimitsOut(
             "merge_distance": _MERGE_DISTANCE,
             "min_stitches": _MIN_STITCHES,
             "confetti_size": _CONFETTI_SIZE,
+            "brightness": _TONE,
+            "contrast": _TONE,
+            "saturation": _TONE,
+            "hue": _HUE,
+            "gamma": _GAMMA,
+            "sharpness": _TONE,
             "pages_across": _PAGES,
             "pages_down": _PAGES,
             "overlap": _OVERLAP,
         }.items()
     },
+    changes=ChangesLimitsOut(
+        max_entries=_changes.MAX_ENTRIES,
+        max_bytes=_changes.MAX_BYTES,
+        brush=SettingOut(
+            min=_changes.BRUSH_MIN,
+            max=_changes.BRUSH_MAX,
+            step=_changes.BRUSH_STEP,
+            default=_changes.BRUSH_DEFAULT,
+        ),
+        max_coordinate=_changes.MAX_COORDINATE,
+    ),
 )
 
 
@@ -388,10 +429,54 @@ def _crop_error(crop: str, problem: str) -> RequestValidationError:
     )
 
 
-def _read_image(upload: UploadFile, crop: str | None = None) -> Image.Image:
-    """The uploaded image, decoded and cropped to `crop`; 413 over `MAX_UPLOAD_BYTES`,
-    400 if not an image, 422 for a bad box."""
-    return _cropped(_decode(_read_bytes(upload)), crop)
+# Each parameter is a form field FastAPI reads; grouping them would hide them from /docs.
+def _adjustments(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    brightness: Annotated[
+        int,
+        Form(ge=_TONE.min, le=_TONE.max, description="Brightness, % (-100 is black; 0 is off)"),
+    ] = _TONE.default,
+    contrast: Annotated[
+        int,
+        Form(ge=_TONE.min, le=_TONE.max, description="Contrast, % (-100 is flat; 0 is off)"),
+    ] = _TONE.default,
+    saturation: Annotated[
+        int,
+        Form(ge=_TONE.min, le=_TONE.max, description="Saturation, % (-100 is greys; 0 is off)"),
+    ] = _TONE.default,
+    hue: Annotated[
+        int,
+        Form(ge=_HUE.min, le=_HUE.max, description="Hue turn around the colour wheel, degrees"),
+    ] = _HUE.default,
+    gamma: Annotated[
+        float,
+        Form(
+            ge=_GAMMA.min,
+            le=_GAMMA.max,
+            allow_inf_nan=False,
+            description="Gamma (above 1 lightens the mid-tones; 1 is off)",
+        ),
+    ] = _GAMMA.default,
+    sharpness: Annotated[
+        int,
+        Form(ge=_TONE.min, le=_TONE.max, description="Sharpness, % (below 0 softens; 0 is off)"),
+    ] = _TONE.default,
+) -> Adjustments:
+    """The image adjustments, applied right after the crop, so the inspection, every
+    reader and the conversion see the adjusted image."""
+    return Adjustments(
+        brightness=brightness,
+        contrast=contrast,
+        saturation=saturation,
+        hue=hue,
+        gamma=gamma,
+        sharpness=sharpness,
+    )
+
+
+def _read_image(upload: UploadFile, crop: str | None, adjustments: Adjustments) -> Image.Image:
+    """The uploaded image, decoded, cropped to `crop` and adjusted; 413 over
+    `MAX_UPLOAD_BYTES`, 400 if not an image, 422 for a bad box."""
+    return adjust_image(_cropped(_decode(_read_bytes(upload)), crop), adjustments)
 
 
 @dataclass(frozen=True)
@@ -456,8 +541,8 @@ def _key_json(pattern: Pattern) -> list[KeyEntryOut]:
     ]
 
 
-def _to_json(cleaned: CleanedPattern, replaced: Replaced, *, with_converted: bool) -> PatternOut:
-    pattern = replaced.pattern
+def _to_json(cleaned: CleanedPattern, edited: Edited, *, with_converted: bool) -> PatternOut:
+    pattern = edited.pattern
     converted = cleaned.converted
     return PatternOut(
         width=pattern.width,
@@ -482,7 +567,7 @@ def _to_json(cleaned: CleanedPattern, replaced: Replaced, *, with_converted: boo
         )
         if with_converted
         else None,
-        ignored_replacements=list(replaced.ignored),
+        changed_cells=list(edited.changed),
     )
 
 
@@ -516,8 +601,8 @@ class _Converted:
 
     cleaned: CleanedPattern
     cleanup_on: bool
-    replaced: Replaced
-    """The cleaned pattern after the `replace` pairs: the pattern shown and printed."""
+    edited: Edited
+    """The cleaned pattern after the `changes`: the pattern shown and printed."""
 
 
 def _cleanup(
@@ -553,35 +638,6 @@ def _cleanup(
     )
 
 
-FABRIC = "fabric"
-"""The `TO` of a `replace` value that removes a thread, leaving its cells bare fabric. No
-DMC code reads like it, whatever the case."""
-
-
-def _replacement(value: str) -> tuple[Thread, Thread | None]:
-    """One `FROM:TO` value of the `replace` field: a DMC thread and the DMC thread taking
-    its stitches, or `None` for `FABRIC`."""
-    parts = value.split(":")
-    try:
-        if len(parts) != 2 or not all(part.strip() for part in parts):
-            raise KeyError(value)
-        source, target = parts
-        if target.strip().casefold() == FABRIC:
-            return dmc_thread(source), None
-        return dmc_thread(source), dmc_thread(target)
-    except KeyError:
-        raise RequestValidationError(
-            [
-                {
-                    "loc": ("body", "replace"),
-                    "msg": f"{value!r} is not FROM:TO with two DMC codes (TO may be {FABRIC!r})",
-                    "type": "value_error",
-                    "input": value,
-                }
-            ]
-        ) from None
-
-
 # Each parameter is a form field FastAPI reads; grouping them would hide them from /docs.
 def _converted(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     image: Annotated[UploadFile, File(description="The image to convert")],
@@ -596,14 +652,15 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
         ),
     ],
     cleanup: Annotated[_Cleanup, Depends(_cleanup)],
+    adjustments: Annotated[Adjustments, Depends(_adjustments)],
     fabric_count: Annotated[
         float, Form(gt=0, allow_inf_nan=False, description="Stitches per inch")
     ] = 14.0,
-    replace: Annotated[
-        list[str] | None,
+    changes: Annotated[
+        str | None,
         Form(
-            description="Thread swaps FROM:TO (DMC codes; TO 'fabric' removes FROM), "
-            "repeated, applied in order"
+            description="JSON list of thread replacements and hand edits, applied in order "
+            "after cleanup (see GET /limits for its bounds)"
         ),
     ] = None,
     read_as: Annotated[
@@ -629,8 +686,8 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
 
     The settings come back with the pattern rather than through a second `Depends(_cleanup)`
     in a route: a dependency met twice reports each of its validation errors twice."""
-    replacements = [_replacement(value) for value in replace or []]
-    decoded = _source_grid(_read_image(image, crop), read_as)
+    edits = _changes.read_changes(changes)
+    decoded = _source_grid(_read_image(image, crop, adjustments), read_as)
     if read_as != "picture":
         width = decoded.width
         if width > _WIDTH.max:
@@ -657,13 +714,14 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
     return _Converted(
         cleaned=cleaned,
         cleanup_on=cleanup.on,
-        replaced=replace_threads(cleaned.pattern, replacements),
+        edited=edit_pattern(cleaned.pattern, edits),
     )
 
 
 @app.post("/images/inspect")
 def inspect_image(
     image: Annotated[UploadFile, File(description="The image to look at")],
+    adjustments: Annotated[Adjustments, Depends(_adjustments)],
     crop: CropField = None,
 ) -> InspectOut:
     """What the upload is and how it reads best: its `kind` (sent back as `read_as`), the
@@ -675,7 +733,7 @@ def inspect_image(
         return InspectOut(
             kind=None, description="PDF document", grid=None, warnings=[], refusal=PDF_REFUSAL
         )
-    decoded = _cropped(_decode(data), crop)
+    decoded = adjust_image(_cropped(_decode(data), crop), adjustments)
     found = _found_grid(decoded)
     if found is None:
         return _picture(WEAVE_REFUSAL if fabric_weave(decoded) else None)
@@ -771,7 +829,7 @@ def create_pattern(
 ) -> PatternOut:
     """Convert an image into a DMC cross-stitch pattern, with the pattern before cleanup
     when any cleanup setting is on."""
-    return _to_json(converted.cleaned, converted.replaced, with_converted=converted.cleanup_on)
+    return _to_json(converted.cleaned, converted.edited, with_converted=converted.cleanup_on)
 
 
 # Each parameter is a form field FastAPI reads; grouping them would hide them from /docs.
@@ -869,7 +927,7 @@ def create_pattern_pdf(
     """
     try:
         pdf = render_pdf(
-            converted.replaced.pattern,
+            converted.edited.pattern,
             variant=variant,
             centre_lines=centre_lines,
             fabric_rgb=_hex_rgb(fabric_colour),

@@ -1,5 +1,6 @@
 """Image -> cross-stitch pattern: the stitch grid, its DMC key, counts and sizes."""
 
+from cross_stitch.pattern.adjust import Adjustments, adjust_image
 from cross_stitch.pattern.background import background_as_fabric
 from cross_stitch.pattern.cleanup import (
     CLEANUP_HEADROOM,
@@ -12,6 +13,15 @@ from cross_stitch.pattern.cleanup import (
 )
 from cross_stitch.pattern.confetti import isolated_stitches, remove_confetti
 from cross_stitch.pattern.convert import OPAQUE_THRESHOLD, convert_image, stitch_height
+from cross_stitch.pattern.edit import (
+    Change,
+    Edited,
+    Fill,
+    Rect,
+    Replace,
+    Stroke,
+    edit_pattern,
+)
 from cross_stitch.pattern.model import (
     EMPTY,
     KeyEntry,
@@ -26,7 +36,6 @@ from cross_stitch.pattern.pixelart import (
     pixel_art_colours,
     unscale_pixel_art,
 )
-from cross_stitch.pattern.replace import Replaced, replace_threads
 from cross_stitch.pattern.stitched import (
     fabric_weave,
     find_stitch_grid,
@@ -38,16 +47,24 @@ __all__ = [
     "CLEANUP_HEADROOM",
     "EMPTY",
     "OPAQUE_THRESHOLD",
+    "Adjustments",
+    "Change",
     "CleanedPattern",
+    "Edited",
+    "Fill",
     "KeyEntry",
     "Pattern",
     "PixelGrid",
-    "Replaced",
+    "Rect",
+    "Replace",
+    "Stroke",
+    "adjust_image",
     "background_as_fabric",
     "build_pattern",
     "clean_pattern",
     "colours_with_headroom",
     "convert_image",
+    "edit_pattern",
     "fabric_weave",
     "find_pixel_grid",
     "find_stitch_grid",
@@ -57,7 +74,6 @@ __all__ = [
     "pixel_art_colours",
     "prune_rare_threads",
     "remove_confetti",
-    "replace_threads",
     "skeins_needed",
     "stitch_height",
     "stitches_per_skein",

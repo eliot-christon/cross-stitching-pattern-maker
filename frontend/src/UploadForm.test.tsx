@@ -26,7 +26,7 @@ const PATTERN: Pattern = {
   finished_size: { width_in: 0.14, height_in: 0.07, width_cm: 0.36, height_cm: 0.18 },
   isolated_stitches: { before: 2, after: 0 },
   converted: null,
-  ignored_replacements: [],
+  changed_cells: [],
 };
 
 /** A second conversion, told apart from PATTERN on screen by its thread codes. */
@@ -50,7 +50,7 @@ const PATTERN_B: Pattern = {
   finished_size: { width_in: 0.21, height_in: 0.07, width_cm: 0.54, height_cm: 0.18 },
   isolated_stitches: { before: 1, after: 0 },
   converted: null,
-  ignored_replacements: [],
+  changed_cells: [],
 };
 
 /** A thread only PATTERN's key holds, and one only PATTERN_B's holds. */
@@ -66,10 +66,17 @@ const LIMITS: Limits = {
     merge_distance: { min: 0, max: 10, step: 0.5, default: 0 },
     min_stitches: { min: 0, max: 1000, step: 1, default: 0 },
     confetti_size: { min: 0, max: 10, step: 1, default: 0 },
+    brightness: { min: -100, max: 100, step: 1, default: 0 },
+    contrast: { min: -100, max: 100, step: 1, default: 0 },
+    saturation: { min: -100, max: 100, step: 1, default: 0 },
+    hue: { min: -180, max: 180, step: 1, default: 0 },
+    gamma: { min: 0.25, max: 4, step: 0.05, default: 1 },
+    sharpness: { min: -100, max: 100, step: 1, default: 0 },
     pages_across: { min: 1, max: 20, step: 1, default: 2 },
     pages_down: { min: 1, max: 20, step: 1, default: 2 },
     overlap: { min: 0, max: 5, step: 1, default: 2 },
   },
+  changes: { max_entries: 1000, max_bytes: 524288, brush: { min: 1, max: 9, step: 2, default: 1 }, max_coordinate: 2000 },
 };
 
 /** A `/chart/layout` answer: the cells split in one page, every pages split allowed up
@@ -171,7 +178,7 @@ function sentImages(fetchMock: ReturnType<typeof stubApi>): string[] {
 /** Render the form and wait until the limits are in and it is shown. */
 async function renderForm(): Promise<RenderResult> {
   const view = render(<UploadForm />);
-  await screen.findByLabelText("Image");
+  await screen.findByLabelText("Image", { selector: "input" });
   return view;
 }
 
@@ -225,20 +232,40 @@ function controlled() {
   return { handler, answer };
 }
 
+/**
+ * `element`, with the settings tab that holds it selected first when its panel is hidden:
+ * the way a person reaches a control in another tab.
+ */
+function reveal<T extends HTMLElement>(element: T): T {
+  const panel = element.closest('[role="tabpanel"]');
+  if (panel !== null && panel.hasAttribute("hidden")) {
+    const tab = document.getElementById(panel.getAttribute("aria-labelledby") ?? "");
+    if (tab !== null) {
+      fireEvent.click(tab);
+    }
+  }
+  return element;
+}
+
+/** Select the settings tab named `name`. */
+function showTab(name: "Image" | "Pattern" | "Chart") {
+  fireEvent.click(screen.getByRole("tab", { name }));
+}
+
 function numberField(name: string): HTMLElement {
-  return screen.getByRole("spinbutton", { name });
+  return reveal(screen.getByRole("spinbutton", { name, hidden: true }));
 }
 
 function slider(name: string): HTMLElement {
-  return screen.getByRole("slider", { name });
+  return reveal(screen.getByRole("slider", { name, hidden: true }));
 }
 
 function fabricCount(): HTMLElement {
-  return screen.getByLabelText("Fabric count");
+  return reveal(screen.getByLabelText("Fabric count"));
 }
 
 function imageInput(): HTMLElement {
-  return screen.getByLabelText("Image");
+  return screen.getByLabelText("Image", { selector: "input" });
 }
 
 function chooseFile(name = "photo.png", bytes = "png bytes"): File {
@@ -249,7 +276,9 @@ function chooseFile(name = "photo.png", bytes = "png bytes"): File {
 
 /** The radio named `name` in the group named `group`. */
 function option(group: string, name: string): HTMLElement {
-  return within(screen.getByRole("group", { name: group })).getByRole("radio", { name });
+  return reveal(
+    within(screen.getByRole("group", { name: group, hidden: true })).getByRole("radio", { name, hidden: true }),
+  );
 }
 
 /** Choose the option named `name` in the group named `group`. */
@@ -267,7 +296,7 @@ function keyShows(code: string): boolean {
 }
 
 function downloadButton(): HTMLElement {
-  return screen.getByRole("button", { name: /pdf/i });
+  return reveal(screen.getByRole("button", { name: /pdf/i, hidden: true }));
 }
 
 function convertButton(): HTMLElement | null {
@@ -289,7 +318,7 @@ describe("UploadForm limits", () => {
 
     expect(screen.getByRole("status")).toHaveTextContent(/loading the settings/i);
     expect(convertButton()).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Image")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Image", { selector: "input" })).not.toBeInTheDocument();
   });
 
   it("says so, with no form, when the limits cannot be fetched", async () => {
@@ -297,7 +326,7 @@ describe("UploadForm limits", () => {
     render(<UploadForm />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/cannot reach the server/i);
-    expect(screen.queryByLabelText("Image")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Image", { selector: "input" })).not.toBeInTheDocument();
   });
 
   it("asks for the limits once, at the limits URL", async () => {
@@ -600,7 +629,7 @@ describe("UploadForm live conversion", () => {
     fireEvent.change(imageInput(), { target: { files: [] } });
 
     expect(keyShows(A_CODE)).toBe(false);
-    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pdf/i, hidden: true })).not.toBeInTheDocument();
     await wait(10 * QUIET_MS);
     expect(posted(fetchMock, "/api/patterns")).toHaveLength(1);
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
@@ -885,7 +914,7 @@ describe("UploadForm errors and image changes", () => {
     chooseFile("other.png");
 
     expect(keyShows(A_CODE)).toBe(false);
-    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pdf/i, hidden: true })).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent(BUSY);
 
     await wait(QUIET_MS);
@@ -923,7 +952,7 @@ describe("UploadForm errors and image changes", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(NOT_AN_IMAGE);
     expect(keyShows(A_CODE)).toBe(false);
     expect(screen.queryByRole("table", { name: "Thread key" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pdf/i, hidden: true })).not.toBeInTheDocument();
   });
 
   it("discards a preview of the image no longer chosen, then sends the new image's request", async () => {
@@ -1000,7 +1029,7 @@ describe("UploadForm PDF download", () => {
     stubApi();
     await renderForm();
 
-    expect(screen.queryByRole("button", { name: /pdf/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pdf/i, hidden: true })).not.toBeInTheDocument();
   });
 
   it("offers the download with colour, A4 and portrait chosen after a conversion", async () => {
@@ -1186,7 +1215,7 @@ describe("UploadForm PDF download", () => {
   });
 });
 
-describe("thread replacements", () => {
+describe("the changes list", () => {
   const TABLE = [
     { code: "310", name: "Black", rgb: [0, 0, 0] },
     { code: "321", name: "Red", rgb: [199, 43, 59] },
@@ -1214,9 +1243,18 @@ describe("thread replacements", () => {
     return fetchMock;
   }
 
-  /** The `replace` fields of each conversion posted, in order. */
+  /** The replacements in the `changes` field of each conversion posted, as FROM:TO. */
   function sentReplacements(fetchMock: ReturnType<typeof stubApi>): string[][] {
-    return posted(fetchMock, "/api/patterns").map((body) => body.getAll("replace") as string[]);
+    return posted(fetchMock, "/api/patterns").map((body) => replacementsIn(body));
+  }
+
+  function replacementsIn(body: FormData | undefined): string[] {
+    const field = body?.get("changes");
+    if (typeof field !== "string") {
+      return [];
+    }
+    const entries = JSON.parse(field) as { op: string; from: string; to: string | null }[];
+    return entries.map((entry) => `${entry.from}:${entry.to ?? "fabric"}`);
   }
 
   /** Open the picker on the key entry `code` and choose the thread named `name`. */
@@ -1236,8 +1274,13 @@ describe("thread replacements", () => {
   }
 
   function replacementItems(): HTMLElement[] {
-    const section = screen.queryByRole("region", { name: "Replacements" });
-    return section === null ? [] : within(section).getAllByRole("listitem");
+    const list = screen.queryByRole("list", { name: "Edits and replacements" });
+    return list === null ? [] : within(list).getAllByRole("listitem");
+  }
+
+  /** Click the Remove button of the entry at `index` (0-based) in the Changes panel. */
+  function removeEntry(index: number) {
+    fireEvent.click(within(replacementItems()[index] as HTMLElement).getByRole("button", { name: /Remove/ }));
   }
 
   it("sends a picked replacement after the quiet delay and lists it", async () => {
@@ -1265,14 +1308,14 @@ describe("thread replacements", () => {
     await wait(QUIET_MS);
     await settle();
 
-    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+    removeEntry(0);
     await replace("310", "Winter White");
     await wait(10 * QUIET_MS);
 
     expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"]]);
   });
 
-  it("sends a removal as FROM:fabric and lists it as fabric, with its undo", async () => {
+  it("sends a removal with a null TO and lists it as fabric, with its remove", async () => {
     const fetchMock = stubWithThreads();
     await renderLive();
     await preview();
@@ -1287,13 +1330,13 @@ describe("thread replacements", () => {
     expect(replacementItems()).toHaveLength(1);
     expect(replacementItems()[0]).toHaveTextContent(/310.*Black.*Fabric/);
 
-    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to fabric" }));
+    removeEntry(0);
     await wait(QUIET_MS);
     await settle();
     expect(sentReplacements(fetchMock)).toEqual([[], ["310:fabric"], []]);
   });
 
-  it("sends no replace field once the only pair is undone, and hides the list", async () => {
+  it("sends no changes field once the only pair is removed, and empties the list", async () => {
     const fetchMock = stubWithThreads();
     await renderLive();
     await preview();
@@ -1301,15 +1344,16 @@ describe("thread replacements", () => {
     await wait(QUIET_MS);
     await settle();
 
-    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+    removeEntry(0);
     await wait(QUIET_MS);
     await settle();
 
     expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"], []]);
-    expect(screen.queryByRole("region", { name: "Replacements" })).not.toBeInTheDocument();
+    expect(posted(fetchMock, "/api/patterns").at(-1)?.has("changes")).toBe(false);
+    expect(replacementItems()).toHaveLength(0);
   });
 
-  it("sends one request with no replace field after a reset of two pairs", async () => {
+  it("sends one request with no changes field after a reset of two pairs", async () => {
     const fetchMock = stubWithThreads();
     await renderLive();
     await preview();
@@ -1319,16 +1363,16 @@ describe("thread replacements", () => {
     await settle();
     expect(sentReplacements(fetchMock).at(-1)).toEqual(["310:3865", "321:3371"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Reset replacements" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset all" }));
     await wait(QUIET_MS);
     await settle();
 
     expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865", "321:3371"], []]);
   });
 
-  it("marks the pair the response ignored, and keeps the mark on it after an undo", async () => {
+  it("marks the pair the response counts 0, and keeps the mark on it after a remove", async () => {
     stubWithThreads({
-      patterns: () => Promise.resolve(json(200, { ...PATTERN, ignored_replacements: [1] })),
+      patterns: () => Promise.resolve(json(200, { ...PATTERN, changed_cells: [1, 0] })),
     });
     await renderLive();
     await preview();
@@ -1338,10 +1382,11 @@ describe("thread replacements", () => {
     await settle();
 
     const [first, second] = replacementItems();
+    expect(first).toHaveTextContent("1 cells");
     expect(first).not.toHaveTextContent(/not in the pattern/);
     expect(second).toHaveTextContent(/321.*not in the pattern/);
 
-    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+    removeEntry(0);
 
     expect(replacementItems()).toHaveLength(1);
     expect(replacementItems()[0]).toHaveTextContent(/321.*not in the pattern/);
@@ -1361,7 +1406,7 @@ describe("thread replacements", () => {
 
     const last = posted(fetchMock, "/api/patterns").at(-1);
     expect(last?.get("width")).toBe("55");
-    expect(last?.getAll("replace")).toEqual(["310:3865"]);
+    expect(replacementsIn(last)).toEqual(["310:3865"]);
   });
 
   it("asks for the PDF with the pairs that produced the preview", async () => {
@@ -1393,7 +1438,7 @@ describe("thread replacements", () => {
 
     const pdfs = posted(fetchMock, "/api/patterns/pdf");
     expect(pdfs).toHaveLength(1);
-    expect(pdfs[0]?.getAll("replace")).toEqual(["310:3865"]);
+    expect(replacementsIn(pdfs[0])).toEqual(["310:3865"]);
   });
 
   it("keeps the pairs when another image is chosen and sends them with it", async () => {
@@ -1411,8 +1456,200 @@ describe("thread replacements", () => {
     const last = posted(fetchMock, "/api/patterns").at(-1);
     const image = last?.get("image");
     expect(image instanceof File ? image.name : null).toBe(other.name);
-    expect(last?.getAll("replace")).toEqual(["310:3865"]);
+    expect(replacementsIn(last)).toEqual(["310:3865"]);
     expect(replacementItems()).toHaveLength(1);
+  });
+
+  it("undoes a pick with Ctrl+Z and redoes it with Ctrl+Shift+Z", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
+    await wait(QUIET_MS);
+    await settle();
+    expect(replacementItems()).toHaveLength(0);
+    expect(posted(fetchMock, "/api/patterns").at(-1)?.has("changes")).toBe(false);
+
+    fireEvent.keyDown(document.body, { key: "Z", ctrlKey: true, shiftKey: true });
+    await wait(QUIET_MS);
+    await settle();
+    expect(replacementItems()).toHaveLength(1);
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"], [], ["310:3865"]]);
+  });
+
+  it("leaves the list alone on Ctrl+Z typed in the width field", async () => {
+    stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+
+    fireEvent.keyDown(numberField(WIDTH), { key: "z", ctrlKey: true });
+
+    expect(replacementItems()).toHaveLength(1);
+  });
+
+  it("resets the merge distance from its chip to the reported default, and converts", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    setValue(numberField(MERGE), "2.5");
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset merge distance" }));
+    expect(numberField(MERGE)).toHaveValue(LIMITS.settings.merge_distance.default);
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "merge_distance")).toEqual(["0", "2.5", "0"]);
+  });
+
+  it("refuses a pick past the most entries the API takes, with a message", async () => {
+    stubWithThreads();
+    const most = { ...LIMITS, changes: { ...LIMITS.changes, max_entries: 1 } };
+    const inner = vi.mocked(fetch);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) =>
+        url === "/api/limits" ? Promise.resolve(json(200, most)) : inner(url, init),
+      ),
+    );
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+
+    await replace("321", "Black Brown");
+
+    expect(replacementItems()).toHaveLength(1);
+    expect(screen.getByRole("region", { name: "Changes" })).toHaveTextContent(/At most 1 changes/);
+  });
+
+  // Hand edits: the viewer measures 160 x 160 here, so PATTERN (2 x 1) shows at 80 px per
+  // cell from y = 40; cell (column, 0) is under (column * 80 + 40, 80).
+  function stubViewerSize() {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(160);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(160);
+  }
+
+  /** Pencil from cell (0, 0) to cell (1, 0) of PATTERN. */
+  function strokeAcross() {
+    fireEvent.click(screen.getByRole("radio", { name: "Pencil" }));
+    const box = screen.getByRole("group", { name: /^Pattern viewer/ });
+    fireEvent.pointerDown(box, { clientX: 40, clientY: 80, pointerId: 1 });
+    fireEvent.pointerMove(box, { clientX: 120, clientY: 80, pointerId: 1 });
+    fireEvent.pointerUp(box, { clientX: 120, clientY: 80, pointerId: 1 });
+  }
+
+  const STROKE = { op: "stroke", thread: "321", brush: 1, grid: [2, 1], points: [[0, 0], [1, 0]] };
+
+  function sentChanges(body: FormData | undefined): unknown[] {
+    const field = body?.get("changes");
+    return typeof field === "string" ? (JSON.parse(field) as unknown[]) : [];
+  }
+
+  function changeItems(): HTMLElement[] {
+    return replacementItems();
+  }
+
+  it("lists a stroke as a Pencil entry, sends it last after the quiet delay, and shows its count", async () => {
+    stubViewerSize();
+    let calls = 0;
+    const fetchMock = stubWithThreads({
+      patterns: () => {
+        calls += 1;
+        return Promise.resolve(json(200, calls === 1 ? PATTERN : { ...PATTERN, changed_cells: [1] }));
+      },
+    });
+    await renderLive();
+    await preview();
+
+    strokeAcross();
+    expect(changeItems()).toHaveLength(1);
+    expect(changeItems()[0]).toHaveTextContent(/Pencil.*321.*1 × 1/);
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sentChanges(posted(fetchMock, "/api/patterns").at(-1)).at(-1)).toEqual(STROKE);
+    expect(changeItems()[0]).toHaveTextContent("1 cells");
+  });
+
+  it("drops the hand edits when a response has another size, keeping replacements, with no request", async () => {
+    stubViewerSize();
+    const TALL: Pattern = { ...PATTERN, height: 2, grid: [[0, 1], [1, 0]] };
+    let calls = 0;
+    const fetchMock = stubWithThreads({
+      patterns: () => {
+        calls += 1;
+        return Promise.resolve(json(200, calls < 3 ? PATTERN : TALL));
+      },
+    });
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    strokeAcross();
+    await wait(QUIET_MS);
+    await settle();
+    expect(changeItems()).toHaveLength(2);
+
+    setValue(numberField(WIDTH), "55");
+    await wait(QUIET_MS);
+    await settle();
+    const sentBefore = posted(fetchMock, "/api/patterns").length;
+    await wait(10 * QUIET_MS);
+    await settle();
+
+    expect(changeItems()).toHaveLength(1);
+    expect(changeItems()[0]).toHaveTextContent(/Replace.*310/);
+    expect(screen.getByRole("region", { name: "Changes" })).toHaveTextContent(
+      "1 hand edit dropped: the pattern is now 2 × 2.",
+    );
+    expect(posted(fetchMock, "/api/patterns")).toHaveLength(sentBefore);
+
+    fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
+    expect(changeItems()).toHaveLength(2);
+  });
+
+  it("drops the hand edits when another image is chosen, saying so", async () => {
+    stubViewerSize();
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    strokeAcross();
+    await wait(QUIET_MS);
+    await settle();
+
+    chooseFile("other.png");
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(changeItems()).toHaveLength(0);
+    expect(screen.getByRole("region", { name: "Changes" })).toHaveTextContent(
+      "1 hand edit dropped: another image was chosen.",
+    );
+    expect(sentImages(fetchMock).at(-1)).toBe("other.png");
+    expect(posted(fetchMock, "/api/patterns").at(-1)?.has("changes")).toBe(false);
+  });
+
+  it("asks for the PDF with the stroke once the preview has it", async () => {
+    stubViewerSize();
+    const fetchMock = stubWithThreads({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    await preview();
+    strokeAcross();
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(downloadButton());
+    await settle();
+
+    const pdfs = posted(fetchMock, "/api/patterns/pdf");
+    expect(pdfs).toHaveLength(1);
+    expect(sentChanges(pdfs[0])).toEqual([STROKE]);
   });
 });
 
@@ -1810,7 +2047,7 @@ describe("source kind", () => {
   }
 
   function widthNumber(): HTMLElement {
-    return within(screen.getByRole("group", { name: "Width (stitches)" })).getByRole("spinbutton");
+    return within(reveal(screen.getByRole("group", { name: "Width (stitches)", hidden: true }))).getByRole("spinbutton");
   }
 
   async function choose(found: Record<string, unknown>, name = "sprite.png") {
@@ -1962,6 +2199,21 @@ describe("crop", () => {
     expect(sent(fetchMock, "crop")).toEqual([null, "100,50,500,300", null]);
   });
 
+  it("keeps a drawn box after leaving the Image tab and coming back", async () => {
+    stubApi();
+    await renderLive();
+    chooseFile();
+    await settle();
+    await quiet();
+    await drawCrop([40, 20], [200, 120]);
+
+    showTab("Chart");
+    showTab("Image");
+
+    expect(screen.getByRole("button", { name: "Reset crop" })).toBeVisible();
+    expect(screen.getByText("Crop 400 × 250 px")).toBeVisible();
+  });
+
   it("drops the box when another image is chosen", async () => {
     const fetchMock = stubApi();
     await renderLive();
@@ -1998,6 +2250,161 @@ describe("crop", () => {
     expect(posted(fetchMock, "/api/patterns/pdf").map((body) => body.get("crop"))).toEqual([
       "100,50,500,300",
     ]);
+  });
+});
+
+describe("settings tabs and adjustments", () => {
+  async function quiet() {
+    await wait(QUIET_MS);
+    await settle();
+  }
+
+  function tab(name: string): HTMLElement {
+    return screen.getByRole("tab", { name });
+  }
+
+  function panel(name: string): HTMLElement {
+    return screen.getByRole("tabpanel", { name });
+  }
+
+  /** The value of `field` in each inspection posted, in order. */
+  function inspectedWith(fetchMock: ReturnType<typeof stubApi>, field: string): unknown[] {
+    return posted(fetchMock, "/api/images/inspect").map((body) => body.get(field));
+  }
+
+  it("opens on the Image tab with the drop zone; width in Pattern, Download PDF in Chart", async () => {
+    stubApi();
+    await renderLive();
+
+    expect(tab("Image")).toHaveAttribute("aria-selected", "true");
+    expect(within(panel("Image")).getByLabelText("Image", { selector: "input" })).toBeInTheDocument();
+    showTab("Pattern");
+    expect(within(panel("Pattern")).getByRole("slider", { name: WIDTH })).toBeVisible();
+    showTab("Chart");
+    expect(panel("Chart")).toHaveTextContent("The chart choices come with the pattern.");
+
+    chooseFile();
+    await quiet();
+    expect(within(panel("Chart")).getByRole("button", { name: /download pdf/i })).toBeVisible();
+  });
+
+  it("keeps a typed width across tab switches", async () => {
+    stubApi();
+    await renderLive();
+    showTab("Pattern");
+    setValue(numberField(WIDTH), "120");
+
+    showTab("Image");
+    showTab("Pattern");
+
+    expect(numberField(WIDTH)).toHaveValue(120);
+  });
+
+  it("stays on the Chart tab through a new response and another image", async () => {
+    stubApi();
+    await renderLive();
+    chooseFile();
+    await quiet();
+    showTab("Chart");
+
+    chooseFile("other.png");
+    await quiet();
+    await quiet();
+
+    expect(keyShows(A_CODE)).toBe(true);
+    expect(tab("Chart")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("shows the conversion status and the API's error while the Chart tab is shown", async () => {
+    stubApi({ patterns: () => Promise.resolve(json(400, { detail: "the image is too dark" })) });
+    await renderLive();
+    showTab("Chart");
+
+    chooseFile();
+    expect(screen.getByRole("status")).toHaveTextContent(BUSY);
+    await quiet();
+
+    expect(screen.getByRole("alert")).toHaveTextContent("the image is too dark");
+    expect(tab("Chart")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("takes the six adjustment sliders' range, step and starting value from the limits", async () => {
+    stubApi();
+    await renderLive();
+
+    const sliders = {
+      Brightness: LIMITS.settings.brightness,
+      Contrast: LIMITS.settings.contrast,
+      Saturation: LIMITS.settings.saturation,
+      Hue: LIMITS.settings.hue,
+      Gamma: LIMITS.settings.gamma,
+      Sharpness: LIMITS.settings.sharpness,
+    };
+    for (const [name, limits] of Object.entries(sliders)) {
+      const range = within(panel("Image")).getByRole("slider", { name });
+      expect(range).toHaveAttribute("min", String(limits.min));
+      expect(range).toHaveAttribute("max", String(limits.max));
+      expect(range).toHaveAttribute("step", String(limits.step));
+      expect(range).toHaveValue(String(limits.default));
+    }
+  });
+
+  it("re-inspects with a brightness change after the quiet delay, then converts with it", async () => {
+    const fetchMock = stubApi({ pdf: () => Promise.resolve(pdfResponse()) });
+    stubSave();
+    await renderLive();
+    chooseFile();
+    await quiet();
+    expect(inspectedWith(fetchMock, "brightness")).toEqual(["0"]);
+
+    setValue(numberField("Brightness"), "20");
+    await wait(QUIET_MS - 1);
+    expect(inspectedWith(fetchMock, "brightness")).toEqual(["0"]);
+    await wait(1);
+    await settle();
+    expect(inspectedWith(fetchMock, "brightness")).toEqual(["0", "20"]);
+    expect(sent(fetchMock, "brightness")).toEqual(["0"]);
+    await quiet();
+    expect(sent(fetchMock, "brightness")).toEqual(["0", "20"]);
+
+    fireEvent.click(downloadButton());
+    await settle();
+    expect(posted(fetchMock, "/api/patterns/pdf").map((body) => body.get("brightness"))).toEqual(["20"]);
+  });
+
+  it("chips a brightness off its default; the chip's reset puts it back and re-inspects", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+    chooseFile();
+    await quiet();
+    setValue(numberField("Brightness"), "-30");
+    await quiet();
+    await quiet();
+
+    expect(within(screen.getByRole("region", { name: "Changes" })).getByText("Brightness -30")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Reset brightness" }));
+    expect(numberField("Brightness")).toHaveValue(LIMITS.settings.brightness.default);
+    await quiet();
+
+    expect(inspectedWith(fetchMock, "brightness")).toEqual(["0", "-30", "0"]);
+  });
+
+  it("keeps the adjustments for another image and inspects it with them", async () => {
+    const fetchMock = stubApi();
+    await renderLive();
+    chooseFile();
+    await quiet();
+    setValue(numberField("Saturation"), "-100");
+    await quiet();
+    await quiet();
+
+    chooseFile("other.png");
+    await quiet();
+
+    expect(numberField("Saturation")).toHaveValue(-100);
+    expect(inspectedWith(fetchMock, "saturation").at(-1)).toBe("-100");
+    expect(sent(fetchMock, "saturation").at(-1)).toBe("-100");
+    expect(sentImages(fetchMock).at(-1)).toBe("other.png");
   });
 });
 
@@ -2060,7 +2467,7 @@ describe("fabric colour", () => {
     await wait(QUIET_MS);
     await settle();
 
-    const fabric = screen.getByRole("group", { name: "Fabric colour" });
+    const fabric = reveal(screen.getByRole("group", { name: "Fabric colour", hidden: true }));
     expect(within(fabric).getByRole("radio", { name: "White" })).toBeChecked();
     fireEvent.click(within(fabric).getByRole("radio", { name: "Black" }));
     fireEvent.click(downloadButton());

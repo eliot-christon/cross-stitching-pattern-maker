@@ -74,11 +74,23 @@ CSS mask, so it follows the theme.
 
 ## Layout
 
-- **Desktop (800 px and wider):** the header across the top; below it, the settings panel
-  (fixed width, about 340 px, scrolls with the page) on the left and the viewer area
-  taking the rest on the right. The PDF choices sit at the bottom of the settings panel,
-  once a pattern exists.
-- **Below 800 px:** one column, stacked: header, settings panel, viewer area. No drawer.
+- One DOM order, settings panel, Changes panel, viewer area, placed by grid areas:
+  - **1200 px and wider:** three columns: the settings panel (340 px) on the left, the
+    viewer area in the middle, the Changes panel (300 px) on the right, sticky below the
+    top of the window and scrolling inside itself when it is long.
+  - **800 to 1199 px:** two columns: the settings panel with the Changes panel under it on
+    the left, the viewer area on the right.
+  - **Below 800 px:** one column, stacked: header, settings panel, Changes panel, viewer
+    area. No drawer.
+- The settings panel is three tabs, Image first: Image (the drop zone, what was detected,
+  the crop box, background as fabric, the adjustments), Pattern (size and threads,
+  fabric, cleanup) and Chart (the PDF choices and Download PDF, once a pattern exists).
+  The tab shown is kept at every width and through new patterns and images.
+- The Changes panel is a disclosure (open by default) headed "Changes" with a count pill:
+  setting chips first (a pill on `--sunk` with a round reset button), then the ordered
+  list of replacements and edits as bordered rows (tool in bold, thread swatches, size
+  and cell count in `--muted`, a Remove button), an entry that did nothing dashed and
+  muted, then Undo, Redo and Reset all.
 - The page never scrolls horizontally, down to 360 px wide: wide content (the viewer, the
   key) scrolls inside its own box.
 - Page gutter: `--space-4` on phones, `--space-6` on desktop; maximum content width 1600 px.
@@ -102,8 +114,18 @@ Each kind of value has its own control, all in `src/controls.tsx`, labels above:
 - a colour among presets (fabric colour): round swatches, a rainbow one for any colour
 - on or off (pixel art, centre lines): a sliding switch in the accent
 - the image: a dashed drop zone showing the chosen image and its name
-- In the panel, settings are grouped under small muted headings (Size and threads,
-  Cleanup).
+- a thread to change (the paint thread): a pill chip with the thread's round swatch and
+  code, opening the thread picker
+- the edit tools, in the viewer's toolbar on their own row: a segmented choice (Pan,
+  Pencil, Eraser, Fill, Rectangle; Pan first), the Brush stepper for Pencil and Eraser,
+  and the paint thread as a thread chip;
+  the viewer's cursor is a crosshair while a drawing tool is chosen. No editor-style
+  toolbar: these are the page's own controls
+- groups shown one at a time (the settings panel's Image, Pattern and Chart): tabs, a
+  full-width row of labels in `--muted`, the selected one in `--text` over a 3 px
+  `--accent` underline, on a 1 px `--border` rule; arrow keys, Home and End move along them
+- In each tab, settings are grouped under small muted headings (Adjustments, Size and
+  threads, Cleanup).
 - The primary button (Download PDF) is filled with the accent; other buttons are outlined.
 - Status messages are a small muted line; errors use `--danger` text on a `--danger-soft`
   card. One status at a time.
