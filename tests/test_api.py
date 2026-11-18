@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from api_helpers import ADJUSTMENT_LIMITS, STRIPE_CODES, png, stripes
 from fastapi.testclient import TestClient
 from PIL import Image
 from pypdf import PdfReader
@@ -26,21 +27,6 @@ from cross_stitch.threads import dmc_thread
 
 client = TestClient(app)
 
-STRIPE_CODES = ["310", "Blanc", "321", "797"]
-
-
-def _png(image: Image.Image) -> bytes:
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
-def _stripes() -> Image.Image:
-    pixels = np.zeros((20, 40, 3), dtype=np.uint8)
-    for i, code in enumerate(STRIPE_CODES):
-        pixels[:, i * 10 : (i + 1) * 10] = dmc_thread(code).rgb
-    return Image.fromarray(pixels)
-
 
 def _half_transparent() -> Image.Image:
     pixels = np.zeros((10, 20, 4), dtype=np.uint8)
@@ -54,7 +40,7 @@ def _post(upload: bytes | None, fields: dict[str, str], filename: str = "image.p
 
 
 def _stripes_response(**extra: str) -> dict[str, Any]:
-    response = _post(_png(_stripes()), {"width": "40", "max_colours": "4", **extra})
+    response = _post(png(stripes()), {"width": "40", "max_colours": "4", **extra})
     assert response.status_code == 200, response.text
     body: dict[str, Any] = response.json()
     return body
@@ -73,7 +59,7 @@ def test_golden_stripes_give_four_threads_of_200_stitches() -> None:
 
 def test_stripes_key_entries_carry_the_symbols_the_core_assigns() -> None:
     body = _stripes_response()
-    pattern = convert_image(_stripes(), width=40, max_colours=4)
+    pattern = convert_image(stripes(), width=40, max_colours=4)
     symbols = [entry["symbol"] for entry in body["key"]]
     assert symbols == pattern_symbols(pattern)
     assert len(set(symbols)) == 4
@@ -86,7 +72,7 @@ def test_the_symbol_list_covers_the_maximum_number_of_colours() -> None:
 
 def test_body_is_exactly_what_the_core_returns() -> None:
     body = _stripes_response(fabric_count="18")
-    pattern = convert_image(_stripes(), width=40, max_colours=4, fabric_count=18)
+    pattern = convert_image(stripes(), width=40, max_colours=4, fabric_count=18)
     symbols = pattern_symbols(pattern)
     assert body["key"] == [
         {
@@ -131,7 +117,7 @@ def test_key_counts_sum_to_the_total_and_the_grid_cells() -> None:
 
 
 def test_transparent_cells_are_null_and_not_counted() -> None:
-    response = _post(_png(_half_transparent()), {"width": "20", "max_colours": "2"})
+    response = _post(png(_half_transparent()), {"width": "20", "max_colours": "2"})
     assert response.status_code == 200, response.text
     body = response.json()
     assert all(cell is None for row in body["grid"] for cell in row[:10])
@@ -157,23 +143,23 @@ def test_transparent_cells_are_null_and_not_counted() -> None:
     ],
 )
 def test_invalid_settings_give_422_naming_the_field(fields: dict[str, str], field: str) -> None:
-    response = _post(_png(_stripes()), fields)
+    response = _post(png(stripes()), fields)
     assert response.status_code == 422
     assert field in response.text
 
 
 def test_limits_themselves_are_accepted() -> None:
-    image = _png(Image.new("RGB", (4, 2), dmc_thread("321").rgb))
+    image = png(Image.new("RGB", (4, 2), dmc_thread("321").rgb))
     for fields in ({"width": "1", "max_colours": "1"}, {"width": "1000", "max_colours": "100"}):
         assert _post(image, fields).status_code == 200
 
 
 def test_an_image_too_tall_for_the_width_gives_422() -> None:
-    tall = _png(Image.new("RGB", (1, 1001), (0, 0, 0)))
+    tall = png(Image.new("RGB", (1, 1001), (0, 0, 0)))
     response = _post(tall, {"width": "1", "max_colours": "1"})
     assert response.status_code == 422
     assert "height" in response.text
-    assert _post(_png(Image.new("RGB", (1, 1000))), {"width": "1", "max_colours": "1"}).is_success
+    assert _post(png(Image.new("RGB", (1, 1000))), {"width": "1", "max_colours": "1"}).is_success
 
 
 def test_no_image_field_gives_422() -> None:
@@ -236,19 +222,19 @@ def _post_pdf(upload: bytes | None, fields: dict[str, str], filename: str = "ima
 
 
 def _stripes_pdf(**extra: str) -> bytes:
-    response = _post_pdf(_png(_stripes()), {"width": "40", "max_colours": "4", **extra})
+    response = _post_pdf(png(stripes()), {"width": "40", "max_colours": "4", **extra})
     assert response.status_code == 200, response.text
     body: bytes = response.content
     return body
 
 
 def _core_pdf(**options: Any) -> bytes:
-    pattern = convert_image(_stripes(), width=40, max_colours=4, fabric_count=14)
+    pattern = convert_image(stripes(), width=40, max_colours=4, fabric_count=14)
     return render_pdf(pattern, **options)
 
 
 def test_the_pdf_is_an_attachment_of_type_pdf() -> None:
-    response = _post_pdf(_png(_stripes()), {"width": "40", "max_colours": "4"})
+    response = _post_pdf(png(stripes()), {"width": "40", "max_colours": "4"})
     assert response.status_code == 200, response.text
     assert response.headers["content-type"] == "application/pdf"
     disposition = response.headers["content-disposition"]
@@ -271,7 +257,7 @@ def test_the_pdf_follows_the_variant_paper_and_orientation_asked_for() -> None:
 
 
 def test_the_pdf_uses_the_fabric_count_given() -> None:
-    pattern = convert_image(_stripes(), width=40, max_colours=4, fabric_count=18)
+    pattern = convert_image(stripes(), width=40, max_colours=4, fabric_count=18)
     assert _stripes_pdf(fabric_count="18") == render_pdf(pattern)
 
 
@@ -284,7 +270,7 @@ def test_the_same_pdf_request_twice_gives_identical_bytes() -> None:
     [("variant", "sepia"), ("paper", "A6"), ("orientation", "diagonal")],
 )
 def test_an_unknown_pdf_choice_gives_422_naming_the_field(field: str, value: str) -> None:
-    response = _post_pdf(_png(_stripes()), {"width": "40", "max_colours": "4", field: value})
+    response = _post_pdf(png(stripes()), {"width": "40", "max_colours": "4", field: value})
     assert response.status_code == 422
     assert field in response.text
 
@@ -299,8 +285,8 @@ def test_an_unknown_pdf_choice_gives_422_naming_the_field(field: str, value: str
     ],
 )
 def test_the_pdf_refuses_the_settings_patterns_refuses_alike(fields: dict[str, str]) -> None:
-    by_json = _post(_png(_stripes()), fields)
-    by_pdf = _post_pdf(_png(_stripes()), fields)
+    by_json = _post(png(stripes()), fields)
+    by_pdf = _post_pdf(png(stripes()), fields)
     assert by_json.status_code == by_pdf.status_code == 422
     assert by_json.json() == by_pdf.json()
 
@@ -311,7 +297,7 @@ def test_the_pdf_refuses_the_settings_patterns_refuses_alike(fields: dict[str, s
         (None, 422),
         (b"this is a text file, not an image\n", 400),
         (b"\x00" * (MAX_UPLOAD_BYTES + 1), 413),
-        (_png(Image.new("RGB", (1, 1001), (0, 0, 0))), 422),
+        (png(Image.new("RGB", (1, 1001), (0, 0, 0))), 422),
     ],
     ids=["no image", "not an image", "over 20 MB", "too tall"],
 )
@@ -404,7 +390,7 @@ def _key_json(pattern: Pattern) -> list[dict[str, Any]]:
 
 
 def _body(image: Image.Image, max_colours: int, **extra: str) -> dict[str, Any]:
-    response = _post(_png(image), _fields_for(image, max_colours, **extra))
+    response = _post(png(image), _fields_for(image, max_colours, **extra))
     assert response.status_code == 200, response.text
     body: dict[str, Any] = response.json()
     return body
@@ -479,7 +465,7 @@ def test_the_pdf_is_exactly_what_the_core_renders_of_the_cleaned_pattern() -> No
     # The cleaned chart is not the uncleaned one, so the route cannot pass by skipping it.
     assert render_pdf(cleaned.pattern) != render_pdf(_core_converted(_cleanable(), 5))
 
-    response = _post_pdf(_png(_cleanable()), _fields_for(_cleanable(), 5, **CLEANUP_FORM))
+    response = _post_pdf(png(_cleanable()), _fields_for(_cleanable(), 5, **CLEANUP_FORM))
 
     assert response.status_code == 200, response.text
     assert response.content == render_pdf(cleaned.pattern)
@@ -487,7 +473,7 @@ def test_the_pdf_is_exactly_what_the_core_renders_of_the_cleaned_pattern() -> No
 
 def test_the_pdf_of_cleaned_settings_follows_the_chart_choices_too() -> None:
     fields = _fields_for(_cleanable(), 5, variant="bw", paper="A5", **CLEANUP_FORM)
-    response = _post_pdf(_png(_cleanable()), fields)
+    response = _post_pdf(png(_cleanable()), fields)
     assert response.status_code == 200, response.text
     assert response.content == render_pdf(_cleaned_cleanable().pattern, variant="bw", paper="A5")
 
@@ -516,8 +502,8 @@ def test_a_refused_cleanup_setting_gives_the_same_422_naming_it_on_both_routes(
     field: str, value: str
 ) -> None:
     fields = {"width": "40", "max_colours": "4", field: value}
-    by_json = _post(_png(_stripes()), fields)
-    by_pdf = _post_pdf(_png(_stripes()), fields)
+    by_json = _post(png(stripes()), fields)
+    by_pdf = _post_pdf(png(stripes()), fields)
     assert by_json.status_code == by_pdf.status_code == 422
     assert by_json.json() == by_pdf.json()
     assert {tuple(error["loc"]) for error in by_json.json()["detail"]} == {("body", field)}
@@ -536,8 +522,8 @@ def test_a_refused_cleanup_setting_gives_the_same_422_naming_it_on_both_routes(
 )
 def test_the_cleanup_limits_themselves_are_accepted_on_both_routes(field: str, value: str) -> None:
     fields = _fields_for(_cleanable(), 5, **{field: value})
-    assert _post(_png(_cleanable()), fields).status_code == 200
-    assert _post_pdf(_png(_cleanable()), fields).status_code == 200
+    assert _post(png(_cleanable()), fields).status_code == 200
+    assert _post_pdf(png(_cleanable()), fields).status_code == 200
 
 
 def test_every_cleanup_setting_at_its_maximum_gives_the_core_pattern() -> None:
@@ -554,6 +540,8 @@ def test_every_cleanup_setting_at_its_maximum_gives_the_core_pattern() -> None:
 
 
 SETTING_NAMES = ["width", "max_colours", "merge_distance", "min_stitches", "confetti_size"]
+# Taken by every route reading an image; their bounds are tested in test_api_adjust.py.
+ADJUSTMENT_NAMES = list(ADJUSTMENT_LIMITS)
 # Taken by `POST /patterns/pdf` only; their bounds are tested in test_api_pdf.py.
 LAYOUT_NAMES = ["pages_across", "pages_down", "overlap"]
 
@@ -577,7 +565,7 @@ def _one_colour() -> Image.Image:
 
 def _post_setting(name: str, value: float) -> Any:
     """`POST /patterns` of `_one_colour()` with `name` at `value`, the other fields valid."""
-    return _post(_png(_one_colour()), {"width": "10", "max_colours": "1", name: str(value)})
+    return _post(png(_one_colour()), {"width": "10", "max_colours": "1", name: str(value)})
 
 
 def test_the_limits_are_the_contract_the_frontend_relies_on() -> None:
@@ -589,12 +577,13 @@ def test_the_limits_are_the_contract_the_frontend_relies_on() -> None:
             "merge_distance": {"min": 0, "max": 10, "step": 0.1, "default": 0},
             "min_stitches": {"min": 0, "max": 1000, "step": 1, "default": 0},
             "confetti_size": {"min": 0, "max": 10, "step": 1, "default": 0},
+            **ADJUSTMENT_LIMITS,
             "pages_across": {"min": 1, "max": 20, "step": 1, "default": 2},
             "pages_down": {"min": 1, "max": 20, "step": 1, "default": 2},
             "overlap": {"min": 0, "max": 5, "step": 1, "default": 2},
         },
     }
-    assert list(_limits()["settings"]) == SETTING_NAMES + LAYOUT_NAMES
+    assert list(_limits()["settings"]) == SETTING_NAMES + ADJUSTMENT_NAMES + LAYOUT_NAMES
 
 
 @pytest.mark.parametrize("name", SETTING_NAMES)
@@ -623,7 +612,7 @@ def test_every_default_lies_within_its_bounds(name: str) -> None:
 
 def test_every_setting_at_its_default_is_accepted() -> None:
     defaults = {name: str(_setting(name)["default"]) for name in SETTING_NAMES}
-    response = _post(_png(_cleanable()), defaults)
+    response = _post(png(_cleanable()), defaults)
     assert response.status_code == 200, response.text
 
 
@@ -737,8 +726,8 @@ def _replace_fields(image: Image.Image, max_colours: int, *swaps: str, **extra: 
 
 
 def _post_replace(route: str, swaps: tuple[str, ...], **extra: str) -> Any:
-    files = {"image": ("image.png", _png(_stripes()), "image/png")}
-    fields = _replace_fields(_stripes(), 4, *swaps, **extra)
+    files = {"image": ("image.png", png(stripes()), "image/png")}
+    fields = _replace_fields(stripes(), 4, *swaps, **extra)
     return client.post(route, data=fields, files=files)
 
 
@@ -752,7 +741,7 @@ def _replaced_body(*swaps: str, **extra: str) -> dict[str, Any]:
 def _core_replaced(*swaps: tuple[str, str]) -> Pattern:
     """The core's stripes pattern, no cleanup, with the swaps applied."""
     cleaned = clean_pattern(
-        _core_converted(_stripes(), 4), merge_distance=0.0, min_stitches=0, confetti_size=0
+        _core_converted(stripes(), 4), merge_distance=0.0, min_stitches=0, confetti_size=0
     )
     pairs = [(dmc_thread(source), dmc_thread(target)) for source, target in swaps]
     return replace_threads(cleaned.pattern, pairs).pattern
@@ -862,7 +851,7 @@ def test_replace_leaves_converted_as_the_raw_conversion_and_counts_isolation_aft
     assert (cleaned.isolated_before, cleaned.isolated_after) == (2, 2)
     assert isolated_stitches(final) == 0
 
-    response = _post(_png(image), _replace_fields(image, 2, "797:321", merge_distance="0.1"))
+    response = _post(png(image), _replace_fields(image, 2, "797:321", merge_distance="0.1"))
     assert response.status_code == 200, response.text
     body = response.json()
 
@@ -883,7 +872,7 @@ def test_replace_with_confetti_cleanup_applies_after_the_cleanup() -> None:
     final = replace_threads(cleaned.pattern, [(dmc_thread("797"), dmc_thread("3865"))]).pattern
 
     image = _cleanable()
-    response = _post(_png(image), _replace_fields(image, 5, "797:3865", **CLEANUP_FORM))
+    response = _post(png(image), _replace_fields(image, 5, "797:3865", **CLEANUP_FORM))
     assert response.status_code == 200, response.text
     body = response.json()
 
@@ -956,7 +945,7 @@ def _subject_on_white() -> bytes:
     pixels = np.full((30, 30, 3), dmc_thread("Blanc").rgb, dtype=np.uint8)
     for i, code in enumerate(("310", "321", "797")):
         pixels[10:20, 5 + i * 7 : 12 + i * 7] = dmc_thread(code).rgb
-    return _png(Image.fromarray(pixels))
+    return png(Image.fromarray(pixels))
 
 
 def test_background_as_fabric_leaves_the_border_thread_bare_and_keeps_max_colours() -> None:
