@@ -21,13 +21,17 @@ export interface Limits {
    * before reading it, and through a proxy that refusal arrives as a bare 502.
    */
   max_upload_bytes: number;
-  /** Keyed by form field name: the conversion settings, then the PDF's layout settings. */
+  /**
+   * Keyed by form field name: the conversion settings, the image adjustments, then the
+   * PDF's layout settings.
+   */
   settings: Record<
     | "width"
     | "max_colours"
     | "merge_distance"
     | "min_stitches"
     | "confetti_size"
+    | AdjustmentField
     | "pages_across"
     | "pages_down"
     | "overlap",
@@ -45,10 +49,27 @@ export interface Limits {
   };
 }
 
+/** The image adjustments, as their form fields (and `/limits` keys) spell them, in order. */
+export const ADJUSTMENTS = ["brightness", "contrast", "saturation", "hue", "gamma", "sharpness"] as const;
+export type AdjustmentField = (typeof ADJUSTMENTS)[number];
+
+/** The adjustments as the page names them. */
+export const ADJUSTMENT_LABELS: Record<AdjustmentField, string> = {
+  brightness: "Brightness",
+  contrast: "Contrast",
+  saturation: "Saturation",
+  hue: "Hue",
+  gamma: "Gamma",
+  sharpness: "Sharpness",
+};
+
+/** The adjustments as typed: applied by the API to the image right after the crop. */
+export type Adjustments = Record<AdjustmentField, string>;
+
 export type LimitsResult = { ok: true; limits: Limits } | { ok: false; message: string };
 
 /** The settings as the user typed them; the API validates them. */
-export interface Settings {
+export interface Settings extends Adjustments {
   width: string;
   maxColours: string;
   fabricCount: string;
@@ -265,6 +286,7 @@ function appendSettings(
   if (settings.crop !== "") {
     body.append("crop", settings.crop);
   }
+  appendAdjustments(body, settings);
   if (changes.length > 0) {
     body.append("changes", changesField(changes));
   }
@@ -273,11 +295,28 @@ function appendSettings(
   }
 }
 
-/** What the upload (inside `crop`, when set) is, how it reads best, and why it cannot be read. */
-export async function inspectImage(image: File, maxUploadBytes: number, crop = ""): Promise<InspectResult> {
+function appendAdjustments(body: FormData, adjustments: Adjustments) {
+  for (const field of ADJUSTMENTS) {
+    body.append(field, adjustments[field]);
+  }
+}
+
+/**
+ * What the upload (inside `crop`, when set, and with the `adjustments`, when given) is,
+ * how it reads best, and why it cannot be read.
+ */
+export async function inspectImage(
+  image: File,
+  maxUploadBytes: number,
+  crop = "",
+  adjustments?: Adjustments,
+): Promise<InspectResult> {
   const sent = await sendForm(INSPECT_URL, image, maxUploadBytes, (body) => {
     if (crop !== "") {
       body.append("crop", crop);
+    }
+    if (adjustments !== undefined) {
+      appendAdjustments(body, adjustments);
     }
   });
   if (!sent.ok) {

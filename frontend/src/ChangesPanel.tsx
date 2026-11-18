@@ -1,4 +1,4 @@
-import type { Change, DmcThread, Limits, Settings } from "./api";
+import { ADJUSTMENT_LABELS, ADJUSTMENTS, type Change, type DmcThread, type Limits, type Settings } from "./api";
 import { changeSize, toolName } from "./changes";
 import { boxFromField } from "./crop";
 import { FabricSwatch, Swatch } from "./swatch";
@@ -24,6 +24,9 @@ function settingChips(settings: Settings, ranges: Limits["settings"]): Chip[] {
       reset: { crop: "" },
     });
   }
+  for (const field of ADJUSTMENTS) {
+    chips.push(...offDefault(settings[field], ranges[field].default, ADJUSTMENT_LABELS[field], field));
+  }
   if (settings.backgroundAsFabric) {
     chips.push({
       action: "Turn off background as fabric",
@@ -31,18 +34,20 @@ function settingChips(settings: Settings, ranges: Limits["settings"]): Chip[] {
       reset: { backgroundAsFabric: false },
     });
   }
-  const numeric: [keyof Settings & ("mergeDistance" | "minStitches" | "confettiSize"), keyof Limits["settings"], string][] = [
-    ["mergeDistance", "merge_distance", "Merge distance"],
-    ["minStitches", "min_stitches", "Minimum stitches"],
-    ["confettiSize", "confetti_size", "Confetti"],
-  ];
-  for (const [key, field, label] of numeric) {
-    const { default: initial } = ranges[field];
-    if (Number(settings[key]) !== initial) {
-      chips.push({ action: `Reset ${label.toLowerCase()}`, text: `${label} ${settings[key]}`, reset: { [key]: String(initial) } });
-    }
-  }
+  chips.push(
+    ...offDefault(settings.mergeDistance, ranges.merge_distance.default, "Merge distance", "mergeDistance"),
+    ...offDefault(settings.minStitches, ranges.min_stitches.default, "Minimum stitches", "minStitches"),
+    ...offDefault(settings.confettiSize, ranges.confetti_size.default, "Confetti", "confettiSize"),
+  );
   return chips;
+}
+
+/** A chip for a number setting off its default, reset to that default; none at it. */
+function offDefault(value: string, initial: number, label: string, key: keyof Settings): Chip[] {
+  if (Number(value) === initial) {
+    return [];
+  }
+  return [{ action: `Reset ${label.toLowerCase()}`, text: `${label} ${value}`, reset: { [key]: String(initial) } }];
 }
 
 /**

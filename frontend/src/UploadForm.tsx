@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+  ADJUSTMENT_LABELS,
+  ADJUSTMENTS,
   changesField,
   convertImage,
   downloadPdf,
@@ -8,6 +10,7 @@ import {
   getLimits,
   inspectImage,
   PICTURE,
+  type Adjustments,
   type Change,
   type ChartLayoutReport,
   type ChartOptions,
@@ -27,6 +30,7 @@ import {
   Stepper,
   SwatchChoice,
   Switch,
+  Tabs,
 } from "./controls";
 import { CropBox } from "./CropBox";
 import { boxFromField, cropField, type Box } from "./crop";
@@ -102,6 +106,12 @@ const SHEET_PX: Record<ChartOptions["paper"], [number, number]> = {
 /** Fabric counts offered as chips: the common Aida and evenweave counts. */
 const FABRIC_COUNTS = [11, 14, 16, 18, 22, 28] as const;
 const PDF_NAME = "pattern.pdf";
+type Tab = "image" | "pattern" | "chart";
+
+/** What an inspection reads besides the image: a change of any re-inspects. */
+function readingKey(settings: Settings): string {
+  return JSON.stringify([settings.crop, ...ADJUSTMENTS.map((field) => settings[field])]);
+}
 /** How long the inputs must stay unchanged before a conversion is sent. */
 const QUIET_MS = 500;
 
@@ -186,9 +196,12 @@ function Converter({ limits }: { limits: Limits }) {
       readAs: PICTURE,
       crop: "",
       backgroundAsFabric: false,
+      ...(Object.fromEntries(ADJUSTMENTS.map((field) => [field, String(ranges[field].default)])) as Adjustments),
     },
     changes: [],
   }));
+  /** The settings tab shown: plain state, kept across widths, responses and images. */
+  const [tab, setTab] = useState<Tab>("image");
   /** The changes with their undo and redo; `inputs.changes` is its list. */
   const [history, setHistory] = useState<History>(EMPTY_HISTORY);
   const historyRef = useRef(history);
@@ -393,10 +406,10 @@ function Converter({ limits }: { limits: Limits }) {
     inspecting.current = true;
     reinspect.current = false;
     setPending(true);
-    const { crop } = latest.current.settings;
-    const result = await inspectImage(image, limits.max_upload_bytes, crop);
-    // Another image or another crop since: its own inspection follows.
-    if (!mounted.current || latest.current.image !== image || latest.current.settings.crop !== crop) {
+    const { settings: asked } = latest.current;
+    const result = await inspectImage(image, limits.max_upload_bytes, asked.crop, asked);
+    // Another image, crop or adjustment since: its own inspection follows.
+    if (!mounted.current || latest.current.image !== image || readingKey(latest.current.settings) !== readingKey(asked)) {
       return;
     }
     inspecting.current = false;
@@ -411,6 +424,12 @@ function Converter({ limits }: { limits: Limits }) {
   function changeCrop(box: Box | null) {
     reinspect.current = true;
     changeSettings({ crop: box === null ? "" : cropField(box) });
+  }
+
+  /** An adjustment: the image changes, so it is inspected again, as for a new crop. */
+  function changeAdjustments(patch: Partial<Adjustments>) {
+    reinspect.current = true;
+    changeSettings(patch);
   }
 
   function treatAsPhoto(on: boolean) {
@@ -453,6 +472,8 @@ function Converter({ limits }: { limits: Limits }) {
   function resetSetting(patch: Partial<Settings>) {
     if (patch.crop !== undefined) {
       changeCrop(null);
+    } else if (ADJUSTMENTS.some((field) => patch[field] !== undefined)) {
+      changeAdjustments(patch);
     } else {
       changeSettings(patch);
     }
@@ -697,175 +718,215 @@ function Converter({ limits }: { limits: Limits }) {
       <aside className="panel settings-panel" aria-label="Settings">
         <StitchRule />
         <h2>Settings</h2>
-        {/* noValidate: the API checks the settings and its message is shown, not the browser's. */}
-        <form className="form" noValidate onSubmit={(event) => event.preventDefault()}>
-          <DropZone label="Image" file={inputs.image} onChange={chooseImage} />
-          {inspection !== null && (
-            <div className="source-kind">
-              <p className="field-hint">Detected: {inspection.description}</p>
-              {inspection.warnings.map((warning) => (
-                <p key={warning} className="field-hint">
-                  {warning}
-                </p>
-              ))}
-              {inspection.refusal !== null && (
-                <p role="alert" className="alert">
-                  {inspection.refusal}
-                </p>
-              )}
-              {inspection.kind !== null && (inspection.kind !== PICTURE || inspection.refusal !== null) && (
-                <Switch label="Treat as a photo" checked={asPhoto} onChange={treatAsPhoto} />
-              )}
-            </div>
-          )}
-          {inputs.image !== null && inspection?.kind !== null && (
-            <CropBox file={inputs.image} box={boxFromField(settings.crop)} onChange={changeCrop} />
-          )}
-          <Switch
-            label="Background as fabric"
-            checked={settings.backgroundAsFabric}
-            onChange={(on) => changeSettings({ backgroundAsFabric: on })}
-          />
+        <Tabs
+          label="Settings"
+          value={tab}
+          onChange={setTab}
+          tabs={[
+            {
+              value: "image",
+              label: "Image",
+              content: (
+                // noValidate: the API checks the settings and its message is shown, not the browser's.
+                <form className="form" noValidate onSubmit={(event) => event.preventDefault()}>
+                  <DropZone label="Image" file={inputs.image} onChange={chooseImage} />
+                  {inspection !== null && (
+                    <div className="source-kind">
+                      <p className="field-hint">Detected: {inspection.description}</p>
+                      {inspection.warnings.map((warning) => (
+                        <p key={warning} className="field-hint">
+                          {warning}
+                        </p>
+                      ))}
+                      {inspection.refusal !== null && (
+                        <p role="alert" className="alert">
+                          {inspection.refusal}
+                        </p>
+                      )}
+                      {inspection.kind !== null && (inspection.kind !== PICTURE || inspection.refusal !== null) && (
+                        <Switch label="Treat as a photo" checked={asPhoto} onChange={treatAsPhoto} />
+                      )}
+                    </div>
+                  )}
+                  {inputs.image !== null && inspection?.kind !== null && (
+                    <CropBox file={inputs.image} box={boxFromField(settings.crop)} onChange={changeCrop} />
+                  )}
+                  <Switch
+                    label="Background as fabric"
+                    checked={settings.backgroundAsFabric}
+                    onChange={(on) => changeSettings({ backgroundAsFabric: on })}
+                  />
 
-          <h3 className="form-heading">Size and threads</h3>
-          <SliderField
-            label="Width (stitches)"
-            limits={ranges.width}
-            value={settings.width}
-            disabled={settings.readAs !== PICTURE}
-            onChange={(value) => changeSetting("width", value)}
-          />
-          <SliderField
-            label="Colours"
-            limits={ranges.max_colours}
-            value={settings.maxColours}
-            onChange={(value) => changeSetting("maxColours", value)}
-          />
-          <ChipChoice
-            label="Fabric count"
-            presets={FABRIC_COUNTS}
-            value={settings.fabricCount}
-            onChange={(value) => changeSetting("fabricCount", value)}
-          />
-          <SwatchChoice
-            label="Fabric colour"
-            options={FABRICS}
-            value={chart.fabricColour}
-            onChange={(fabricColour) => setChart({ ...chart, fabricColour })}
-          />
+                  <h3 className="form-heading">Adjustments</h3>
+                  <p className="field-hint">Applied to the image before it is read; each starts off.</p>
+                  {ADJUSTMENTS.map((field) => (
+                    <SliderField
+                      key={field}
+                      label={ADJUSTMENT_LABELS[field]}
+                      limits={ranges[field]}
+                      value={settings[field]}
+                      onChange={(value) => changeAdjustments({ [field]: value })}
+                    />
+                  ))}
+                </form>
+              ),
+            },
+            {
+              value: "pattern",
+              label: "Pattern",
+              content: (
+                <form className="form" noValidate onSubmit={(event) => event.preventDefault()}>
+                  <h3 className="form-heading">Size and threads</h3>
+                  <SliderField
+                    label="Width (stitches)"
+                    limits={ranges.width}
+                    value={settings.width}
+                    disabled={settings.readAs !== PICTURE}
+                    onChange={(value) => changeSetting("width", value)}
+                  />
+                  <SliderField
+                    label="Colours"
+                    limits={ranges.max_colours}
+                    value={settings.maxColours}
+                    onChange={(value) => changeSetting("maxColours", value)}
+                  />
+                  <ChipChoice
+                    label="Fabric count"
+                    presets={FABRIC_COUNTS}
+                    value={settings.fabricCount}
+                    onChange={(value) => changeSetting("fabricCount", value)}
+                  />
+                  <SwatchChoice
+                    label="Fabric colour"
+                    options={FABRICS}
+                    value={chart.fabricColour}
+                    onChange={(fabricColour) => setChart({ ...chart, fabricColour })}
+                  />
 
-          <h3 className="form-heading">Cleanup</h3>
-          <p className="field-hint">Each at 0 is off.</p>
-          <SliderField
-            label="Merge similar threads (colour distance)"
-            limits={ranges.merge_distance}
-            value={settings.mergeDistance}
-            onChange={(value) => changeSetting("mergeDistance", value)}
-          />
-          <SliderField
-            label="Minimum stitches per thread"
-            limits={ranges.min_stitches}
-            value={settings.minStitches}
-            onChange={(value) => changeSetting("minStitches", value)}
-          />
-          <Stepper
-            label="Largest confetti cluster (stitches)"
-            limits={ranges.confetti_size}
-            value={settings.confettiSize}
-            onChange={(value) => changeSetting("confettiSize", value)}
-          />
-        </form>
-
-        {preview !== null && (
-          <section aria-label="PDF chart" className="panel-section">
-            <h2>PDF chart</h2>
-            <div className="form">
-              <Segmented
-                legend="Chart"
-                showLegend
-                options={[
-                  { value: "colour", label: "Colour" },
-                  { value: "bw", label: "Black and white" },
-                ]}
-                value={chart.variant}
-                onChange={(variant) => setChart({ ...chart, variant })}
-              />
-              <Segmented
-                legend="Paper"
-                showLegend
-                className="segmented-sheets"
-                options={PAPERS.map((paper) => ({ value: paper, label: paper, icon: sheet(paper) }))}
-                value={chart.paper}
-                onChange={(paper) => setChart({ ...chart, paper })}
-              />
-              <Segmented
-                legend="Orientation"
-                showLegend
-                className="segmented-sheets"
-                options={[
-                  { value: "portrait", label: "Portrait", icon: sheet("A5", "portrait") },
-                  { value: "landscape", label: "Landscape", icon: sheet("A5", "landscape") },
-                ]}
-                value={chart.orientation}
-                onChange={(orientation) => setChart({ ...chart, orientation })}
-              />
-              <Segmented
-                legend="Split"
-                showLegend
-                options={[
-                  { value: "cells", label: "By cell size (3 mm)" },
-                  { value: "pages", label: "By pages" },
-                ]}
-                value={chart.split}
-                onChange={(split) => setChart({ ...chart, split })}
-              />
-              {chart.split === "pages" && (
-                <PagePicker
-                  report={layoutReport}
-                  orientation={chart.orientation}
-                  across={chart.pagesAcross}
-                  down={chart.pagesDown}
-                  onPick={(across, down) =>
-                    setChart({ ...chart, pagesAcross: String(across), pagesDown: String(down) })
-                  }
-                />
-              )}
-              <SectionPreview
-                pattern={preview.pattern}
-                layout={layoutReport?.layout ?? null}
-                fabric={chart.fabricColour}
-              />
-              {layoutReport !== null && layoutReport.layout === null && layoutReport.message !== null && (
-                <p className="field-hint">{layoutReport.message}</p>
-              )}
-              <Stepper
-                label="Repeated rows and columns"
-                limits={ranges.overlap}
-                value={chart.overlap}
-                onChange={(value) => setChart({ ...chart, overlap: value })}
-                hint="Neighbouring pages share these, so their edges line up."
-              />
-              <Switch
-                label="Centre lines in the PDF"
-                checked={chart.centreLines}
-                onChange={(centreLines) => setChart({ ...chart, centreLines })}
-              />
-            </div>
-            <button
-              type="button"
-              className="button button-primary"
-              disabled={download.kind === "busy" || busy}
-              onClick={() => void savePdf(preview.source)}
-            >
-              {download.kind === "busy" ? "Preparing PDF..." : "Download PDF"}
-            </button>
-            {download.kind === "failed" && (
-              <p role="alert" className="alert">
-                {download.message}
-              </p>
-            )}
-          </section>
-        )}
+                  <h3 className="form-heading">Cleanup</h3>
+                  <p className="field-hint">Each at 0 is off.</p>
+                  <SliderField
+                    label="Merge similar threads (colour distance)"
+                    limits={ranges.merge_distance}
+                    value={settings.mergeDistance}
+                    onChange={(value) => changeSetting("mergeDistance", value)}
+                  />
+                  <SliderField
+                    label="Minimum stitches per thread"
+                    limits={ranges.min_stitches}
+                    value={settings.minStitches}
+                    onChange={(value) => changeSetting("minStitches", value)}
+                  />
+                  <Stepper
+                    label="Largest confetti cluster (stitches)"
+                    limits={ranges.confetti_size}
+                    value={settings.confettiSize}
+                    onChange={(value) => changeSetting("confettiSize", value)}
+                  />
+                </form>
+              ),
+            },
+            {
+              value: "chart",
+              label: "Chart",
+              content: (
+                <>
+                {preview !== null ? (
+                  <section aria-label="PDF chart" className="panel-section">
+                    <div className="form">
+                      <Segmented
+                        legend="Chart"
+                        showLegend
+                        options={[
+                          { value: "colour", label: "Colour" },
+                          { value: "bw", label: "Black and white" },
+                        ]}
+                        value={chart.variant}
+                        onChange={(variant) => setChart({ ...chart, variant })}
+                      />
+                      <Segmented
+                        legend="Paper"
+                        showLegend
+                        className="segmented-sheets"
+                        options={PAPERS.map((paper) => ({ value: paper, label: paper, icon: sheet(paper) }))}
+                        value={chart.paper}
+                        onChange={(paper) => setChart({ ...chart, paper })}
+                      />
+                      <Segmented
+                        legend="Orientation"
+                        showLegend
+                        className="segmented-sheets"
+                        options={[
+                          { value: "portrait", label: "Portrait", icon: sheet("A5", "portrait") },
+                          { value: "landscape", label: "Landscape", icon: sheet("A5", "landscape") },
+                        ]}
+                        value={chart.orientation}
+                        onChange={(orientation) => setChart({ ...chart, orientation })}
+                      />
+                      <Segmented
+                        legend="Split"
+                        showLegend
+                        options={[
+                          { value: "cells", label: "By cell size (3 mm)" },
+                          { value: "pages", label: "By pages" },
+                        ]}
+                        value={chart.split}
+                        onChange={(split) => setChart({ ...chart, split })}
+                      />
+                      {chart.split === "pages" && (
+                        <PagePicker
+                          report={layoutReport}
+                          orientation={chart.orientation}
+                          across={chart.pagesAcross}
+                          down={chart.pagesDown}
+                          onPick={(across, down) =>
+                            setChart({ ...chart, pagesAcross: String(across), pagesDown: String(down) })
+                          }
+                        />
+                      )}
+                      <SectionPreview
+                        pattern={preview.pattern}
+                        layout={layoutReport?.layout ?? null}
+                        fabric={chart.fabricColour}
+                      />
+                      {layoutReport !== null && layoutReport.layout === null && layoutReport.message !== null && (
+                        <p className="field-hint">{layoutReport.message}</p>
+                      )}
+                      <Stepper
+                        label="Repeated rows and columns"
+                        limits={ranges.overlap}
+                        value={chart.overlap}
+                        onChange={(value) => setChart({ ...chart, overlap: value })}
+                        hint="Neighbouring pages share these, so their edges line up."
+                      />
+                      <Switch
+                        label="Centre lines in the PDF"
+                        checked={chart.centreLines}
+                        onChange={(centreLines) => setChart({ ...chart, centreLines })}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="button button-primary"
+                      disabled={download.kind === "busy" || busy}
+                      onClick={() => void savePdf(preview.source)}
+                    >
+                      {download.kind === "busy" ? "Preparing PDF..." : "Download PDF"}
+                    </button>
+                    {download.kind === "failed" && (
+                      <p role="alert" className="alert">
+                        {download.message}
+                      </p>
+                    )}
+                  </section>
+                ) : (
+                  <p className="field-hint">The chart choices come with the pattern.</p>
+                )}
+                </>
+              ),
+            },
+          ]}
+        />
       </aside>
 
       <ChangesPanel

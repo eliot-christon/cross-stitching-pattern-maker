@@ -82,7 +82,10 @@ CSS mask, so it follows the theme.
     the left, the viewer area on the right.
   - **Below 800 px:** one column, stacked: header, settings panel, Changes panel, viewer
     area. No drawer.
-- The PDF choices sit at the bottom of the settings panel, once a pattern exists.
+- The settings panel is three tabs, Image first: Image (the drop zone, what was detected,
+  the crop box, background as fabric, the adjustments), Pattern (size and threads,
+  fabric, cleanup) and Chart (the PDF choices and Download PDF, once a pattern exists).
+  The tab shown is kept at every width and through new patterns and images.
 - The Changes panel is a disclosure (open by default) headed "Changes" with a count pill:
   setting chips first (a pill on `--sunk` with a round reset button), then the ordered
   list of replacements and edits as bordered rows (tool in bold, thread swatches, size
@@ -111,8 +114,11 @@ Each kind of value has its own control, all in `src/controls.tsx`, labels above:
 - a colour among presets (fabric colour): round swatches, a rainbow one for any colour
 - on or off (pixel art, centre lines): a sliding switch in the accent
 - the image: a dashed drop zone showing the chosen image and its name
-- In the panel, settings are grouped under small muted headings (Size and threads,
-  Cleanup).
+- groups shown one at a time (the settings panel's Image, Pattern and Chart): tabs, a
+  full-width row of labels in `--muted`, the selected one in `--text` over a 3 px
+  `--accent` underline, on a 1 px `--border` rule; arrow keys, Home and End move along them
+- In each tab, settings are grouped under small muted headings (Adjustments, Size and
+  threads, Cleanup).
 - The primary button (Download PDF) is filled with the accent; other buttons are outlined.
 - Status messages are a small muted line; errors use `--danger` text on a `--danger-soft`
   card. One status at a time.
