@@ -26,7 +26,7 @@ const PATTERN: Pattern = {
   finished_size: { width_in: 0.14, height_in: 0.07, width_cm: 0.36, height_cm: 0.18 },
   isolated_stitches: { before: 2, after: 0 },
   converted: null,
-  ignored_replacements: [],
+  changed_cells: [],
 };
 
 /** A second conversion, told apart from PATTERN on screen by its thread codes. */
@@ -50,7 +50,7 @@ const PATTERN_B: Pattern = {
   finished_size: { width_in: 0.21, height_in: 0.07, width_cm: 0.54, height_cm: 0.18 },
   isolated_stitches: { before: 1, after: 0 },
   converted: null,
-  ignored_replacements: [],
+  changed_cells: [],
 };
 
 /** A thread only PATTERN's key holds, and one only PATTERN_B's holds. */
@@ -70,6 +70,7 @@ const LIMITS: Limits = {
     pages_down: { min: 1, max: 20, step: 1, default: 2 },
     overlap: { min: 0, max: 5, step: 1, default: 2 },
   },
+  changes: { max_entries: 1000, max_bytes: 524288, brush: { min: 1, max: 9, step: 2, default: 1 }, max_coordinate: 2000 },
 };
 
 /** A `/chart/layout` answer: the cells split in one page, every pages split allowed up
@@ -1186,7 +1187,7 @@ describe("UploadForm PDF download", () => {
   });
 });
 
-describe("thread replacements", () => {
+describe("the changes list", () => {
   const TABLE = [
     { code: "310", name: "Black", rgb: [0, 0, 0] },
     { code: "321", name: "Red", rgb: [199, 43, 59] },
@@ -1214,9 +1215,18 @@ describe("thread replacements", () => {
     return fetchMock;
   }
 
-  /** The `replace` fields of each conversion posted, in order. */
+  /** The replacements in the `changes` field of each conversion posted, as FROM:TO. */
   function sentReplacements(fetchMock: ReturnType<typeof stubApi>): string[][] {
-    return posted(fetchMock, "/api/patterns").map((body) => body.getAll("replace") as string[]);
+    return posted(fetchMock, "/api/patterns").map((body) => replacementsIn(body));
+  }
+
+  function replacementsIn(body: FormData | undefined): string[] {
+    const field = body?.get("changes");
+    if (typeof field !== "string") {
+      return [];
+    }
+    const entries = JSON.parse(field) as { op: string; from: string; to: string | null }[];
+    return entries.map((entry) => `${entry.from}:${entry.to ?? "fabric"}`);
   }
 
   /** Open the picker on the key entry `code` and choose the thread named `name`. */
@@ -1236,8 +1246,13 @@ describe("thread replacements", () => {
   }
 
   function replacementItems(): HTMLElement[] {
-    const section = screen.queryByRole("region", { name: "Replacements" });
-    return section === null ? [] : within(section).getAllByRole("listitem");
+    const list = screen.queryByRole("list", { name: "Edits and replacements" });
+    return list === null ? [] : within(list).getAllByRole("listitem");
+  }
+
+  /** Click the Remove button of the entry at `index` (0-based) in the Changes panel. */
+  function removeEntry(index: number) {
+    fireEvent.click(within(replacementItems()[index] as HTMLElement).getByRole("button", { name: /Remove/ }));
   }
 
   it("sends a picked replacement after the quiet delay and lists it", async () => {
@@ -1265,14 +1280,14 @@ describe("thread replacements", () => {
     await wait(QUIET_MS);
     await settle();
 
-    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+    removeEntry(0);
     await replace("310", "Winter White");
     await wait(10 * QUIET_MS);
 
     expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"]]);
   });
 
-  it("sends a removal as FROM:fabric and lists it as fabric, with its undo", async () => {
+  it("sends a removal with a null TO and lists it as fabric, with its remove", async () => {
     const fetchMock = stubWithThreads();
     await renderLive();
     await preview();
@@ -1287,13 +1302,13 @@ describe("thread replacements", () => {
     expect(replacementItems()).toHaveLength(1);
     expect(replacementItems()[0]).toHaveTextContent(/310.*Black.*Fabric/);
 
-    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to fabric" }));
+    removeEntry(0);
     await wait(QUIET_MS);
     await settle();
     expect(sentReplacements(fetchMock)).toEqual([[], ["310:fabric"], []]);
   });
 
-  it("sends no replace field once the only pair is undone, and hides the list", async () => {
+  it("sends no changes field once the only pair is removed, and empties the list", async () => {
     const fetchMock = stubWithThreads();
     await renderLive();
     await preview();
@@ -1301,15 +1316,16 @@ describe("thread replacements", () => {
     await wait(QUIET_MS);
     await settle();
 
-    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+    removeEntry(0);
     await wait(QUIET_MS);
     await settle();
 
     expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"], []]);
-    expect(screen.queryByRole("region", { name: "Replacements" })).not.toBeInTheDocument();
+    expect(posted(fetchMock, "/api/patterns").at(-1)?.has("changes")).toBe(false);
+    expect(replacementItems()).toHaveLength(0);
   });
 
-  it("sends one request with no replace field after a reset of two pairs", async () => {
+  it("sends one request with no changes field after a reset of two pairs", async () => {
     const fetchMock = stubWithThreads();
     await renderLive();
     await preview();
@@ -1319,16 +1335,16 @@ describe("thread replacements", () => {
     await settle();
     expect(sentReplacements(fetchMock).at(-1)).toEqual(["310:3865", "321:3371"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Reset replacements" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset all" }));
     await wait(QUIET_MS);
     await settle();
 
     expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865", "321:3371"], []]);
   });
 
-  it("marks the pair the response ignored, and keeps the mark on it after an undo", async () => {
+  it("marks the pair the response counts 0, and keeps the mark on it after a remove", async () => {
     stubWithThreads({
-      patterns: () => Promise.resolve(json(200, { ...PATTERN, ignored_replacements: [1] })),
+      patterns: () => Promise.resolve(json(200, { ...PATTERN, changed_cells: [1, 0] })),
     });
     await renderLive();
     await preview();
@@ -1338,10 +1354,11 @@ describe("thread replacements", () => {
     await settle();
 
     const [first, second] = replacementItems();
+    expect(first).toHaveTextContent("1 cells");
     expect(first).not.toHaveTextContent(/not in the pattern/);
     expect(second).toHaveTextContent(/321.*not in the pattern/);
 
-    fireEvent.click(screen.getByRole("button", { name: "Undo 310 to 3865" }));
+    removeEntry(0);
 
     expect(replacementItems()).toHaveLength(1);
     expect(replacementItems()[0]).toHaveTextContent(/321.*not in the pattern/);
@@ -1361,7 +1378,7 @@ describe("thread replacements", () => {
 
     const last = posted(fetchMock, "/api/patterns").at(-1);
     expect(last?.get("width")).toBe("55");
-    expect(last?.getAll("replace")).toEqual(["310:3865"]);
+    expect(replacementsIn(last)).toEqual(["310:3865"]);
   });
 
   it("asks for the PDF with the pairs that produced the preview", async () => {
@@ -1393,7 +1410,7 @@ describe("thread replacements", () => {
 
     const pdfs = posted(fetchMock, "/api/patterns/pdf");
     expect(pdfs).toHaveLength(1);
-    expect(pdfs[0]?.getAll("replace")).toEqual(["310:3865"]);
+    expect(replacementsIn(pdfs[0])).toEqual(["310:3865"]);
   });
 
   it("keeps the pairs when another image is chosen and sends them with it", async () => {
@@ -1411,8 +1428,76 @@ describe("thread replacements", () => {
     const last = posted(fetchMock, "/api/patterns").at(-1);
     const image = last?.get("image");
     expect(image instanceof File ? image.name : null).toBe(other.name);
-    expect(last?.getAll("replace")).toEqual(["310:3865"]);
+    expect(replacementsIn(last)).toEqual(["310:3865"]);
     expect(replacementItems()).toHaveLength(1);
+  });
+
+  it("undoes a pick with Ctrl+Z and redoes it with Ctrl+Shift+Z", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
+    await wait(QUIET_MS);
+    await settle();
+    expect(replacementItems()).toHaveLength(0);
+    expect(posted(fetchMock, "/api/patterns").at(-1)?.has("changes")).toBe(false);
+
+    fireEvent.keyDown(document.body, { key: "Z", ctrlKey: true, shiftKey: true });
+    await wait(QUIET_MS);
+    await settle();
+    expect(replacementItems()).toHaveLength(1);
+    expect(sentReplacements(fetchMock)).toEqual([[], ["310:3865"], [], ["310:3865"]]);
+  });
+
+  it("leaves the list alone on Ctrl+Z typed in the width field", async () => {
+    stubWithThreads();
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+
+    fireEvent.keyDown(numberField(WIDTH), { key: "z", ctrlKey: true });
+
+    expect(replacementItems()).toHaveLength(1);
+  });
+
+  it("resets the merge distance from its chip to the reported default, and converts", async () => {
+    const fetchMock = stubWithThreads();
+    await renderLive();
+    await preview();
+    setValue(numberField(MERGE), "2.5");
+    await wait(QUIET_MS);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset merge distance" }));
+    expect(numberField(MERGE)).toHaveValue(LIMITS.settings.merge_distance.default);
+    await wait(QUIET_MS);
+    await settle();
+
+    expect(sent(fetchMock, "merge_distance")).toEqual(["0", "2.5", "0"]);
+  });
+
+  it("refuses a pick past the most entries the API takes, with a message", async () => {
+    stubWithThreads();
+    const most = { ...LIMITS, changes: { ...LIMITS.changes, max_entries: 1 } };
+    const inner = vi.mocked(fetch);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) =>
+        url === "/api/limits" ? Promise.resolve(json(200, most)) : inner(url, init),
+      ),
+    );
+    await renderLive();
+    await preview();
+    await replace("310", "Winter White");
+
+    await replace("321", "Black Brown");
+
+    expect(replacementItems()).toHaveLength(1);
+    expect(screen.getByRole("region", { name: "Changes" })).toHaveTextContent(/At most 1 changes/);
   });
 });
 

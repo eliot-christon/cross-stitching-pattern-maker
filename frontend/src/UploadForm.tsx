@@ -1,21 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+  changesField,
   convertImage,
   downloadPdf,
   getChartLayout,
   getLimits,
   inspectImage,
   PICTURE,
-  replacementField,
+  type Change,
   type ChartLayoutReport,
   type ChartOptions,
   type DmcThread,
   type Inspection,
   type Limits,
-  type Replacement,
   type Settings,
 } from "./api";
+import { append, canRedo, canUndo, EMPTY_HISTORY, redo, remove, resetAll, undo, type History } from "./changes";
+import { ChangesPanel } from "./ChangesPanel";
 import {
   ChipChoice,
   DropZone,
@@ -34,22 +36,21 @@ import { StitchedHeart, StitchRule } from "./motif";
 import { PagePicker, SectionPreview } from "./PagePicker";
 import { PatternPreview } from "./PatternPreview";
 import { PDF_AUTO_PREVIEW_MAX_CELLS, PdfView, type PdfNote } from "./PdfView";
-import { FabricSwatch, Swatch } from "./swatch";
 import { ThreadPicker } from "./ThreadPicker";
 
 /** The image and settings a preview was made from: the PDF is asked for with these. */
 interface Source {
   image: File;
   settings: Settings;
-  replacements: readonly Replacement[];
+  changes: readonly Change[];
 }
 
 /** The form as it stands: the image chosen (if any) and the settings as typed. */
 interface Inputs {
   image: File | null;
   settings: Settings;
-  /** Thread swaps, in the order chosen: the API applies them in sequence. */
-  replacements: readonly Replacement[];
+  /** Replacements and hand edits, in the order made: the API applies them in sequence. */
+  changes: readonly Change[];
 }
 
 interface Preview {
@@ -111,11 +112,7 @@ function sameSource(a: Source | null, b: Source): boolean {
   const keys = Object.keys(b.settings) as (keyof Settings)[];
   return (
     keys.every((key) => a.settings[key] === b.settings[key]) &&
-    a.replacements.length === b.replacements.length &&
-    a.replacements.every((pair, i) => {
-      const other = b.replacements[i];
-      return other !== undefined && replacementField(pair) === replacementField(other);
-    })
+    (a.changes === b.changes || changesField(a.changes) === changesField(b.changes))
   );
 }
 
@@ -190,8 +187,13 @@ function Converter({ limits }: { limits: Limits }) {
       crop: "",
       backgroundAsFabric: false,
     },
-    replacements: [],
+    changes: [],
   }));
+  /** The changes with their undo and redo; `inputs.changes` is its list. */
+  const [history, setHistory] = useState<History>(EMPTY_HISTORY);
+  const historyRef = useRef(history);
+  /** A pick refused, or hand edits dropped: said in the Changes panel until the next step. */
+  const [changesNotice, setChangesNotice] = useState<string | null>(null);
   /** What the API found in the chosen image; null before, or if the inspection failed. */
   const [inspection, setInspection] = useState<Inspection | null>(null);
   /** "Treat as a photo": convert as a picture whatever the inspection found. */
@@ -237,8 +239,6 @@ function Converter({ limits }: { limits: Limits }) {
   const pdfSeen = useRef<{ preview: Preview | null; visible: boolean }>({ preview: null, visible: false });
   /** How the PDF would cut the preview with the chart choices, from the API. */
   const [layoutReport, setLayoutReport] = useState<ChartLayoutReport | null>(null);
-  /** The replacements the latest response reported as finding nothing to replace. */
-  const [inactive, setInactive] = useState<ReadonlySet<Replacement>>(new Set());
 
   // What the timers and the request callbacks read: they outlive the render that set them.
   const latest = useRef(inputs);
@@ -300,11 +300,11 @@ function Converter({ limits }: { limits: Limits }) {
     }
     due.current = false;
     setPending(false);
-    const { image, settings, replacements } = latest.current;
+    const { image, settings, changes } = latest.current;
     if (image === null || refused()) {
       return;
     }
-    const source = { image, settings, replacements };
+    const source = { image, settings, changes };
     if (sameSource(lastSent.current, source)) {
       return;
     }
@@ -319,7 +319,7 @@ function Converter({ limits }: { limits: Limits }) {
       source.image,
       source.settings,
       limits.max_upload_bytes,
-      source.replacements,
+      source.changes,
     );
     if (!mounted.current) {
       return;
@@ -331,9 +331,6 @@ function Converter({ limits }: { limits: Limits }) {
       if (result.ok) {
         setPreview({ pattern: result.pattern, source });
         setError(null);
-        // Marks follow the pair objects, so they stay on the right pairs after an undo.
-        const ignored = result.pattern.ignored_replacements ?? [];
-        setInactive(new Set(source.replacements.filter((_, i) => ignored.includes(i))));
         // A failed download's message was about the previous preview.
         setDownload((current) => (current.kind === "failed" ? { kind: "idle" } : current));
       } else {
@@ -423,18 +420,64 @@ function Converter({ limits }: { limits: Limits }) {
     changeSettings(on ? { readAs: next.readAs } : next);
   }
 
-  function changeReplacements(replacements: readonly Replacement[]) {
-    change({ ...latest.current, replacements });
+  /** A step of the changes' history: the list it leaves converts after the quiet delay. */
+  function changeHistory(next: History, notice: string | null = null) {
+    setChangesNotice(notice);
+    if (next === historyRef.current) {
+      return;
+    }
+    historyRef.current = next;
+    setHistory(next);
+    change({ ...latest.current, changes: next.list });
     schedule();
+  }
+
+  /** Add a change at the end of the list, unless the list holds as many as the API takes. */
+  function addChange(made: Change) {
+    const { max_entries: most } = limits.changes;
+    if (historyRef.current.list.length >= most) {
+      changeHistory(historyRef.current, `At most ${most} changes: remove some to make another.`);
+    } else {
+      changeHistory(append(historyRef.current, made));
+    }
   }
 
   function replaceWith(to: DmcThread | null) {
     if (picking !== null) {
-      const from = { code: picking.code, name: picking.name, rgb: picking.rgb };
-      changeReplacements([...latest.current.replacements, { from, to }]);
+      addChange({ op: "replace", from: { code: picking.code, name: picking.name, rgb: picking.rgb }, to });
     }
     setPicking(null);
   }
+
+  /** Put a setting back from its chip: a crop goes as a new box would, re-inspecting. */
+  function resetSetting(patch: Partial<Settings>) {
+    if (patch.crop !== undefined) {
+      changeCrop(null);
+    } else {
+      changeSettings(patch);
+    }
+  }
+
+  const pickingRef = useRef(picking);
+  pickingRef.current = picking;
+  // Ctrl+Z and Ctrl+Shift+Z (Cmd on macOS) undo and redo the changes, except while typing
+  // in a field or choosing a thread, where the keys belong to the field or the dialog.
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z" || pickingRef.current !== null) {
+        return;
+      }
+      if (typing(event.target)) {
+        return;
+      }
+      event.preventDefault();
+      changeHistory((event.shiftKey ? redo : undo)(historyRef.current));
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // changeHistory reads refs only; the listener is set once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** The PDF the view wants now, or null: hidden, a conversion pending, or no preview. */
   function wantedPdf(): WantedPdf | null {
@@ -483,7 +526,7 @@ function Converter({ limits }: { limits: Limits }) {
       source.settings,
       options,
       limits.max_upload_bytes,
-      source.replacements,
+      source.changes,
     );
     if (!mounted.current) {
       return;
@@ -547,7 +590,7 @@ function Converter({ limits }: { limits: Limits }) {
       source.settings,
       chart,
       limits.max_upload_bytes,
-      source.replacements,
+      source.changes,
     );
     // The chart of an image no longer chosen is not saved: it is not the preview shown.
     if (!mounted.current || source.image !== latest.current.image) {
@@ -636,6 +679,10 @@ function Converter({ limits }: { limits: Limits }) {
   }
 
   const { settings } = inputs;
+  /** What the latest response says each change it was sent did, by the change itself. */
+  const counts = new Map<Change, number>(
+    preview?.source.changes.map((entry, i) => [entry, preview.pattern.changed_cells[i] ?? 0]) ?? [],
+  );
   /** A sheet icon for `paper` as `orientation` turns it. */
   const sheet = (paper: ChartOptions["paper"], orientation = chart.orientation) => {
     const [narrow, tall] = SHEET_PX[paper];
@@ -647,7 +694,7 @@ function Converter({ limits }: { limits: Limits }) {
   };
   return (
     <div className="layout">
-      <aside className="panel" aria-label="Settings">
+      <aside className="panel settings-panel" aria-label="Settings">
         <StitchRule />
         <h2>Settings</h2>
         {/* noValidate: the API checks the settings and its message is shown, not the browser's. */}
@@ -728,41 +775,6 @@ function Converter({ limits }: { limits: Limits }) {
             onChange={(value) => changeSetting("confettiSize", value)}
           />
         </form>
-
-        {inputs.replacements.length > 0 && (
-          <section aria-label="Replacements" className="panel-section">
-            <h2>Replacements</h2>
-            <ol className="replacements">
-              {inputs.replacements.map((pair, index) => (
-                <li
-                  // A pair may be chosen twice; its place keeps the key unique.
-                  // oxlint-disable-next-line react/no-array-index-key
-                  key={`${index}-${replacementField(pair)}`}
-                  className={inactive.has(pair) ? "replacement inactive" : "replacement"}
-                >
-                  <ThreadLabel thread={pair.from} />
-                  <span aria-hidden="true">→</span>
-                  <span className="visually-hidden">replaced by</span>
-                  {pair.to === null ? <FabricLabel /> : <ThreadLabel thread={pair.to} />}
-                  {inactive.has(pair) && <span className="replacement-note">not in the pattern</span>}
-                  <button
-                    type="button"
-                    className="button"
-                    aria-label={`Undo ${pair.from.code} to ${pair.to?.code ?? "fabric"}`}
-                    onClick={() =>
-                      changeReplacements(latest.current.replacements.filter((p) => p !== pair))
-                    }
-                  >
-                    Undo
-                  </button>
-                </li>
-              ))}
-            </ol>
-            <button type="button" className="button" onClick={() => changeReplacements([])}>
-              Reset replacements
-            </button>
-          </section>
-        )}
 
         {preview !== null && (
           <section aria-label="PDF chart" className="panel-section">
@@ -856,6 +868,21 @@ function Converter({ limits }: { limits: Limits }) {
         )}
       </aside>
 
+      <ChangesPanel
+        settings={settings}
+        ranges={ranges}
+        onReset={resetSetting}
+        changes={history.list}
+        counts={counts}
+        canUndo={canUndo(history)}
+        canRedo={canRedo(history)}
+        onUndo={() => changeHistory(undo(historyRef.current))}
+        onRedo={() => changeHistory(redo(historyRef.current))}
+        onRemove={(entry) => changeHistory(remove(historyRef.current, entry))}
+        onResetAll={() => changeHistory(resetAll(historyRef.current))}
+        notice={changesNotice}
+      />
+
       <section className="viewer-area" aria-label="Pattern">
         {busy && (
           <p role="status" className="status">
@@ -897,24 +924,10 @@ function Converter({ limits }: { limits: Limits }) {
   );
 }
 
-/** A thread as the replacements list shows it: swatch, code and name. */
-function ThreadLabel({ thread }: { thread: DmcThread }) {
-  return (
-    <span className="thread-label">
-      <Swatch rgb={thread.rgb} />
-      <span className="thread-label-code">{thread.code}</span>
-      <span className="thread-label-name">{thread.name}</span>
-    </span>
-  );
-}
-
-/** Bare fabric, where a removed thread was, as the replacements list shows it. */
-function FabricLabel() {
-  return (
-    <span className="thread-label">
-      <FabricSwatch />
-      <span className="thread-label-code">Fabric</span>
-      <span className="thread-label-name">thread removed</span>
-    </span>
-  );
+/** Whether a key press on `target` belongs to a field being typed in. */
+function typing(target: EventTarget | null): boolean {
+  if (target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable)) {
+    return true;
+  }
+  return target instanceof HTMLInputElement && ["text", "number", "search", "email", "url", "tel"].includes(target.type);
 }

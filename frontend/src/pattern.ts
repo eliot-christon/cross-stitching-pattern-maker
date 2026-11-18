@@ -50,6 +50,6 @@ export interface Pattern {
   isolated_stitches: IsolatedStitches;
   /** The pattern before cleanup, or `null` when every cleanup setting is 0. */
   converted: ConvertedPattern | null;
-  /** 0-based positions of the replacements sent that found nothing to replace. */
-  ignored_replacements: number[];
+  /** The cells each entry of the `changes` sent changed, in order; 0: it did nothing. */
+  changed_cells: number[];
 }
