@@ -4,6 +4,8 @@ import type { KeyEntry } from "./pattern";
 import { visibleSymbols } from "./symbolView";
 import {
   MAX_CELL_PX,
+  cellAt,
+  nearestCell,
   fitViewport,
   maxScale,
   panBy,
@@ -350,5 +352,45 @@ describe("edge cases found in review", () => {
 
     // The old centre (cell 90, 90) cannot reach the new centre: the corner stays put.
     expectViewport(vp, { scale: 20, x: 800 - 2000, y: 800 - 2000 });
+  });
+});
+
+describe("cellAt", () => {
+  const PATTERN: Size = { width: 30, height: 20 };
+  const VIEWER: Size = { width: 300, height: 300 };
+
+  /** The centre of cell (column, row) in viewer px. */
+  function centreOf(vp: Viewport, column: number, row: number): Point {
+    return { x: vp.x + (column + 0.5) * vp.scale, y: vp.y + (row + 0.5) * vp.scale };
+  }
+
+  it("maps each cell's centre back to the cell, at fit and after a zoom and a pan", () => {
+    const fit = fitViewport(PATTERN, VIEWER);
+    const moved = panBy(zoomAt(fit, PATTERN, VIEWER, 3.7, { x: 120, y: 90 }), PATTERN, VIEWER, -55, 31);
+    for (const vp of [fit, moved]) {
+      for (let row = 0; row < PATTERN.height; row += 1) {
+        for (let column = 0; column < PATTERN.width; column += 1) {
+          expect(cellAt(vp, PATTERN, centreOf(vp, column, row))).toEqual([column, row]);
+        }
+      }
+    }
+  });
+
+  it("gives no cell left of or above the pattern, or past its far edges", () => {
+    const vp = fitViewport(PATTERN, VIEWER);
+    const right = vp.x + PATTERN.width * vp.scale;
+    const bottom = vp.y + PATTERN.height * vp.scale;
+    expect(cellAt(vp, PATTERN, { x: vp.x - 0.5, y: vp.y + 5 })).toBeNull();
+    expect(cellAt(vp, PATTERN, { x: vp.x + 5, y: vp.y - 0.5 })).toBeNull();
+    expect(cellAt(vp, PATTERN, { x: right, y: vp.y + 5 })).toBeNull();
+    expect(cellAt(vp, PATTERN, { x: vp.x + 5, y: bottom })).toBeNull();
+    expect(cellAt(vp, PATTERN, { x: right - 0.5, y: bottom - 0.5 })).toEqual([29, 19]);
+  });
+
+  it("gives the nearest edge cell for a point off the pattern", () => {
+    const vp = fitViewport(PATTERN, VIEWER);
+    expect(nearestCell(vp, PATTERN, { x: -50, y: 1000 })).toEqual([0, 19]);
+    expect(nearestCell(vp, PATTERN, { x: 1000, y: -50 })).toEqual([29, 0]);
+    expect(nearestCell(vp, PATTERN, centreOf(vp, 4, 5))).toEqual([4, 5]);
   });
 });

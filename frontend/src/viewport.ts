@@ -186,3 +186,28 @@ export function visibleWindow(vp: Viewport, pattern: Size, viewer: Size): View {
     rows: rows.count,
   };
 }
+
+/** A cell of the pattern: its column and row, 0-based. */
+export type CellPoint = readonly [number, number];
+
+/** The cell under `point` (viewer px), or null when the point is off the pattern. */
+export function cellAt(vp: Viewport, pattern: Size, point: Point): CellPoint | null {
+  if (!(vp.scale > 0)) {
+    return null;
+  }
+  const column = Math.floor((point.x - vp.x) / vp.scale);
+  const row = Math.floor((point.y - vp.y) / vp.scale);
+  if (!(column >= 0 && column < pattern.width && row >= 0 && row < pattern.height)) {
+    return null;
+  }
+  return [column, row];
+}
+
+/** The cell under `point`, or the nearest cell on the pattern's edge when it is off it. */
+export function nearestCell(vp: Viewport, pattern: Size, point: Point): CellPoint | null {
+  if (!(vp.scale > 0) || isEmpty(pattern)) {
+    return null;
+  }
+  const clamp = (value: number, cells: number) => Math.min(cells - 1, Math.max(0, Math.floor(value)));
+  return [clamp((point.x - vp.x) / vp.scale, pattern.width), clamp((point.y - vp.y) / vp.scale, pattern.height)];
+}

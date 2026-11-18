@@ -169,3 +169,31 @@ describe("ThreadPicker", () => {
     expect(await screen.findByText("Winter White")).toBeInTheDocument();
   });
 });
+
+describe("ThreadPicker painting", () => {
+  const KEY_THREADS: DmcThread[] = [
+    { code: "321", name: "Red", rgb: [199, 43, 59] },
+    { code: "310", name: "Black", rgb: [0, 0, 0] },
+  ];
+
+  it("is titled Paint with, lists the pattern's threads first, has no Remove, and searches", async () => {
+    const fetchMock = stubApi(WHITES, json(500, {}));
+    const onPick = vi.fn();
+    render(<ThreadPicker paint={KEY_THREADS} onPick={onPick} onClose={vi.fn()} />);
+
+    const dialog = screen.getByRole("dialog", { name: "Paint with" });
+    const inPattern = within(screen.getByRole("region", { name: "In the pattern" })).getAllByRole("button");
+    expect(choiceCodes("In the pattern")).toEqual(["321", "310"]);
+    expect(within(dialog).queryByRole("region", { name: "Remove" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("region", { name: "Nearest threads" })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "white" } });
+    const found = await within(screen.getByRole("region", { name: "All threads" })).findAllByRole("button");
+    fireEvent.click(found[0] as HTMLElement);
+    fireEvent.click(inPattern[1] as HTMLElement);
+
+    expect(onPick).toHaveBeenNthCalledWith(1, expect.objectContaining({ name: expect.stringMatching(/white/i) }));
+    expect(onPick).toHaveBeenNthCalledWith(2, KEY_THREADS[1]);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/threads"]);
+  });
+});
