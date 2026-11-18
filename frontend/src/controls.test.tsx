@@ -1,7 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ChipChoice, DropZone, Segmented, Stepper, Switch } from "./controls";
+import { useState } from "react";
+
+import { ChipChoice, DropZone, Segmented, Stepper, Switch, Tabs } from "./controls";
 import { StitchedTitle } from "./motif";
 
 const SMALL = { min: 0, max: 5, step: 1, default: 2 };
@@ -124,5 +126,68 @@ describe("StitchedTitle", () => {
 
   it("refuses a letter it cannot stitch", () => {
     expect(() => render(<StitchedTitle lines={["Q"]} />)).toThrow(/no stitched letter/);
+  });
+});
+
+
+describe("Tabs", () => {
+  function Three() {
+    const [value, setValue] = useState<"image" | "pattern" | "chart">("image");
+    return (
+      <Tabs
+        label="Settings"
+        value={value}
+        onChange={setValue}
+        tabs={[
+          { value: "image", label: "Image", content: <p>image settings</p> },
+          { value: "pattern", label: "Pattern", content: <p>pattern settings</p> },
+          { value: "chart", label: "Chart", content: <p>chart settings</p> },
+        ]}
+      />
+    );
+  }
+
+  function tab(name: string): HTMLElement {
+    return screen.getByRole("tab", { name });
+  }
+
+  it("shows one tablist, the first tab selected and only its panel, named by it", () => {
+    render(<Three />);
+
+    expect(screen.getAllByRole("tablist")).toHaveLength(1);
+    expect(tab("Image")).toHaveAttribute("aria-selected", "true");
+    expect(tab("Pattern")).toHaveAttribute("aria-selected", "false");
+    const panels = screen.getAllByRole("tabpanel");
+    expect(panels).toHaveLength(1);
+    expect(screen.getByRole("tabpanel", { name: "Image" })).toHaveTextContent("image settings");
+    expect(screen.getByText("pattern settings")).not.toBeVisible();
+  });
+
+  it("moves along the tabs with the arrow keys, wrapping, and to the ends with Home and End", () => {
+    render(<Three />);
+
+    fireEvent.keyDown(tab("Image"), { key: "ArrowRight" });
+    expect(tab("Pattern")).toHaveAttribute("aria-selected", "true");
+    expect(tab("Pattern")).toHaveFocus();
+    expect(screen.getByRole("tabpanel", { name: "Pattern" })).toBeVisible();
+
+    fireEvent.keyDown(tab("Pattern"), { key: "Home" });
+    expect(tab("Image")).toHaveFocus();
+    fireEvent.keyDown(tab("Image"), { key: "ArrowLeft" });
+    expect(tab("Chart")).toHaveAttribute("aria-selected", "true");
+    expect(tab("Chart")).toHaveFocus();
+    fireEvent.keyDown(tab("Chart"), { key: "Home" });
+    fireEvent.keyDown(tab("Image"), { key: "End" });
+    expect(tab("Chart")).toHaveFocus();
+  });
+
+  it("selects a tab on click and keeps only the selected one in the tab order", () => {
+    render(<Three />);
+
+    fireEvent.click(tab("Chart"));
+
+    expect(tab("Chart")).toHaveAttribute("tabindex", "0");
+    expect(tab("Image")).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByText("chart settings")).toBeVisible();
   });
 });

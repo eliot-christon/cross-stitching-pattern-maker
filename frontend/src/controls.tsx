@@ -2,11 +2,11 @@
  * Form controls shared by the settings panel and the viewer, each fitted to one kind of
  * value: a few named choices (segmented), a wide range (slider and number), a small range
  * (stepper), common values plus any other (chips), a colour among presets (swatches), on
- * or off (switch), and an image (drop zone). Values are kept as typed: the API checks
- * them and its message says what is wrong.
+ * or off (switch), and an image (drop zone); and tabs, for a panel of several groups.
+ * Values are kept as typed: the API checks them and its message says what is wrong.
  */
 
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
 import type { SettingLimits } from "./api";
 
@@ -365,5 +365,81 @@ export function SheetIcon({ width, height }: { width: number; height: number }) 
       />
       <path d={`M${width - fold} 0.5V${fold}H${width - 0.5}`} fill="none" stroke="currentColor" />
     </svg>
+  );
+}
+
+/**
+ * Groups shown one at a time, the WAI-ARIA tabs pattern: a tablist named `label`, one tab
+ * per group, each panel named by its tab. Arrow keys move along the tabs (wrapping), Home
+ * and End to the ends; each selects as it focuses. Every panel stays mounted, the others
+ * hidden, so switching loses nothing that a panel holds.
+ */
+export function Tabs<T extends string>(props: {
+  label: string;
+  tabs: readonly { value: T; label: string; content: ReactNode }[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  const { label, tabs, value, onChange } = props;
+  const id = useId();
+  const buttons = useRef(new Map<T, HTMLButtonElement>());
+  const select = (next: T) => {
+    onChange(next);
+    buttons.current.get(next)?.focus();
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const last = tabs.length - 1;
+    const target = {
+      ArrowRight: index === last ? 0 : index + 1,
+      ArrowLeft: index === 0 ? last : index - 1,
+      Home: 0,
+      End: last,
+    }[event.key];
+    const tab = target === undefined ? undefined : tabs[target];
+    if (tab !== undefined) {
+      event.preventDefault();
+      select(tab.value);
+    }
+  };
+  return (
+    <div className="tabs">
+      <div role="tablist" aria-label={label} className="tab-list">
+        {tabs.map((tab, index) => (
+          <button
+            key={tab.value}
+            ref={(element) => {
+              if (element === null) {
+                buttons.current.delete(tab.value);
+              } else {
+                buttons.current.set(tab.value, element);
+              }
+            }}
+            type="button"
+            role="tab"
+            id={`${id}-tab-${tab.value}`}
+            aria-selected={tab.value === value}
+            aria-controls={`${id}-panel-${tab.value}`}
+            tabIndex={tab.value === value ? 0 : -1}
+            className="tab"
+            onClick={() => onChange(tab.value)}
+            onKeyDown={(event) => onKeyDown(event, index)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      {tabs.map((tab) => (
+        <div
+          key={tab.value}
+          role="tabpanel"
+          id={`${id}-panel-${tab.value}`}
+          aria-labelledby={`${id}-tab-${tab.value}`}
+          hidden={tab.value !== value}
+          className="tab-panel"
+        >
+          {tab.content}
+        </div>
+      ))}
+    </div>
   );
 }
