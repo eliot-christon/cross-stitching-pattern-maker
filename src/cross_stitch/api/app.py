@@ -42,10 +42,12 @@ from cross_stitch.export import (
 )
 from cross_stitch.pattern import (
     EMPTY,
+    Adjustments,
     CleanedPattern,
     Pattern,
     PixelGrid,
     Replaced,
+    adjust_image,
     background_as_fabric,
     clean_pattern,
     colours_with_headroom,
@@ -89,6 +91,10 @@ MAX_COLOURS = _MAX_COLOURS.max
 _MERGE_DISTANCE = _Setting(min=0.0, max=10.0, step=0.1, default=0.0)
 _MIN_STITCHES = _Setting(min=0, max=1000, step=1, default=0)
 _CONFETTI_SIZE = _Setting(min=0, max=10, step=1, default=0)
+# The image adjustments, as `Adjustments` reads them: percentages, degrees and a gamma.
+_TONE = _Setting(min=-100, max=100, step=1, default=0)
+_HUE = _Setting(min=-180, max=180, step=1, default=0)
+_GAMMA = _Setting(min=0.25, max=4.0, step=0.05, default=1.0)
 # The chart layout of `POST /patterns/pdf`.
 _PAGES = _Setting(min=1, max=MAX_PAGES, step=1, default=2)
 _OVERLAP = _Setting(min=0, max=MAX_OVERLAP, step=1, default=OVERLAP)
@@ -243,8 +249,9 @@ class SettingOut(BaseModel):
 class LimitsOut(BaseModel):
     max_upload_bytes: int
     settings: dict[str, SettingOut]
-    """Keyed by form field name: the conversion settings both pattern routes take, then
-    the chart layout settings `POST /patterns/pdf` takes."""
+    """Keyed by form field name: the conversion settings both pattern routes take, the
+    image adjustments every route reading an image takes, then the chart layout settings
+    `POST /patterns/pdf` takes."""
 
 
 _LIMITS = LimitsOut(
@@ -257,6 +264,12 @@ _LIMITS = LimitsOut(
             "merge_distance": _MERGE_DISTANCE,
             "min_stitches": _MIN_STITCHES,
             "confetti_size": _CONFETTI_SIZE,
+            "brightness": _TONE,
+            "contrast": _TONE,
+            "saturation": _TONE,
+            "hue": _HUE,
+            "gamma": _GAMMA,
+            "sharpness": _TONE,
             "pages_across": _PAGES,
             "pages_down": _PAGES,
             "overlap": _OVERLAP,
@@ -388,10 +401,54 @@ def _crop_error(crop: str, problem: str) -> RequestValidationError:
     )
 
 
-def _read_image(upload: UploadFile, crop: str | None = None) -> Image.Image:
-    """The uploaded image, decoded and cropped to `crop`; 413 over `MAX_UPLOAD_BYTES`,
-    400 if not an image, 422 for a bad box."""
-    return _cropped(_decode(_read_bytes(upload)), crop)
+# Each parameter is a form field FastAPI reads; grouping them would hide them from /docs.
+def _adjustments(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    brightness: Annotated[
+        int,
+        Form(ge=_TONE.min, le=_TONE.max, description="Brightness, % (-100 is black; 0 is off)"),
+    ] = _TONE.default,
+    contrast: Annotated[
+        int,
+        Form(ge=_TONE.min, le=_TONE.max, description="Contrast, % (-100 is flat; 0 is off)"),
+    ] = _TONE.default,
+    saturation: Annotated[
+        int,
+        Form(ge=_TONE.min, le=_TONE.max, description="Saturation, % (-100 is greys; 0 is off)"),
+    ] = _TONE.default,
+    hue: Annotated[
+        int,
+        Form(ge=_HUE.min, le=_HUE.max, description="Hue turn around the colour wheel, degrees"),
+    ] = _HUE.default,
+    gamma: Annotated[
+        float,
+        Form(
+            ge=_GAMMA.min,
+            le=_GAMMA.max,
+            allow_inf_nan=False,
+            description="Gamma (above 1 lightens the mid-tones; 1 is off)",
+        ),
+    ] = _GAMMA.default,
+    sharpness: Annotated[
+        int,
+        Form(ge=_TONE.min, le=_TONE.max, description="Sharpness, % (below 0 softens; 0 is off)"),
+    ] = _TONE.default,
+) -> Adjustments:
+    """The image adjustments, applied right after the crop, so the inspection, every
+    reader and the conversion see the adjusted image."""
+    return Adjustments(
+        brightness=brightness,
+        contrast=contrast,
+        saturation=saturation,
+        hue=hue,
+        gamma=gamma,
+        sharpness=sharpness,
+    )
+
+
+def _read_image(upload: UploadFile, crop: str | None, adjustments: Adjustments) -> Image.Image:
+    """The uploaded image, decoded, cropped to `crop` and adjusted; 413 over
+    `MAX_UPLOAD_BYTES`, 400 if not an image, 422 for a bad box."""
+    return adjust_image(_cropped(_decode(_read_bytes(upload)), crop), adjustments)
 
 
 @dataclass(frozen=True)
@@ -596,6 +653,7 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
         ),
     ],
     cleanup: Annotated[_Cleanup, Depends(_cleanup)],
+    adjustments: Annotated[Adjustments, Depends(_adjustments)],
     fabric_count: Annotated[
         float, Form(gt=0, allow_inf_nan=False, description="Stitches per inch")
     ] = 14.0,
@@ -630,7 +688,7 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
     The settings come back with the pattern rather than through a second `Depends(_cleanup)`
     in a route: a dependency met twice reports each of its validation errors twice."""
     replacements = [_replacement(value) for value in replace or []]
-    decoded = _source_grid(_read_image(image, crop), read_as)
+    decoded = _source_grid(_read_image(image, crop, adjustments), read_as)
     if read_as != "picture":
         width = decoded.width
         if width > _WIDTH.max:
@@ -664,6 +722,7 @@ def _converted(  # pylint: disable=too-many-arguments,too-many-positional-argume
 @app.post("/images/inspect")
 def inspect_image(
     image: Annotated[UploadFile, File(description="The image to look at")],
+    adjustments: Annotated[Adjustments, Depends(_adjustments)],
     crop: CropField = None,
 ) -> InspectOut:
     """What the upload is and how it reads best: its `kind` (sent back as `read_as`), the
@@ -675,7 +734,7 @@ def inspect_image(
         return InspectOut(
             kind=None, description="PDF document", grid=None, warnings=[], refusal=PDF_REFUSAL
         )
-    decoded = _cropped(_decode(data), crop)
+    decoded = adjust_image(_cropped(_decode(data), crop), adjustments)
     found = _found_grid(decoded)
     if found is None:
         return _picture(WEAVE_REFUSAL if fabric_weave(decoded) else None)

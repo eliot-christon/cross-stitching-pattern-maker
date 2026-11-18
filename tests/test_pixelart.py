@@ -150,6 +150,18 @@ def test_a_jpeg_photo_like_image_is_not_pixel_art_despite_its_blocks() -> None:
     assert find_pixel_grid(_jpeg(smooth.filter(ImageFilter.GaussianBlur(3)))) is None
 
 
+def test_a_best_pitch_on_the_slope_of_a_peak_outside_the_window_is_no_grid() -> None:
+    # DMC 310, Blanc, 321 and 797 in 10-pixel stripes, smoothed (Pillow leaves the outer
+    # ring as it is): across, the best score sits on the window's large-pitch end, below
+    # its neighbour outside the window, so no pitch is a peak on that axis.
+    pixels = np.zeros((20, 40, 3), dtype=np.uint8)
+    for i, rgb in enumerate([(0, 0, 0), (252, 251, 248), (199, 43, 59), (19, 71, 125)]):
+        pixels[:, i * 10 : (i + 1) * 10] = rgb
+    softened = Image.fromarray(pixels, mode="RGB").filter(ImageFilter.SMOOTH)
+    grid = find_pixel_grid(softened)
+    assert grid is None or grid.pitch_x != 10
+
+
 def test_finding_twice_gives_the_same_grid() -> None:
     image = _jpeg(_enlarged(10.4))
     assert find_pixel_grid(image) == find_pixel_grid(image)

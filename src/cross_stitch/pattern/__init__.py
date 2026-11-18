@@ -1,5 +1,6 @@
 """Image -> cross-stitch pattern: the stitch grid, its DMC key, counts and sizes."""
 
+from cross_stitch.pattern.adjust import Adjustments, adjust_image
 from cross_stitch.pattern.background import background_as_fabric
 from cross_stitch.pattern.cleanup import (
     CLEANUP_HEADROOM,
@@ -38,11 +39,13 @@ __all__ = [
     "CLEANUP_HEADROOM",
     "EMPTY",
     "OPAQUE_THRESHOLD",
+    "Adjustments",
     "CleanedPattern",
     "KeyEntry",
     "Pattern",
     "PixelGrid",
     "Replaced",
+    "adjust_image",
     "background_as_fabric",
     "build_pattern",
     "clean_pattern",
