@@ -202,15 +202,19 @@ def _peak_frequency(edges: FloatArray) -> tuple[float, float] | None:
     best = float(score[low : high + 1].max())
     if best < MIN_ALIGNMENT:
         return None
-    # Neighbours outside the window count too, so its ends can be peaks.
+    # Neighbours outside the window count too, so its ends can be peaks, and a best on an
+    # end that is only the slope of a peak outside the window may leave no peak at all.
     k = next(
-        k
-        for k in range(low, high + 1)
-        if score[k] >= HARMONIC_TOLERANCE * best
-        and score[k] >= score[k - 1]
-        and (k + 1 >= len(score) or score[k] >= score[k + 1])
+        (
+            k
+            for k in range(low, high + 1)
+            if score[k] >= HARMONIC_TOLERANCE * best
+            and score[k] >= score[k - 1]
+            and (k + 1 >= len(score) or score[k] >= score[k + 1])
+        ),
+        None,
     )
-    return k / size, 1 / size
+    return None if k is None else (k / size, 1 / size)
 
 
 def _refine(edges: FloatArray, frequency: float, step: float) -> tuple[float, float, float]:
